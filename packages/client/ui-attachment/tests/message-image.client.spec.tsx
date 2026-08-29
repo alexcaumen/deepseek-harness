@@ -195,6 +195,7 @@ describe('ImageGallery', () => {
       useInput,
       inputActions: {
         setDraft: vi.fn(),
+        addResponseAnnotation: vi.fn(() => true),
         addImages: vi.fn(() => true),
         removeImage: vi.fn(),
         pruneImages: vi.fn(),

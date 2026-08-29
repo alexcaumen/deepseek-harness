@@ -271,6 +271,7 @@ function makeHarness(init?: Partial<ConversationSnapshot>) {
     useInput: (() => { throw new Error('unused') }),
     inputActions: {
       setDraft: () => {},
+      addResponseAnnotation: () => true,
       addImages: () => true,
       removeImage: () => {},
       pruneImages: () => {},

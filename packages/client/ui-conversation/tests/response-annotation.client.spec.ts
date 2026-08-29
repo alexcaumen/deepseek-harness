@@ -24,7 +24,7 @@ describe('response annotations', () => {
       return source.codec.serialize(ref, signal)
     })
     const inputTriggers = { serializeReference, track: vi.fn() } as unknown as InputTriggerController
-    const sink = vi.fn(() => Promise.resolve<SubmitOutcome>({ kind: 'success' }))
+    const sink = vi.fn((_text: string) => Promise.resolve<SubmitOutcome>({ kind: 'success' }))
     const shell = new SessionInputShell({
       actx: {} as ClientContext,
       inputTriggers: () => inputTriggers,

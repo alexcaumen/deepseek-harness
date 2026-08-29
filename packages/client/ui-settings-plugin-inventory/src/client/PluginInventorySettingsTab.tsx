@@ -311,7 +311,11 @@ function CatalogBrowser({ state, view, query, visibleLimit, onLoadMore, onRetry,
 export function PluginInventorySettingsTab({ list, t }: PluginInventorySettingsTabProps): ReactNode {
   const catalogId = useId()
   const mounted = useRef(true)
-  const catalogControllers = useRef<Partial<Record<CatalogView, AbortController>>>({})
+  const catalogControllers = useRef<Record<CatalogView, AbortController | undefined>>({
+    skills: undefined,
+    connectors: undefined,
+    marketplace: undefined,
+  })
   const [request, setRequest] = useState(0)
   const [query, setQuery] = useState('')
   const [view, setView] = useState<InventoryView>('features')
@@ -325,7 +329,7 @@ export function PluginInventorySettingsTab({ list, t }: PluginInventorySettingsT
     mounted.current = true
     return () => {
       mounted.current = false
-      Object.values(catalogControllers.current).forEach((controller) => { controller.abort() })
+      Object.values(catalogControllers.current).forEach((controller) => { controller?.abort() })
     }
   }, [])
 
@@ -356,7 +360,9 @@ export function PluginInventorySettingsTab({ list, t }: PluginInventorySettingsT
         setCatalogStates(current => ({ ...current, [requestedView]: { status: 'error' } }))
       }
     }).finally(() => {
-      catalogControllers.current[requestedView] = undefined
+      if (catalogControllers.current[requestedView] === controller) {
+        catalogControllers.current[requestedView] = undefined
+      }
     })
   }, [catalogStates, view])
 
