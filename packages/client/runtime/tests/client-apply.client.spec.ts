@@ -96,8 +96,13 @@ describe('runtime client apply', () => {
 
   it('routes unattended turn completion to the desktop notification bridge once', async () => {
     const notices: unknown[] = []
+    let openSession: ((sessionId: string) => void) | undefined
     vi.stubGlobal('__GIANA_DESKTOP__', {
       notify: (candidate: unknown) => { notices.push(candidate) },
+      onOpenSession: (listener: (sessionId: string) => void) => {
+        openSession = listener
+        return () => { openSession = undefined }
+      },
     })
     vi.stubGlobal('document', { hidden: true, visibilityState: 'hidden' })
 
@@ -122,8 +127,16 @@ describe('runtime client apply', () => {
       await flushMicrotasks()
 
       expect(notices).toHaveLength(1)
-      expect((notices[0] as { kind: string }).kind).toBe('completed')
+      expect(notices[0]).toMatchObject({ kind: 'completed', sessionId: 's-notification-hook' })
+      bench.sinks?.onHostEnvelope?.({
+        rpcId: 'notice-session-added' as never,
+        payload: { type: 'host/session-added', blank: false, sessionId: 's-notification-hook' } as never,
+      })
+      await flushMicrotasks()
+      openSession?.('s-notification-hook')
+      expect((bench.ctx.get('sessions') as SessionRuntime).list.getSnapshot().current).toBe('s-notification-hook')
       await bench.ctx.fiber.dispose()
+      expect(openSession).toBeUndefined()
     } finally {
       vi.unstubAllGlobals()
     }

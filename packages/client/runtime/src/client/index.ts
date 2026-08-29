@@ -202,7 +202,13 @@ export function apply(ctx: Context): void {
   }
   const connection = ctx.get('connection') as ConnectionHandle
   const sessions = new SessionRuntime(ctx, connection.api, ctx.remote, conversation)
-  const notifications = new DesktopNotificationController()
+  const notifications = new DesktopNotificationController({
+    openSession: (sessionId) => {
+      const target = sessionId as SessionId
+      if (sessions.list.getSnapshot().byId[target] === undefined) return
+      sessions.open(target)
+    },
+  })
   ctx.typert.contexts.registerClient('agent', {
     identity: candidate => sessions.scopeOf(candidate),
   })

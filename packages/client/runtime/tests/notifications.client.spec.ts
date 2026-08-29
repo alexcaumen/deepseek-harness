@@ -39,6 +39,7 @@ function turnEnd(reason: unknown): MuxFrame {
 describe('desktop notifications', () => {
   it('classifies durable completion, attention, and failure boundaries', () => {
     expect(classifyNotification(turnEnd({ kind: 'completed' }))?.kind).toBe('completed')
+    expect(classifyNotification(turnEnd({ kind: 'completed' }))?.sessionId).toBe('session-1')
     expect(classifyNotification(turnEnd({ kind: 'blocked' }))?.kind).toBe('attention')
     expect(classifyNotification(turnEnd({ kind: 'error', error: { message: 'backend failed' } }))?.kind)
       .toBe('failed')
@@ -50,6 +51,28 @@ describe('desktop notifications', () => {
       questions: [{ id: 'question-1', header: 'Confirm', options: [] }],
     } as never)?.kind).toBe('attention')
     expect(classifyNotification({ type: 'session-status', sessionId, running: false } as never)).toBeUndefined()
+  })
+
+  it('routes a typed host click to the registered session opener and releases it on disposal', () => {
+    let listener: ((sessionId: string) => void) | undefined
+    const release = vi.fn()
+    const openSession = vi.fn()
+    vi.stubGlobal('__GIANA_DESKTOP__', {
+      notify: () => true,
+      onOpenSession: (next: (sessionId: string) => void) => {
+        listener = next
+        return release
+      },
+    })
+    try {
+      const controller = new DesktopNotificationController({ openSession })
+      listener?.('session-1')
+      expect(openSession).toHaveBeenCalledWith('session-1')
+      controller.dispose()
+      expect(release).toHaveBeenCalledOnce()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('delivers an unattended event once and ignores duplicates', () => {

@@ -8,6 +8,8 @@ export interface DesktopNotificationCandidate {
   readonly title: string
   readonly body: string
   readonly tag: string
+  /** Exact durable session target for a host notification click. */
+  readonly sessionId?: string
 }
 
 // Connection push envelopes expose rpcId as a transport string; notification
@@ -24,6 +26,7 @@ export interface DesktopNotificationSink {
 
 interface DesktopNotificationBridge {
   notify(candidate: DesktopNotificationCandidate): boolean | Promise<boolean>
+  onOpenSession?(listener: (sessionId: string) => void): (() => void) | void
 }
 
 interface DesktopNotificationStore {
@@ -112,6 +115,7 @@ function makeCandidate(
     title: `${APP_TITLE} - ${label}`,
     body: `${detail}${suffix}`,
     tag: `${APP_TITLE}:${key}`,
+    ...(sessionId === undefined ? {} : { sessionId }),
   }
 }
 
@@ -202,6 +206,8 @@ export interface DesktopNotificationControllerOptions {
   readonly shouldNotify?: () => boolean
   /** Injectable for tests; production uses the browser's durable local store. */
   readonly store?: DesktopNotificationStore
+  /** Uses the sessions domain's canonical open operation; the desktop bridge only carries intent. */
+  readonly openSession?: (sessionId: string) => void
 }
 
 /** Converts push frames into at-most-once notices while the app is unattended. */
@@ -211,6 +217,7 @@ export class DesktopNotificationController {
   private readonly store: DesktopNotificationStore | undefined
   private readonly delivered: Set<string>
   private readonly pending = new Set<string>()
+  private readonly releaseOpenSession: () => void
   private disposed = false
 
   constructor(options: DesktopNotificationControllerOptions = {}) {
@@ -218,6 +225,13 @@ export class DesktopNotificationController {
     this.shouldNotify = options.shouldNotify ?? pageIsInactive
     this.store = options.store ?? defaultNotificationStore()
     this.delivered = restoreDelivered(this.store)
+    const registerOpenSession = globals().__GIANA_DESKTOP__?.onOpenSession
+    const release = options.openSession === undefined || registerOpenSession === undefined
+      ? undefined
+      : registerOpenSession((sessionId) => {
+        if (!this.disposed) options.openSession?.(sessionId)
+      })
+    this.releaseOpenSession = typeof release === 'function' ? release : () => undefined
   }
 
   handle(envelope: DesktopNotificationEnvelope): boolean {
@@ -254,5 +268,6 @@ export class DesktopNotificationController {
 
   dispose(): void {
     this.disposed = true
+    this.releaseOpenSession()
   }
 }
