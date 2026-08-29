@@ -163,6 +163,16 @@
     - id: subprocess
       name: '@deepseek-ai/dsh-subprocess-local'
 
+    # Per-session, bearer-scoped projection of the exact live agent ToolRuntime.
+    # The listener is numeric loopback only; no capability exists until an
+    # authorized participant adapter issues one for an exact live Agent object.
+    - id: mcp-tool-runtime
+      name: '@deepseek-ai/dsh-mcp-server-tool-runtime'
+      config:
+        host: 127.0.0.1
+        port: 18643
+        path: /mcp/tool-runtime
+
     # Every shipped CLI mode starts with the same file-effect boundary.
     # The environment remains an explicit deployment override; otherwise fresh
     # sessions pin workspace-write + ask through the permission service below.

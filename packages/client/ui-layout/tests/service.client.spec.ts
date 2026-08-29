@@ -12,26 +12,49 @@ function fakePanels(): PanelActions {
   return {
     setSidebar: vi.fn(),
     setDetails: vi.fn(),
+    setBottom: vi.fn(),
+    setPolicy: vi.fn(),
     toggleSidebar: vi.fn(),
     setNarrow: vi.fn(),
+    toggleMiddle: vi.fn(),
+    focusDetails: vi.fn(),
+    showMiddle: vi.fn(),
+    toggleDetails: vi.fn(),
     openDetails: vi.fn(),
     closeDetails: vi.fn(),
+    toggleBottom: vi.fn(),
+    openBottom: vi.fn(),
+    closeBottom: vi.fn(),
   }
 }
 
 describe('LayoutController', () => {
-  it('forwards the three panel actions to the attached set', () => {
+  it('forwards the universal panel actions to the attached set', () => {
     const service = new LayoutController()
     const panels = fakePanels()
     service.attachPanels(panels)
 
     service.toggleSidebar()
+    service.toggleMiddle()
+    service.focusDetails()
+    service.showMiddle()
+    service.toggleDetails()
     service.openDetails()
     service.closeDetails()
+    service.openBottom()
+    service.toggleBottom()
+    service.closeBottom()
 
     expect(panels.toggleSidebar).toHaveBeenCalledTimes(1)
+    expect(panels.toggleMiddle).toHaveBeenCalledTimes(1)
+    expect(panels.focusDetails).toHaveBeenCalledTimes(1)
+    expect(panels.showMiddle).toHaveBeenCalledTimes(1)
+    expect(panels.toggleDetails).toHaveBeenCalledTimes(1)
     expect(panels.openDetails).toHaveBeenCalledTimes(1)
     expect(panels.closeDetails).toHaveBeenCalledTimes(1)
+    expect(panels.openBottom).toHaveBeenCalledTimes(1)
+    expect(panels.toggleBottom).toHaveBeenCalledTimes(1)
+    expect(panels.closeBottom).toHaveBeenCalledTimes(1)
     expect(panels.setSidebar).not.toHaveBeenCalled()
     expect(panels.setDetails).not.toHaveBeenCalled()
   })
@@ -39,8 +62,15 @@ describe('LayoutController', () => {
   it('fails loud before the root entry wired its actions', () => {
     const service = new LayoutController()
     expect(() => { service.toggleSidebar() }).toThrow(/panel actions not wired/)
+    expect(() => { service.toggleMiddle() }).toThrow(/panel actions not wired/)
+    expect(() => { service.focusDetails() }).toThrow(/panel actions not wired/)
+    expect(() => { service.showMiddle() }).toThrow(/panel actions not wired/)
+    expect(() => { service.toggleDetails() }).toThrow(/panel actions not wired/)
     expect(() => { service.openDetails() }).toThrow(/panel actions not wired/)
     expect(() => { service.closeDetails() }).toThrow(/panel actions not wired/)
+    expect(() => { service.openBottom() }).toThrow(/panel actions not wired/)
+    expect(() => { service.toggleBottom() }).toThrow(/panel actions not wired/)
+    expect(() => { service.closeBottom() }).toThrow(/panel actions not wired/)
   })
 
   it('re-attach overwrites the stale action set (entry re-register)', () => {

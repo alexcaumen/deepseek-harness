@@ -20,14 +20,27 @@ import {
 } from './scaffold.ts'
 import { connectFreshWorkspace, newEnglishPage, saveFailureShot } from './support.ts'
 
-const FIXTURE = fileURLToPath(new URL('./snapshots/code-mode-round/session.jsonl', import.meta.url))
-const UI_EXPECTED = fileURLToPath(new URL('./snapshots/code-mode-round/ui.expected.md', import.meta.url))
+const WINDOWS = process.platform === 'win32'
+const SHELL_TOOL = WINDOWS ? 'pwsh' : 'bash'
+// Both shell tools intentionally share the bash-family toolview registrant;
+// the wire name above remains the platform-specific dispatch identity.
+const SHELL_ROW = WINDOWS ? `[data-tool="${SHELL_TOOL}"]` : '[data-sample="bash"]'
+const FIXTURE = fileURLToPath(new URL(
+  WINDOWS ? './snapshots/code-mode-round/session.windows.jsonl' : './snapshots/code-mode-round/session.jsonl',
+  import.meta.url,
+))
+const UI_EXPECTED = fileURLToPath(new URL(
+  WINDOWS ? './snapshots/code-mode-round/ui.windows.expected.md' : './snapshots/code-mode-round/ui.expected.md',
+  import.meta.url,
+))
 const MODE = webSnapshotMode()
 
-// The scenario's one drive prompt: elicits one program with a bash sub-call
+// The scenario's one drive prompt: elicits one program with the host shell sub-call
 // and a failing read the program tolerates — the sub-row set the assertions
 // need. Never asserted against model prose.
-const PROMPT = 'Using ONE run_code program: run bash `echo CODE_ROUND_OK`, then read the file missing.txt '
+const PROMPT = (WINDOWS
+  ? 'Using ONE run_code program: run pwsh `Write-Output CODE_ROUND_OK`, then read the file missing.txt '
+  : 'Using ONE run_code program: run bash `echo CODE_ROUND_OK`, then read the file missing.txt ')
   + 'catching its error in the program. Return an object with both outcomes. Then reply DONE and stop.'
 
 describe('web e2e: Code Mode round renders nested sub-calls', () => {
@@ -94,10 +107,10 @@ describe('web e2e: Code Mode round renders nested sub-calls', () => {
       expect(Array.isArray(data.content)).toBe(true)
       expect(typeof data.isError).toBe('boolean')
     }
-    const bash = dispatches.find(dispatch => (dispatch.data as { name: string }).name === 'bash')
-    expect(bash).toBeDefined()
-    const bashContent = (bash!.data as { content: { type: string; text?: string }[] }).content
-    expect(bashContent.filter(block => block.type === 'text').map(block => block.text).join('')).toContain('CODE_ROUND_OK')
+    const shell = dispatches.find(dispatch => (dispatch.data as { name: string }).name === SHELL_TOOL)
+    expect(shell).toBeDefined()
+    const shellContent = (shell!.data as { content: { type: string; text?: string }[] }).content
+    expect(shellContent.filter(block => block.type === 'text').map(block => block.text).join('')).toContain('CODE_ROUND_OK')
   })
 
   it.skipIf(MODE === 'record')('renders the code parent row with always-visible nested sub-rows', async () => {
@@ -109,21 +122,21 @@ describe('web e2e: Code Mode round renders nested sub-calls', () => {
     await codeRow.waitFor({ timeout: 10_000 })
     // Nested rows are visible WITHOUT any expand interaction, inside the
     // sub-call nest, each rendered by the same components as native rows:
-    // the bash sub-call landed in the bash sample registration.
+    // the host shell sub-call landed in the platform-specific sample registration.
     const nest = page.locator('[data-subcalls]').first()
     await nest.waitFor({ timeout: 10_000 })
-    expect(await nest.locator('[data-sample="bash"]').count()).toBeGreaterThanOrEqual(1)
+    expect(await nest.locator(SHELL_ROW).count()).toBeGreaterThanOrEqual(1)
     // The failing read sub-call wears the same error state a native failed
     // row wears (the recorded program tolerates a read of missing.txt).
     expect(await nest.locator('[data-state="error"]').count()).toBeGreaterThanOrEqual(1)
   }, 60_000)
 
-  it.skipIf(MODE === 'record')('a bash sub-row click leaves the default details panel closed', async () => {
+  it.skipIf(MODE === 'record')('a shell sub-row click leaves the default details panel closed', async () => {
     onTestFailed(() => saveFailureShot(page, 'web-e2e-code-mode-details'))
     const nest = page.locator('[data-subcalls]').first()
     const frame = page.locator('[style*="grid-template-columns"]').first()
     expect(await frame.getAttribute('data-details-collapsed')).toBe('true')
-    await nest.locator('[data-sample="bash"]').first().click()
+    await nest.locator(SHELL_ROW).first().click()
     // Tool rows do not drive layout geometry; the Session's default panel stays closed.
     await expect.poll(() => frame.getAttribute('data-details-collapsed'), { timeout: 5_000 }).toBe('true')
   })

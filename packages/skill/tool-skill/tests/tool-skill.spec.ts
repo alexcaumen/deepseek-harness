@@ -168,7 +168,7 @@ describe('dsh-tool-skill', () => {
     ctx.skills.register({ name: 'lifecycle-skill', description: 'Lifecycle', source: 'runtime', content: 'body' })
 
     const fiber = await ctx.plugin(toolSkill)
-    expect(ctx.tools.schemas().map(tool => tool.name)).toEqual(['skill'])
+    expect(ctx.tools.schemas().map(tool => tool.name)).toEqual(['skill', 'skill_search'])
     expect(await composePrefix(ctx, '/workspace')).toHaveLength(1)
     expect(ctx.tools.get('skill')?.presentCall?.({ name: 'project-skill' })).toEqual({
       card: 'generic',
@@ -181,7 +181,7 @@ describe('dsh-tool-skill', () => {
     expect(await composePrefix(ctx, '/workspace')).toEqual([])
 
     toolSkill.apply(ctx)
-    expect(ctx.tools.schemas().map(tool => tool.name)).toEqual(['skill'])
+    expect(ctx.tools.schemas().map(tool => tool.name)).toEqual(['skill', 'skill_search'])
   })
 
   it('forwards the step abort signal to skill discovery', async () => {
@@ -755,6 +755,42 @@ describe('dsh-tool-skill', () => {
     await ctx.plugin(SkillFileSystem, { dshHome: join(home, '.dsh'), agentsHome: join(home, '.agents'), watch: false })
 
     await expect(ctx.plugin(toolSkill, { catalogDescriptionMaxLength: 2 })).rejects.toThrow('greater than or equal to 3')
+  })
+
+  it('keeps a bounded catalog while searching the complete skill population', async () => {
+    const home = await tempDir('tool-search')
+    const ctx = await setup(home, {
+      catalogDescriptionMaxLength: 40,
+      catalogMaxEntries: 1,
+      searchResultLimit: 2,
+      catalogPinnedNames: ['web-design'],
+    })
+    ctx.skills.register({ name: 'web-design', description: 'Build polished responsive web interfaces.', source: 'runtime', content: 'web body' })
+    ctx.skills.register({ name: 'browser-qa', description: 'Validate web interfaces in a browser.', source: 'runtime', content: 'browser body' })
+    ctx.skills.register({ name: 'security-review', description: 'Review source security.', source: 'runtime', content: 'security body' })
+
+    const prefix = await composePrefix(ctx, '/workspace')
+    expect(prefix[0]?.source).toEqual({
+      kind: 'skill-catalog',
+      form: 'catalog',
+      entries: [{ name: 'web-design', description: 'Build polished responsive web interfa...' }],
+      totalAvailable: 3,
+    })
+
+    const result = await ctx.tools.execute({
+      signal: testToolSignal,
+      callId: CallId('search-1'),
+      name: 'skill_search',
+      arguments: { query: 'browser web' },
+      agent: { session: { header: { cwd: '/workspace' } } } as never,
+    })
+    if (result.isError) throw new Error(`expected search success: ${JSON.stringify(result)}`)
+    expect(result.isError).toBe(false)
+    expect(result.value).toEqual({
+      query: 'browser web',
+      totalMatches: 1,
+      results: [{ name: 'browser-qa', description: 'Validate web interfaces in a browser.' }],
+    })
   })
 
   it('loads a skill for the calling agent cwd', async () => {

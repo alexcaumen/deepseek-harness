@@ -2395,8 +2395,14 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             }
             const durable = await durablePromptContent(ctx, content)
             const message: UserMessage = createUserMessage({ content: durable, source })
-            if (mode === 'steer') agent.steer(message)
-            else agent.followup(message)
+            if (mode === 'steer') {
+              // Steering is additive: the active step keeps running and consumes this
+              // message at its next step boundary. Explicit Stop remains the only UI
+              // action that may cancel the current activity.
+              agent.steer(message)
+            } else {
+              agent.followup(message)
+            }
           } catch (error: unknown) {
             if (error instanceof AttachmentError) {
               return err(request, {

@@ -184,7 +184,8 @@ export class Session implements SessionFace {
   /**
    * Send (queue/steer passed through 1:1); failures land in the snapshot's promptError.
    * @param content - text plus browser-owned temporary image uploads.
-   * @param mode - queue appends after the current turn; steer interrupts it.
+   * @param mode - queue appends after the current turn; steer is consumed at
+   * the next step boundary without cancelling the active turn.
    * @returns the prompt result (also mirrored into promptError on failure).
    */
   async prompt(

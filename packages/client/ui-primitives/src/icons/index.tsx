@@ -97,6 +97,13 @@ export const IconPanelLeftOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
+/** Right-side inspector panel. */
+export const IconPanelRightOutline16 = ({ size = 16, className }: IconProps) => (
+  <span className={className} style={{ display: 'inline-flex', transform: 'scaleX(-1)' }}>
+    <IconPanelLeftOutline16 size={size} />
+  </span>
+)
+
 /** ic_ds_ellipsis_outline_16 */
 export const IconEllipsisOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -122,6 +129,14 @@ export const IconPlusOutline16 = ({ size = 16, className }: IconProps) => (
       d="M8.64453 1.5V7.34961H14.5V8.65039H8.64453V14.5H7.34473V8.65039H1.5V7.34961H7.34473V1.5H8.64453Z"
       fill="currentColor"
     />
+  </svg>
+)
+
+/** Microphone control used by Giana Code Indonesian dictation. */
+export const IconMicrophoneOutline16 = ({ size = 16, className }: IconProps) => (
+  <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M8 1.25A2.75 2.75 0 0 0 5.25 4v4a2.75 2.75 0 0 0 5.5 0V4A2.75 2.75 0 0 0 8 1.25Z" stroke="currentColor" strokeWidth="1.35" />
+    <path d="M3.5 7.5V8a4.5 4.5 0 0 0 9 0v-.5M8 12.5v2.25M5.5 14.75h5" stroke="currentColor" strokeWidth="1.35" strokeLinecap="round" />
   </svg>
 )
 

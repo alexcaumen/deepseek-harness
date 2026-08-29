@@ -67,13 +67,13 @@ describe('official browser-brand plugin', () => {
 
   it('renders the official name independently from both requested mark sizes', () => {
     const name = render(<OfficialBrandName />)
-    expect(name.container.querySelector('svg')?.getAttribute('viewBox')).toBe('26 0 156 24')
+    expect(name.getByText('Giana Code Putri')).toBeTruthy()
     name.unmount()
 
     const mark = render(<OfficialBrandMark size={34} className="hero-mark" />)
-    expect(mark.container.querySelector('svg')?.getAttribute('width')).toBe('34')
-    expect(mark.container.querySelector('svg')?.getAttribute('class')).toBe('hero-mark')
+    expect(mark.container.querySelector('img')?.getAttribute('width')).toBe('34')
+    expect(mark.container.querySelector('img')?.getAttribute('class')).toBe('hero-mark')
     mark.rerender(<OfficialBrandMark size={24} />)
-    expect(mark.container.querySelector('svg')?.getAttribute('width')).toBe('24')
+    expect(mark.container.querySelector('img')?.getAttribute('width')).toBe('24')
   })
 })

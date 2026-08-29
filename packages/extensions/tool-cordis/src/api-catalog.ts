@@ -1053,6 +1053,19 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'mcpToolRuntime',
+    summary: 'Cordis service plugin exposing scoped ToolRuntime calls over authenticated loopback Streamable HTTP.',
+    description: 'Cordis service plugin exposing scoped ToolRuntime calls over authenticated loopback Streamable HTTP.',
+    methods: [
+      {
+        signature: 'issue(agent: Agent): McpToolRuntimeCapability',
+        description: 'Issue or retrieve the single capability for an exact live agent/session. Object identity, not a caller-supplied id, is the authorization boundary.',
+        parameters: [{ name: 'agent', description: 'Exact live Giana Code agent whose session owns the capability.' }],
+        returns: 'an opaque, revocable loopback MCP capability for that agent/session.',
+      },
+    ],
+  },
+  {
     key: 'messageFeedback',
     summary: 'Storage-domain sidecar service.',
     description: 'Storage-domain sidecar service. It inspects persisted Session history and never creates or resumes an Agent or Session.',
@@ -3692,6 +3705,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ManualCompactAgentContext',
     declaration: 'export interface ManualCompactAgentContext extends CompactionAgentContext {\n    runMaintenance<T>(task: (signal: AbortSignal) => Promise<T>): Promise<T>;\n}',
+  },
+  {
+    name: 'McpToolRuntimeCapability',
+    declaration: 'export interface McpToolRuntimeCapability {\n    readonly endpoint: string;\n    readonly token: string;\n    revoke(): Promise<void>;\n}',
   },
   {
     name: 'Message',

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 
 const streamSimple = vi.hoisted(() => vi.fn())
@@ -32,14 +33,24 @@ function gatewayAdapter(): PiAiAdapter {
   })
 }
 
-async function drain(adapter: PiAiAdapter): Promise<StreamChunk[]> {
+type StreamRequest = Parameters<PiAiAdapter['stream']>[0]
+
+async function drain(adapter: PiAiAdapter, overrides: Partial<StreamRequest> = {}): Promise<StreamChunk[]> {
   const chunks: StreamChunk[] = []
   for await (const chunk of adapter.stream({
     provider: 'local-gateway',
     model: 'local-model',
     messages: [],
+    ...overrides,
   })) chunks.push(chunk)
   return chunks
+}
+
+function largeUserMessage(length: number): ReturnType<typeof createUserMessage> {
+  return createUserMessage({
+    content: [{ type: 'text', text: 'x'.repeat(length) }],
+    source: { kind: 'plugin', plugin: 'test' },
+  })
 }
 
 describe('pi-ai SDK retry boundary', () => {
@@ -71,5 +82,35 @@ describe('pi-ai SDK retry boundary', () => {
       contextWindow: 8192,
       maxTokens: 1024,
     })
+  })
+
+  it('clamps an explicit output cap to the remaining model context before dispatch', async () => {
+    streamSimple.mockImplementation(() => { throw new Error('mock SDK boundary') })
+    const adapter = new PiAiAdapter({
+      profiles: () => resolveProfiles({
+        'local-gateway': {
+          api: 'openai-completions',
+          baseURL: 'http://127.0.0.1:9/v1',
+          models: [{ id: 'local-model', contextWindow: 8192, maxTokens: 4096 }],
+        },
+      }),
+      resolveApiKey: () => Promise.resolve('test-key'),
+      auth: memoryAuth(),
+    })
+
+    await drain(adapter, { messages: [largeUserMessage(8000)], maxTokens: 4096 })
+
+    const requestOptions = streamSimple.mock.calls[0]?.[2] as { maxTokens?: number }
+    expect(requestOptions.maxTokens).toBeGreaterThanOrEqual(1)
+    expect(requestOptions.maxTokens).toBeLessThan(4096)
+  })
+
+  it('keeps a requested cap when the context has ample headroom', async () => {
+    streamSimple.mockImplementation(() => { throw new Error('mock SDK boundary') })
+    const adapter = gatewayAdapter()
+
+    await drain(adapter, { maxTokens: 512 })
+
+    expect((streamSimple.mock.calls[0]?.[2] as { maxTokens?: number }).maxTokens).toBe(512)
   })
 })

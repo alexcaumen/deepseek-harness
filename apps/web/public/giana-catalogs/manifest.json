@@ -1,0 +1,54 @@
+{
+  "schema": "giana.browser.catalog-manifest.v1",
+  "generatedAt": "2026-08-23T08:28:41.360Z",
+  "status": "SANITIZED_SOURCE_PROJECTION",
+  "sanitization": {
+    "policy": "PUBLIC_FIELD_ALLOWLIST"
+  },
+  "counts": {
+    "skills": 647,
+    "skillsWithHistoricalRuntimeEvidence": 392,
+    "skillsNeedingRuntimeOrConnector": 255,
+    "connectorProviders": 1409,
+    "connectorActions": 14799,
+    "marketplaceItems": 4826
+  },
+  "catalogs": [
+    {
+      "id": "skills",
+      "href": "./skills.json",
+      "schema": "giana.browser.skill-catalog.v1",
+      "total": 647,
+      "status": "MIXED_HISTORICAL_EVIDENCE",
+      "currentnessAsOf": "2026-08-23T05:07:19.7865636Z",
+      "source": "GIANA_WINDOWS_SKILL_FEATURE_INVENTORY_20260823.json",
+      "sourceSha256": "c2d5b745788b2ff5c04eb9f2d2e434b46f1581009bd95173a67d026f55fcebd9",
+      "artifactSha256": "eb48c962b08a124497db7136cdfb3033022c2a703443ddc2f56f1df0b9b75812",
+      "bytes": 340294
+    },
+    {
+      "id": "connectors",
+      "href": "./connectors.json",
+      "schema": "giana.browser.connector-catalog.v1",
+      "total": 1409,
+      "status": "DISCOVERABLE_NOT_CONNECTED_BY_DEFAULT",
+      "currentnessAsOf": "2026-08-23T05:07:33.8708729Z",
+      "source": "GIANA_WINDOWS_OPENCONNECTOR_PROVIDER_INVENTORY_20260823.json",
+      "sourceSha256": "eb517e21cb11165dc4708ae9aa31d2972f5f2f63c943305895cf6383c7f4a479",
+      "artifactSha256": "e4e39ce1b87fb8cd5c61f238f4e98dc72f5b9debc12de7d5fd0fe727734e718d",
+      "bytes": 344713
+    },
+    {
+      "id": "marketplace",
+      "href": "./marketplace.json",
+      "schema": "giana.browser.marketplace-catalog.v1",
+      "total": 4826,
+      "status": "DISCOVERABLE_UNVERIFIED",
+      "currentnessAsOf": "2026-08-22T23:22:26.947Z",
+      "source": "GIANA_WINDOWS_MARKETPLACE_CATALOG_20260823.jsonl",
+      "sourceSha256": "a6f160ce53601ca800be430965be5b04367035d3e18ab62f7ad4d7cc4a33546d",
+      "artifactSha256": "0ff2df2364ae57fe4f76a4a44fc2d8a8e51699d9f2481ebbb6d1df2afe706cfb",
+      "bytes": 3052580
+    }
+  ]
+}

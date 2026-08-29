@@ -11,20 +11,18 @@
 export async function writeClipboard(text: string): Promise<boolean> {
   // lib.dom types clipboard non-optional, but insecure contexts omit it —
   // that runtime gap is exactly what this guard detects.
-  /* oxlint-disable-next-line typescript/no-unnecessary-condition */
   if (navigator.clipboard?.writeText) {
     try {
       await navigator.clipboard.writeText(text)
       return true
     } catch {
-      // Denied permissions / iframe policy — do not claim success.
-      return false
+      // Desktop webviews can expose the API while denying the write. Continue
+      // to the user-gesture fallback before reporting failure.
     }
   }
   // jsdom and older hosts: best-effort execCommand path when present.
   // execCommand('copy') is the only clipboard fallback where the async API
   // is missing; deprecated but deliberately retained.
-  /* oxlint-disable typescript/no-deprecated */
   const exec = typeof document.execCommand === 'function'
     ? document.execCommand.bind(document)
     : undefined
@@ -43,5 +41,4 @@ export async function writeClipboard(text: string): Promise<boolean> {
   } finally {
     el.remove()
   }
-  /* oxlint-enable typescript/no-deprecated */
 }

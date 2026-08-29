@@ -12,6 +12,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-theme/client'
 import type { PanelActions } from './service.ts'
 import { AppFrame } from './AppFrame.tsx'
 import { createLayoutStore } from './stores.ts'
+import type { PanePolicy } from './stores.ts'
 import { LayoutController } from './service.ts'
 import { ThemePresenter } from './theme-presenter.ts'
 
@@ -22,6 +23,8 @@ import { ThemePresenter } from './theme-presenter.ts'
 // against; the frame components and the store factory are package-internal.
 export { LayoutController } from './service.ts'
 export type { ILayout } from './service.ts'
+export { UNIVERSAL_LAYOUT_POLICY } from './stores.ts'
+export type { LayoutPolicy, PaneMode, PanePolicy } from './stores.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -70,6 +73,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
      * `session` scope, and `ctx.layout` owns whether the column is open.
      */
     'details': { kind: 'single'; scope: 'session'; owner: DetailsOwnerProps }
+    /** Optional application-defined lower surface for simulator/control/terminal chrome. */
+    'shell.bottom': { kind: 'list'; scope: 'root'; owner: BottomOwnerProps }
     /**
      * Frame-wide floating layer, above every column and outside their scroll
      * containers. Deliberately generic and unowned by any feature: a badge, a
@@ -104,6 +109,13 @@ export interface ConvOwnerProps {}
 /** Details owner share: empty — sessionId arrives as a framework-standard prop. */
 export interface DetailsOwnerProps {}
 
+/** Bottom-surface owner share: application entries decide what to render. */
+export interface BottomOwnerProps {
+  collapsed: boolean
+  height: number
+  policy: PanePolicy
+}
+
 /** Required services (cordis fiber inject — the loader passes all module exports as an object plugin). */
 export const inject = ['slots', 'theme']
 
@@ -123,6 +135,7 @@ export function apply(ctx: ClientContext): void {
         'sidebar': { kind: 'single', scope: 'root' },
         'conversation': { kind: 'single', scope: 'session-maybe' },
         'details': { kind: 'single', scope: 'session' },
+        'shell.bottom': { kind: 'list', scope: 'root' },
         'shell.overlay': { kind: 'list', scope: 'root' },
       },
       // Exclusive store: the factory itself — the framework instantiates per

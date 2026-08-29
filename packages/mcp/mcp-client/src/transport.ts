@@ -22,6 +22,25 @@ function buildChildEnv(extra: Record<string, string>): Record<string, string> {
   return { ...scrubbedParentEnv(), ...extra }
 }
 
+/** Resolve secret-bearing HTTP headers without placing their values in config files. */
+function buildHttpHeaders(
+  literal: Record<string, string>,
+  fromEnv: Record<string, string>,
+): Record<string, string> {
+  const headers = { ...literal }
+  for (const [header, environmentName] of Object.entries(fromEnv)) {
+    if (Object.hasOwn(headers, header)) {
+      throw new Error(`mcp-client: HTTP header ${JSON.stringify(header)} is configured twice`)
+    }
+    const value = process.env[environmentName]
+    if (value === undefined || value.trim() === '') {
+      throw new Error(`mcp-client: environment variable ${JSON.stringify(environmentName)} is required for HTTP header ${JSON.stringify(header)}`)
+    }
+    headers[header] = value
+  }
+  return headers
+}
+
 /**
  * Create an MCP transport from the resolved plugin config.
  *
@@ -44,7 +63,7 @@ export function createTransport(config: Config): Transport {
       // object, so the cast records only that widening.
       return new StreamableHTTPClientTransport(
         new URL(config.url),
-        { requestInit: { headers: config.headers } },
+        { requestInit: { headers: buildHttpHeaders(config.headers, config.headersFromEnv) } },
       ) as Transport
   }
 }

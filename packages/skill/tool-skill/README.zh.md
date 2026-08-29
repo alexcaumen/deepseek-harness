@@ -14,7 +14,7 @@
 
 如果最初没有模型可调用 skill，则省略目录；如果该 agent（智能体）的工具视图排除了随附的 `skill` 工具，或解析出同名的作用域内遮蔽项，也会省略目录。身份比对针对本插件所注册的那个定义，而非按自身名字回查，因此本插件既可全局挂载，也可挂在单个 agent 的组装内——在后者中 `register()` 只注册到该 agent 的层中。可见性变更参与 digest 计算，使提示词指引、模型可见 schema 和可执行分派保持对齐。
 
-`catalogDescriptionMaxLength` 控制规范化后的目录描述，渲染时会对其执行 XML 转义。其默认值是 `500`，且必须是不小于 `3` 的整数，以便为截断省略号保留空间。[skill 目录热刷新 Agent Note](../../../.agents/notes/implemented/feature/2026-07-27-skill-catalog-hot-refresh.zh.md) 负责定义持久初始目录和替换目录的生命周期。
+`catalogDescriptionMaxLength` 控制规范化后的目录描述，渲染时会对其执行 XML 转义。其默认值是 `500`，且必须是不小于 `3` 的整数，以便为截断省略号保留空间。`catalogMaxEntries` 会限制持久目录中的条目数，但不会从提供方移除 skill；`catalogPinnedNames` 会把选中的 skill 排在其余已排序条目之前；`searchResultLimit` 会限制单次 `skill_search` 的结果数。这三个数值限制都必须是正整数，固定名称必须符合规范的 skill 名称语法。目录受到限制时，其持久来源会记录 `totalAvailable`；该计数参与 digest，因此总体数量变化仍会追加显式替换。[skill 目录热刷新 Agent Note](../../../.agents/notes/implemented/feature/2026-07-27-skill-catalog-hot-refresh.zh.md) 负责定义持久初始目录和替换目录的生命周期。
 
 ## 工具：`skill`
 
@@ -30,13 +30,21 @@
 
 工具执行不会添加合成上下文消息。新加载的结果已作为工具结果记录，并在下一个模型步骤可用，无需重复正文。只有目录投影会添加替换摘要。
 
+## 工具：`skill_search`
+
+| 参数 | 类型 | 说明 |
+|---|---|---|
+| `query` | string（必填） | 非空关键词；对所有模型可调用 skill 的名称和描述执行不区分大小写的匹配。 |
+
+即使持久目录受到限制，`skill_search` 仍会查询完整的、受 cwd 和 agent 作用域约束的提供方视图。精确名称最优先，其后依次是名称前缀、名称子串、全部查询词匹配和描述子串；同分项按 skill 名称排序。结果会报告规范化查询、总匹配数，以及最多 `searchResultLimit` 条 `{ name, description }` 记录。它不会加载 skill 正文或暴露提供方路径。模型随后使用返回的精确名称调用 `skill`。
+
 ## 模型体验
 
 ### 会话目录
 
 #### 模型看到的内容
 
-如果存在模型可调用 skill，且可见的正是这个 `skill` 工具，agent 会在第一个请求之前收到下方目录模板，其中包含每个已排序 skill 的一条随数据而定的条目。该目录是一条持久的用户角色消息。后续成员关系、描述或可见性的变化会使用同一个 `<available_skills>` 信封追加完整替换；删除所有 skill 时，会追加一个空信封，并明确指示不得使用旧名称。模板的结尾一句是防止双重加载的规则：用户显式的手势边界（下文的 pre-step 监听器）会把同一份 `renderSkillContent` 输出（共享自 `@deepseek-ai/dsh-skill`）内联注入，目录则告诉模型遵循该块，而不是再经工具重新加载该 skill；替换目录模板的两个分支——包括清空后的目录——都携带同一句话。
+如果存在模型可调用 skill，且可见的正是这个 `skill` 工具，agent 会在第一个请求之前收到下方目录模板，其中包含配置所选的有限条目。若还有其他 skill，消息会给出已渲染数量和总数，并指示模型调用 `skill_search`。该目录是一条持久的用户角色消息。后续成员关系、描述、数量或可见性的变化会使用同一个 `<available_skills>` 信封追加完整替换；删除所有 skill 时，会追加一个空信封，并明确指示不得使用旧名称。模板的结尾一句是防止双重加载的规则：用户显式的手势边界（下文的 pre-step 监听器）会把同一份 `renderSkillContent` 输出（共享自 `@deepseek-ai/dsh-skill`）内联注入，目录则告诉模型遵循该块，而不是再经工具重新加载该 skill；替换目录模板的两个分支——包括清空后的目录——都携带同一句话。
 
 ##### Skill 目录模板
 
@@ -48,6 +56,9 @@ A skill is a reusable set of task-specific instructions. The following skills ar
 - `<name>`: <normalized-and-capped-description>
 </available_skills>
 
+This bounded catalog shows <rendered> of <total> available skills.
+Use `skill_search` to find every other indexed skill, then load the exact returned name with `skill`.
+
 If the user names a skill, or the task clearly matches a skill's description, call the `skill` tool with the exact skill name before taking task actions. Load all applicable skills, then follow their full instructions. This catalog contains summaries only; do not infer or follow a skill's instructions until it has been loaded.
 A user may also invoke a skill directly; its <skill_content> block then appears in this conversation. Follow it, and do not call the `skill` tool again for that skill.
 </system-reminder>
@@ -55,7 +66,7 @@ A user may also invoke a skill directly; its <skill_content> block then appears 
 
 #### Token 影响
 
-重复输入成本随 skill 数量和 `catalogDescriptionMaxLength` 增长；当列表为空或工具被隐藏或遮蔽时，不会发送初始目录 token。每次实际目录变更都会添加一条保留的完整替换消息。
+重复输入成本随 `catalogMaxEntries` 和 `catalogDescriptionMaxLength` 增长，而不随完整的可搜索总体增长；当列表为空或工具被隐藏或遮蔽时，不会发送初始目录 token。每次实际目录变更都会添加一条保留的完整替换消息。
 
 #### KV Cache 影响
 
@@ -65,7 +76,7 @@ A user may also invoke a skill directly; its <skill_content> block then appears 
 
 #### 模型看到的内容
 
-模型会看到生成的 [`skill` schema](../../../docs/tool-catalog.zh.md#deepseek-aidsh-tool-skill)。
+模型会看到生成的 [`skill` 和 `skill_search` schema](../../../docs/tool-catalog.zh.md#deepseek-aidsh-tool-skill)。
 
 #### Token 影响
 
@@ -162,6 +173,7 @@ Load referenced resources only as needed.
 ## 已知限制与暂缓事项
 
 - **目录省略 `whenToUse`、来源和提供方元数据**：路由只基于名称和有长度上限的描述；`whenToUse` 仍是提供方元数据，加载后的包装层也不渲染它。
+- **搜索是词法匹配**：除当前 skill 名称和描述中的查询词匹配外，它不会执行 embedding、重排或同义词推断。
 - **已加载指令正文没有大小上限**：提供方可返回足以占用大量下一步上下文的 skill；只有目录描述会被截断。
 - **资源是指引，而非附件**：工具报告基础目录/URL/不透明提示，但既不列举也不为模型获取引用文件。
 - **加载是一次性文本**：远程提供方缓慢或 skill 正文很大时，不提供部分内容、流式输出或缓存内容句柄。

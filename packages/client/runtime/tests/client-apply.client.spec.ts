@@ -94,6 +94,41 @@ describe('runtime client apply', () => {
     bench.sinks?.onConnected?.({ version: '0', cwd: '/f', attachedSessions: 0, home: '/h', canOpenPath: true })
   })
 
+  it('routes unattended turn completion to the desktop notification bridge once', async () => {
+    const notices: unknown[] = []
+    vi.stubGlobal('__GIANA_DESKTOP__', {
+      notify: (candidate: unknown) => { notices.push(candidate) },
+    })
+    vi.stubGlobal('document', { hidden: true, visibilityState: 'hidden' })
+
+    try {
+      const bench = await mount()
+      const envelope = {
+        rpcId: 'notice-1',
+        payload: {
+          type: 'session/event',
+          sessionId: 's-notification-hook',
+          event: {
+            type: 'turn/end',
+            seq: 10,
+            time: 1,
+            data: { reason: { kind: 'completed' } },
+          },
+        },
+      }
+
+      bench.sinks?.onMuxEnvelope?.(envelope as never)
+      bench.sinks?.onMuxEnvelope?.(envelope as never)
+      await flushMicrotasks()
+
+      expect(notices).toHaveLength(1)
+      expect((notices[0] as { kind: string }).kind).toBe('completed')
+      await bench.ctx.fiber.dispose()
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('selects the recent Workspace once when the first baselines have no current session', async () => {
     const bench = await mount()
     bench.api.onWorkspaceList = () => Promise.resolve(ok({

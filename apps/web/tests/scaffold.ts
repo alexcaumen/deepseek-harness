@@ -108,6 +108,18 @@ const INSTALL_ANCHOR = join(REPO_ROOT, 'apps/cli/package.json')
 /** The deployment's own agent-preset root, shipped beside the app's config. */
 const SHIPPED_PRESET_DIR = join(REPO_ROOT, 'apps/cli/config/agent-presets')
 
+// Keep the shipped default for ordinary runs, but let an isolated candidate
+// test avoid a live sibling runtime that owns the default loopback port.
+const TOOL_RUNTIME_PORT = (() => {
+  const value = process.env.DSH_TEST_TOOL_RUNTIME_PORT
+  if (value === undefined || value === '') return 18643
+  const port = Number(value)
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`DSH_TEST_TOOL_RUNTIME_PORT must be an integer port; got ${JSON.stringify(value)}`)
+  }
+  return port
+})()
+
 // Replay publishes the provider catalog the gateway routes to (providers
 // mode, never catch-all: with llm-deepseek disabled no adapter exists, so a
 // catch-all would leave resolveModelInfo unroutable and compaction-basic's
@@ -449,6 +461,7 @@ export async function launchWebScaffold(options: LaunchOptions = {}): Promise<We
     // workspace, keeping the composition untouched.
     { id: 'agent-instructions', disabled: true },
     { id: 'session-title-llm', disabled: true },
+    { id: 'mcp-tool-runtime', config: { host: '127.0.0.1', port: TOOL_RUNTIME_PORT, path: '/mcp/tool-runtime' } },
     // Fixture sessions must never leave the process: the shipped row defaults
     // to the production OTLP endpoint (or whatever DSH_TELEMETRY_OTLP_URL
     // names in the ambient environment). A scenario that pins a real backend
@@ -766,13 +779,16 @@ export function fixtureUserPrompts(fixtureText: string): string[] {
  * @returns the realized fixture text.
  */
 export function realizeSeedFixture(scaffold: WebScaffold, fixtureText: string, id: string): string {
+  // Fixture paths live inside JSON strings; preserve Windows backslashes while
+  // still allowing the recorded cwd to be rewritten to this scaffold.
+  const escapedCwd = JSON.stringify(scaffold.workspaceCwd).slice(1, -1)
   const realized = fixtureText
     .split('{{sessionId}}').join(id)
-    .split('{{cwd}}').join(scaffold.workspaceCwd)
+    .split('{{cwd}}').join(escapedCwd)
   const fixtureCwd = (JSON.parse(realized.split('\n', 1)[0]!) as { cwd?: string }).cwd
   return fixtureCwd === undefined
     ? realized
-    : realized.split(fixtureCwd).join(scaffold.workspaceCwd)
+    : realized.split(JSON.stringify(fixtureCwd).slice(1, -1)).join(escapedCwd)
 }
 
 /**
@@ -895,9 +911,13 @@ async function persistSeedSession(
 function normalizeAria(snapshot: string, workspaceCwd: string): string {
   // The session heading renders the workspace's basename, not the full
   // path, so both spellings must collapse to the token.
-  const base = workspaceCwd.split('/').pop()!
+  const base = workspaceCwd.split(/[\\/]/).pop()!
+  // Playwright's aria snapshot escapes Windows separators inside quoted
+  // accessible names, while the event payload keeps the native path.
+  const escapedWorkspaceCwd = JSON.stringify(workspaceCwd).slice(1, -1)
   return snapshot
     .split(workspaceCwd).join('{{cwd}}')
+    .split(escapedWorkspaceCwd).join('{{cwd}}')
     .split(base).join('{{workspace}}')
     .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '{{uuid}}')
     // The optional space in `\d+m ?\d+s` covers both minute spellings: the

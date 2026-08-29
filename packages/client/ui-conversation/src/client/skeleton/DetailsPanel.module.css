@@ -32,6 +32,13 @@
   white-space: nowrap;
 }
 
+.headerActions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
 .close {
   display: grid;
   flex: none;

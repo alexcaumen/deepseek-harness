@@ -23,7 +23,10 @@ import { InputBar } from '../src/client/skeleton/InputBar.tsx'
 import type { InputBarProps } from '../src/client/skeleton/InputBar.tsx'
 import { zh } from '../src/client/locales.ts'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
 
 // jsdom implements no Range geometry at all — `Range.prototype.getBoundingClientRect`
 // is absent — and the composer measures the caret with one when it restores the
@@ -93,6 +96,12 @@ interface BenchOptions {
   commandMenuOpen?: boolean
   busyEnter?: 'queue' | 'steer'
   toggleCommandMenu?: (selection: { start: number; end: number }) => void
+  sink?: (
+    text: string,
+    imageIds: readonly DraftAttachmentId[],
+    mode: 'queue' | 'steer',
+    signal: AbortSignal,
+  ) => Promise<SubmitOutcome>
 }
 
 /** One pending queue row (the runtime snapshot shape, as the dock tests build it). */
@@ -110,7 +119,7 @@ function bench(over?: BenchOptions) {
     imageIds: readonly DraftAttachmentId[],
     mode: 'queue' | 'steer',
     signal: AbortSignal,
-  ) => Promise<SubmitOutcome>>(() => Promise.resolve({ kind: 'success' }))
+  ) => Promise<SubmitOutcome>>(over?.sink ?? (() => Promise.resolve({ kind: 'success' })))
   const lex = over?.lexicon
   const session = createSnapshotStore<ConversationSnapshot>(snapshotOf({
     running: over?.running ?? false,
@@ -202,10 +211,7 @@ function bench(over?: BenchOptions) {
   }
   const view = render(<InputBar {...props} />)
   const textarea = view.container.querySelector('textarea')!
-  const primaryStops = over?.running === true && over.subagent === undefined
-  const button = view.container.querySelector<HTMLButtonElement>(
-    `button[aria-label="${primaryStops ? '停止生成' : '发送消息'}"]`,
-  )!
+  const button = view.container.querySelector<HTMLButtonElement>('button[data-primary-action]')!
   const interruptButton = view.container.querySelector<HTMLButtonElement>('button[aria-label="停止生成"]')
   return {
     view, textarea, button, interruptButton, props, sink, shell, wiring: shell, session, stop, removeImage, slotCalls,
@@ -413,6 +419,356 @@ describe('image draft rail', () => {
   })
 })
 
+describe('automatic-language dictation', () => {
+  function deferred<T>() {
+    let resolve!: (value: T) => void
+    let reject!: (reason?: unknown) => void
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res
+      reject = rej
+    })
+    return { promise, resolve, reject }
+  }
+
+  function installMediaDevices(getUserMedia: () => Promise<MediaStream>): void {
+    const originalMediaDevices = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices')
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia },
+    })
+    onTestFinished(() => {
+      if (originalMediaDevices === undefined) delete (navigator as { mediaDevices?: MediaDevices }).mediaDevices
+      else Object.defineProperty(navigator, 'mediaDevices', originalMediaDevices)
+    })
+  }
+
+  class FakeMediaRecorder {
+    static isTypeSupported = vi.fn(() => true)
+    readonly mimeType = 'audio/webm;codecs=opus'
+    state: RecordingState = 'inactive'
+    ondataavailable: ((event: BlobEvent) => void) | null = null
+    onerror: ((event: Event) => void) | null = null
+    onstop: (() => void) | null = null
+    constructor(readonly stream: MediaStream, readonly options?: MediaRecorderOptions) {}
+    start(): void { this.state = 'recording' }
+    stop(): void {
+      this.state = 'inactive'
+      this.ondataavailable?.({ data: new Blob(['audio']) } as BlobEvent)
+      this.onstop?.()
+    }
+  }
+
+  function installAnimationFrames() {
+    let nextId = 0
+    const callbacks = new Map<number, FrameRequestCallback>()
+    const request = vi.fn((callback: FrameRequestCallback) => {
+      nextId += 1
+      callbacks.set(nextId, callback)
+      return nextId
+    })
+    const cancel = vi.fn((id: number) => { callbacks.delete(id) })
+    vi.stubGlobal('requestAnimationFrame', request)
+    vi.stubGlobal('cancelAnimationFrame', cancel)
+    return {
+      cancel,
+      step(timestamp: number): void {
+        const pending = [...callbacks.values()]
+        callbacks.clear()
+        pending.forEach((callback) => { callback(timestamp) })
+      },
+    }
+  }
+
+  function installAudioContext(fill: (values: Uint8Array) => void) {
+    const source = {
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    }
+    const analyser = {
+      fftSize: 32,
+      smoothingTimeConstant: 0,
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+      getByteTimeDomainData: vi.fn((values: Uint8Array) => { fill(values) }),
+    }
+    const contexts: Array<{
+      state: AudioContextState
+      close: ReturnType<typeof vi.fn>
+      resume: ReturnType<typeof vi.fn>
+    }> = []
+    class FakeAudioContext {
+      state: AudioContextState = 'running'
+      readonly createMediaStreamSource = vi.fn(() => source)
+      readonly createAnalyser = vi.fn(() => analyser)
+      readonly close = vi.fn(async () => { this.state = 'closed' })
+      readonly resume = vi.fn(async () => {})
+      constructor() { contexts.push(this) }
+    }
+    vi.stubGlobal('AudioContext', FakeAudioContext)
+    return { analyser, contexts, source }
+  }
+
+  it('moves from permission through review and the existing composer send transaction', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-23T00:00:00Z'))
+      const permission = deferred<MediaStream>()
+      const transcription = deferred<Response>()
+      const submission = deferred<SubmitOutcome>()
+      const stopTrack = vi.fn()
+      const getUserMedia = vi.fn(() => permission.promise)
+      installMediaDevices(getUserMedia)
+      vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+      vi.stubGlobal('__GIANA_WINDOWS_RUNTIME__', {
+        routes: { 'speech.transcribe.id-ID': 'http://127.0.0.1:18444/speech/transcribe' },
+      })
+      const fetchMock = vi.fn<(input: URL | RequestInfo, init?: RequestInit) => Promise<Response>>(
+        () => transcription.promise,
+      )
+      vi.stubGlobal('fetch', fetchMock)
+
+      const result = bench({ draft: 'Halo', sink: () => submission.promise })
+      const microphone = result.view.getByRole('button', { name: '开始自动语言听写' })
+      expect(microphone.getAttribute('aria-keyshortcuts')).toBe('Control+Shift+M Meta+Shift+M')
+      expect(microphone.closest('[data-composer-trailing]')).not.toBeNull()
+      fireEvent.keyDown(result.textarea, { key: 'M', ctrlKey: true, shiftKey: true })
+      expect(result.view.getByRole('status').getAttribute('data-dictation-state')).toBe('requesting-permission')
+      expect(getUserMedia).toHaveBeenCalledWith({ audio: true })
+
+      await act(async () => {
+        permission.resolve({ getTracks: () => [{ stop: stopTrack }] } as unknown as MediaStream)
+        await permission.promise
+      })
+      expect(microphone.getAttribute('data-dictation-state')).toBe('recording')
+      expect(microphone.getAttribute('aria-pressed')).toBe('true')
+      expect(result.view.container.querySelectorAll('[data-waveform-bar]')).toHaveLength(72)
+      act(() => { vi.advanceTimersByTime(2_100) })
+      expect(result.view.getByRole('status').textContent).toContain('00:02')
+
+      fireEvent.click(microphone)
+      expect(microphone.getAttribute('data-dictation-state')).toBe('transcribing')
+      expect(fetchMock).toHaveBeenCalledOnce()
+      expect(fetchMock.mock.calls[0]?.[0]).toBe('http://127.0.0.1:18444/speech/transcribe')
+      const request = fetchMock.mock.calls[0]?.[1]
+      expect(request?.method).toBe('POST')
+      expect(request?.signal).toBeInstanceOf(AbortSignal)
+      const body = request?.body
+      expect(body).toBeInstanceOf(FormData)
+      if (!(body instanceof FormData)) throw new Error('dictation request body is not FormData')
+      expect(body.get('language')).toBe('auto')
+
+      await act(async () => {
+        transcription.resolve({
+          ok: true,
+          json: () => Promise.resolve({ text: 'selamat pagi' }),
+        } as Response)
+        await transcription.promise
+      })
+      expect(result.shell.snapshot.draft).toBe('Halo selamat pagi')
+      expect(result.view.getByRole('status').getAttribute('data-dictation-state')).toBe('review')
+      expect(stopTrack).toHaveBeenCalled()
+
+      fireEvent.click(result.view.getByRole('button', { name: '发送消息' }))
+      expect(result.sink).toHaveBeenCalledWith('Halo selamat pagi', [], 'queue', expect.any(AbortSignal))
+      expect(result.view.getByRole('status').getAttribute('data-dictation-state')).toBe('sending')
+      await act(async () => {
+        submission.resolve({ kind: 'success' })
+        await submission.promise
+      })
+      expect(result.shell.snapshot.draft).toBe('')
+      expect(result.view.queryByRole('status')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('lets the arrow stop, transcribe, and steer the active turn in one gesture', async () => {
+    const stopTrack = vi.fn()
+    installMediaDevices(() => Promise.resolve({
+      getTracks: () => [{ stop: stopTrack }],
+    } as unknown as MediaStream))
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({ text: 'campuran Indonesia and English' }),
+    } as Response)))
+
+    const result = bench({ running: true, busyEnter: 'steer' })
+    fireEvent.click(result.view.getByRole('button', { name: '开始自动语言听写' }))
+    await vi.waitFor(() => {
+      expect(result.view.getByRole('button', { name: '停止、转写并发送' })).toBeTruthy()
+    })
+    const primary = result.view.getByRole('button', { name: '停止、转写并发送' }) as HTMLButtonElement
+    expect(primary.disabled).toBe(false)
+    fireEvent.click(primary)
+
+    await vi.waitFor(() => {
+      expect(result.sink).toHaveBeenCalledWith(
+        'campuran Indonesia and English', [], 'steer', expect.any(AbortSignal),
+      )
+    })
+    expect(stopTrack).toHaveBeenCalledOnce()
+  })
+
+  it('keeps failed audio for a focused transcription retry', async () => {
+    const stopTrack = vi.fn()
+    const getUserMedia = vi.fn(() => Promise.resolve({
+      getTracks: () => [{ stop: stopTrack }],
+    } as unknown as MediaStream))
+    installMediaDevices(getUserMedia)
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ text: 'coba lagi' }),
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = bench()
+    const microphone = result.view.getByRole('button', { name: '开始自动语言听写' })
+    fireEvent.click(microphone)
+    await vi.waitFor(() => { expect(microphone.getAttribute('aria-pressed')).toBe('true') })
+    fireEvent.click(microphone)
+    await vi.waitFor(() => { expect(result.view.getByRole('alert')).toBeTruthy() })
+    expect(result.view.getByRole('alert').getAttribute('data-dictation-state')).toBe('error')
+    fireEvent.click(result.view.getByRole('button', { name: '重试' }))
+    await vi.waitFor(() => { expect(result.shell.snapshot.draft).toBe('coba lagi') })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(getUserMedia).toHaveBeenCalledOnce()
+    expect(result.view.getByRole('status').getAttribute('data-dictation-state')).toBe('review')
+  })
+
+  it('surfaces microphone denial as a retryable permission state', async () => {
+    const stream = { getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream
+    const getUserMedia = vi.fn()
+      .mockRejectedValueOnce(new DOMException('denied', 'NotAllowedError'))
+      .mockResolvedValueOnce(stream)
+    installMediaDevices(getUserMedia)
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+
+    const result = bench()
+    fireEvent.click(result.view.getByRole('button', { name: '开始自动语言听写' }))
+    await vi.waitFor(() => { expect(result.view.getByRole('alert')).toBeTruthy() })
+    fireEvent.click(result.view.getByRole('button', { name: '重试' }))
+    await vi.waitFor(() => {
+      expect(result.view.getByRole('button', { name: '停止并转写' }).getAttribute('aria-pressed')).toBe('true')
+    })
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
+  })
+
+  it('samples microphone amplitude into a bounded left-moving waveform and releases it on stop', async () => {
+    const frames = installAnimationFrames()
+    let reads = 0
+    const audio = installAudioContext((values) => {
+      values.fill(reads === 0 ? 255 : 128)
+      reads += 1
+    })
+    const stopTrack = vi.fn()
+    installMediaDevices(() => Promise.resolve({
+      getTracks: () => [{ stop: stopTrack }],
+    } as unknown as MediaStream))
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => {})))
+
+    const result = bench()
+    const microphone = result.view.getByRole('button', { name: '开始自动语言听写' })
+    fireEvent.click(microphone)
+    await vi.waitFor(() => { expect(microphone.getAttribute('aria-pressed')).toBe('true') })
+    const waveform = result.view.container.querySelector<HTMLElement>('[data-dictation-waveform]')!
+    const bars = [...waveform.querySelectorAll<HTMLElement>('[data-waveform-bar]')]
+
+    act(() => { frames.step(16) })
+    expect(waveform.dataset.waveformSource).toBe('microphone')
+    expect(waveform.dataset.waveformMotion).toBe('live')
+    expect(audio.analyser.getByteTimeDomainData).toHaveBeenCalledOnce()
+    expect(bars).toHaveLength(72)
+    expect(bars[0]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.080')
+    const newestSample = bars[71]?.style.getPropertyValue('--dictation-amplitude')
+    expect(newestSample).toBe('1.000')
+
+    act(() => { frames.step(32) })
+    expect(bars[70]?.style.getPropertyValue('--dictation-amplitude')).toBe(newestSample)
+    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.080')
+
+    fireEvent.click(microphone)
+    expect(frames.cancel).toHaveBeenCalled()
+    expect(audio.source.disconnect).toHaveBeenCalledOnce()
+    expect(audio.analyser.disconnect).toHaveBeenCalledOnce()
+    expect(audio.contexts[0]?.close).toHaveBeenCalledOnce()
+    expect(stopTrack).toHaveBeenCalledOnce()
+  })
+
+  it('uses the same deterministic waveform fallback after cancellation and restart', async () => {
+    const frames = installAnimationFrames()
+    vi.stubGlobal('AudioContext', undefined)
+    const stopTracks = [vi.fn(), vi.fn()]
+    let streamIndex = 0
+    installMediaDevices(() => Promise.resolve({
+      getTracks: () => [{ stop: stopTracks[streamIndex++] }],
+    } as unknown as MediaStream))
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+
+    const result = bench()
+    let microphone = result.view.getByRole('button', { name: '开始自动语言听写' })
+    fireEvent.click(microphone)
+    await vi.waitFor(() => { expect(microphone.getAttribute('aria-pressed')).toBe('true') })
+    let waveform = result.view.container.querySelector<HTMLElement>('[data-dictation-waveform]')!
+    act(() => { frames.step(16) })
+    const firstFallback = waveform.querySelectorAll<HTMLElement>('[data-waveform-bar]')[71]
+      ?.style.getPropertyValue('--dictation-amplitude')
+    expect(waveform.dataset.waveformSource).toBe('fallback')
+
+    fireEvent.keyDown(result.textarea, { key: 'Escape' })
+    expect(stopTracks[0]).toHaveBeenCalledOnce()
+    expect(result.view.queryByRole('status')).toBeNull()
+
+    microphone = result.view.getByRole('button', { name: '开始自动语言听写' })
+    fireEvent.click(microphone)
+    await vi.waitFor(() => { expect(microphone.getAttribute('aria-pressed')).toBe('true') })
+    waveform = result.view.container.querySelector<HTMLElement>('[data-dictation-waveform]')!
+    act(() => { frames.step(16) })
+    expect(waveform.querySelectorAll<HTMLElement>('[data-waveform-bar]')[71]
+      ?.style.getPropertyValue('--dictation-amplitude')).toBe(firstFallback)
+  })
+
+  it('reduces waveform motion and releases analyser, frame, and stream on unmount', async () => {
+    const frames = installAnimationFrames()
+    let reads = 0
+    const audio = installAudioContext((values) => {
+      values.fill(reads === 0 ? 255 : 128)
+      reads += 1
+    })
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })))
+    const stopTrack = vi.fn()
+    installMediaDevices(() => Promise.resolve({
+      getTracks: () => [{ stop: stopTrack }],
+    } as unknown as MediaStream))
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+
+    const result = bench()
+    const microphone = result.view.getByRole('button', { name: '开始自动语言听写' })
+    fireEvent.click(microphone)
+    await vi.waitFor(() => { expect(microphone.getAttribute('aria-pressed')).toBe('true') })
+    const waveform = result.view.container.querySelector<HTMLElement>('[data-dictation-waveform]')!
+    const bars = [...waveform.querySelectorAll<HTMLElement>('[data-waveform-bar]')]
+
+    act(() => { frames.step(16) })
+    expect(waveform.dataset.waveformMotion).toBe('reduced')
+    expect(new Set(bars.map(bar => bar.style.getPropertyValue('--dictation-amplitude')))).toEqual(new Set(['1.000']))
+    act(() => { frames.step(100) })
+    expect(new Set(bars.map(bar => bar.style.getPropertyValue('--dictation-amplitude')))).toEqual(new Set(['1.000']))
+    act(() => { frames.step(300) })
+    expect(new Set(bars.map(bar => bar.style.getPropertyValue('--dictation-amplitude')))).toEqual(new Set(['0.080']))
+
+    result.view.unmount()
+    expect(frames.cancel).toHaveBeenCalled()
+    expect(audio.source.disconnect).toHaveBeenCalledOnce()
+    expect(audio.contexts[0]?.close).toHaveBeenCalledOnce()
+    expect(stopTrack).toHaveBeenCalledOnce()
+  })
+})
+
 describe('Enter semantics', () => {
   it('advertises the empty-draft whole-queue steering gesture when it is available', () => {
     const { textarea } = bench({ running: true, queue: [row('q-1')], steerQueue: vi.fn() })
@@ -612,15 +968,39 @@ describe('Enter semantics', () => {
 })
 
 describe('running and lock semantics', () => {
-  it('running keeps the input free (typing + Enter queue) while the primary turns stop', () => {
-    const { textarea, button, stop, sink } = bench({ running: true, draft: '排队消息' })
+  it('running keeps Send available and applies the busy-state Queue policy on click', () => {
+    const { textarea, button, interruptButton, stop, sink } = bench({ running: true, draft: '排队消息' })
     expect(textarea.disabled).toBe(false)
     fireEvent.change(textarea, { target: { value: '排队消息2' } })
-    fireEvent.keyDown(textarea, { key: 'Enter' })
-    expect(sink).toHaveBeenCalledWith('排队消息2', [], 'queue', expect.any(AbortSignal))
-    expect(button.getAttribute('aria-label')).toBe('停止生成')
+    expect(button.getAttribute('aria-label')).toBe('排队发送')
+    expect(interruptButton).not.toBeNull()
     fireEvent.click(button)
+    expect(sink).toHaveBeenCalledWith('排队消息2', [], 'queue', expect.any(AbortSignal))
+    expect(stop).not.toHaveBeenCalled()
+  })
+
+  it('running Send applies the busy-state Steer policy on click', () => {
+    const { button, sink, stop } = bench({ running: true, busyEnter: 'steer', draft: '直接插话' })
+    expect(button.getAttribute('aria-label')).toBe('插话发送')
+    expect(button.getAttribute('data-submit-mode')).toBe('steer')
+    fireEvent.click(button)
+    expect(sink).toHaveBeenCalledWith('直接插话', [], 'steer', expect.any(AbortSignal))
+    expect(stop).not.toHaveBeenCalled()
+  })
+
+  it('running with an empty draft disables Send but keeps Stop available', () => {
+    const { button, interruptButton } = bench({ running: true })
+    expect(button.disabled).toBe(true)
+    expect(interruptButton).not.toBeNull()
+    expect(interruptButton?.disabled).toBe(false)
+  })
+
+  it('running exposes a separate Stop that does not submit or replace the draft', () => {
+    const { interruptButton, shell, sink, stop } = bench({ running: true, draft: 'tetap antre' })
+    fireEvent.click(interruptButton!)
     expect(stop).toHaveBeenCalledTimes(1)
+    expect(sink).not.toHaveBeenCalled()
+    expect(shell.snapshot.draft).toBe('tetap antre')
   })
 
   it('running plain Enter follows the busy-state Steer preference', () => {
@@ -652,7 +1032,7 @@ describe('running and lock semantics', () => {
         parentAvailable: true,
       },
     })
-    expect(button.getAttribute('aria-label')).toBe('发送消息')
+    expect(button.getAttribute('aria-label')).toBe('排队发送')
     expect(interruptButton).not.toBeNull()
     expect(textarea.disabled).toBe(false)
     fireEvent.click(button)
@@ -677,7 +1057,7 @@ describe('running and lock semantics', () => {
     expect(textarea.disabled).toBe(true)
     expect(textarea.placeholder).toBe('父会话已离线，无法继续发送；仍可停止当前运行')
     expect((view.getByLabelText('命令') as HTMLButtonElement).disabled).toBe(true)
-    expect(button.getAttribute('aria-label')).toBe('发送消息')
+    expect(button.getAttribute('aria-label')).toBe('排队发送')
     expect(button.disabled).toBe(true)
     expect(interruptButton?.disabled).toBe(false)
     fireEvent.click(interruptButton!)
@@ -697,7 +1077,7 @@ describe('running and lock semantics', () => {
         parentAvailable: true,
       },
     })
-    expect(button.getAttribute('aria-label')).toBe('发送消息')
+    expect(button.getAttribute('aria-label')).toBe('排队发送')
     expect(interruptButton).toBeNull()
     expect(stop).not.toHaveBeenCalled()
   })

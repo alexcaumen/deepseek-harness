@@ -6,11 +6,11 @@
  * region-slot content) ride the owner props. Session facts
  * (running/removed/promptError) are self-selected via useSession. */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react'
 import type { ChangeEvent, KeyboardEvent, MouseEvent, ReactNode } from 'react'
 import clsx from 'clsx'
 import {
-  IconPlusOutline16, IconWarningOutline16, Toast, Tooltip,
+  IconMicrophoneOutline16, IconPlusOutline16, IconWarningOutline16, Toast, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 // Type-only: the `plan` projection key merge (the TodoDock posture — the
 // composer reads a host-computed value; the domain owns the key).
@@ -28,12 +28,51 @@ import type { EditRange } from '../input/contract.ts'
 import { attachmentErrorText, imageSizeText } from '../image-labels.ts'
 import { ReferenceIcon } from '../reference/ReferenceIcon.tsx'
 import { ContextMeter } from './ContextMeter.tsx'
+import {
+  IDLE_DICTATION_STATE, reduceDictation, resolveIndonesianTranscriptionUrl,
+} from './dictation.ts'
 import { PermissionSelect } from './PermissionSelect.tsx'
 import { isSafariBrowser, repairSafariTextareaLayout } from './safari.ts'
 import css from './InputBar.module.css'
 
 /** Decoration product of the no-session state (no machine, empty draft). */
 const INERT_DECORATIONS: DraftDecorations = { token: null, chips: [], textRefs: [], hint: null }
+
+const DICTATION_WAVEFORM_BARS = 72
+const DICTATION_WAVEFORM_FLOOR = 0.08
+
+function fallbackWaveformAmplitude(frame: number): number {
+  const carrier = (Math.sin(frame * 0.47) + 1) * 0.14
+  const detail = (Math.sin(frame * 0.19 + 1.3) + 1) * 0.08
+  return Math.min(0.72, DICTATION_WAVEFORM_FLOOR + carrier + detail)
+}
+
+function analyserWaveformAmplitude(analyser: AnalyserNode, values: Uint8Array<ArrayBuffer>): number {
+  analyser.getByteTimeDomainData(values)
+  let energy = 0
+  for (const value of values) {
+    const normalized = (value - 128) / 128
+    energy += normalized * normalized
+  }
+  const rms = Math.sqrt(energy / values.length)
+  return Math.max(DICTATION_WAVEFORM_FLOOR, Math.min(1, rms * 3.5))
+}
+
+function paintWaveform(element: HTMLSpanElement | null, samples: readonly number[]): void {
+  if (element === null) return
+  const bars = element.children
+  for (let index = 0; index < bars.length; index += 1) {
+    const bar = bars.item(index)
+    if (bar instanceof HTMLElement) {
+      bar.style.setProperty('--dictation-amplitude', samples[index]?.toFixed(3) ?? '0.08')
+    }
+  }
+}
+
+function dictationDuration(seconds: number): string {
+  const minutes = Math.floor(seconds / 60).toString().padStart(2, '0')
+  return `${minutes}:${(seconds % 60).toString().padStart(2, '0')}`
+}
 
 /** The selection and edit family a `beforeinput` recorded, with the draft length it applied to. */
 interface PendingEdit {
@@ -110,6 +149,23 @@ export function InputBar({
   // prompt failures): the seq keys the Toast so an identical repeated message
   // restarts the hold-then-fade cycle instead of reusing the faded one.
   const [toast, setToast] = useState<{ seq: number; text: string } | null>(null)
+  const [dictation, dispatchDictation] = useReducer(reduceDictation, IDLE_DICTATION_STATE)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const recordingStreamRef = useRef<MediaStream | null>(null)
+  const waveformRef = useRef<HTMLSpanElement | null>(null)
+  const waveformFrameRef = useRef<number | null>(null)
+  const waveformAudioRef = useRef<{
+    readonly context: AudioContext
+    readonly source: MediaStreamAudioSourceNode
+    readonly analyser: AnalyserNode
+    readonly values: Uint8Array<ArrayBuffer>
+  } | null>(null)
+  const recordedAudioRef = useRef<Blob | null>(null)
+  const dictationOperationRef = useRef(0)
+  const transcriptionAbortRef = useRef<AbortController | null>(null)
+  const dictationSubmitModeRef = useRef<'queue' | 'steer'>('queue')
+  const dictationAutoSubmitRef = useRef(false)
+  const dictationSessionRef = useRef(sessionId)
   const toastSeq = useRef(0)
   const showToast = useCallback((text: string) => {
     toastSeq.current += 1
@@ -182,6 +238,287 @@ export function InputBar({
   const canSteerQueue = !locked && !machineBusy && !commandMenuOpen && empty && running && subagent === null
     && input.queue.some(row => row.placement === 'queued')
 
+  const releaseWaveform = useCallback((): void => {
+    if (waveformFrameRef.current !== null) {
+      cancelAnimationFrame(waveformFrameRef.current)
+      waveformFrameRef.current = null
+    }
+    const audio = waveformAudioRef.current
+    waveformAudioRef.current = null
+    if (audio === null) return
+    audio.source.disconnect()
+    audio.analyser.disconnect()
+    if (audio.context.state !== 'closed') {
+      void audio.context.close().catch(() => {})
+    }
+  }, [])
+
+  const startWaveform = useCallback((stream: MediaStream): void => {
+    releaseWaveform()
+    const AudioContextConstructor = globalThis.AudioContext
+      ?? (globalThis as typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (AudioContextConstructor !== undefined) {
+      let context: AudioContext | null = null
+      let source: MediaStreamAudioSourceNode | null = null
+      try {
+        context = new AudioContextConstructor()
+        source = context.createMediaStreamSource(stream)
+        const analyser = context.createAnalyser()
+        analyser.fftSize = 256
+        analyser.smoothingTimeConstant = 0.72
+        source.connect(analyser)
+        waveformAudioRef.current = {
+          context,
+          source,
+          analyser,
+          values: new Uint8Array(new ArrayBuffer(analyser.fftSize)),
+        }
+        if (context.state === 'suspended') void context.resume().catch(() => {})
+      } catch {
+        source?.disconnect()
+        if (context !== null && context.state !== 'closed') void context.close().catch(() => {})
+        waveformAudioRef.current = null
+      }
+    }
+
+    const samples = Array<number>(DICTATION_WAVEFORM_BARS).fill(DICTATION_WAVEFORM_FLOOR)
+    const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+    let frame = 0
+    let lastReducedMotionPaint = Number.NEGATIVE_INFINITY
+    const advance = (timestamp: number): void => {
+      const audio = waveformAudioRef.current
+      const amplitude = audio === null
+        ? fallbackWaveformAmplitude(frame)
+        : analyserWaveformAmplitude(audio.analyser, audio.values)
+      const element = waveformRef.current
+      if (element !== null) {
+        element.dataset.waveformSource = audio === null ? 'fallback' : 'microphone'
+        element.dataset.waveformMotion = reducedMotion ? 'reduced' : 'live'
+      }
+      if (reducedMotion) {
+        if (timestamp - lastReducedMotionPaint >= 250) {
+          samples.fill(amplitude)
+          paintWaveform(element, samples)
+          lastReducedMotionPaint = timestamp
+        }
+      } else {
+        samples.shift()
+        samples.push(amplitude)
+        paintWaveform(element, samples)
+      }
+      frame += 1
+      waveformFrameRef.current = requestAnimationFrame(advance)
+    }
+    waveformFrameRef.current = requestAnimationFrame(advance)
+  }, [releaseWaveform])
+
+  const releaseRecording = useCallback((): void => {
+    releaseWaveform()
+    recordingStreamRef.current?.getTracks().forEach((track) => { track.stop() })
+    recordingStreamRef.current = null
+    recorderRef.current = null
+  }, [releaseWaveform])
+
+  const cancelDictation = useCallback((reset = true): void => {
+    dictationOperationRef.current += 1
+    transcriptionAbortRef.current?.abort()
+    transcriptionAbortRef.current = null
+    const recorder = recorderRef.current
+    if (recorder !== null) {
+      recorder.ondataavailable = null
+      recorder.onerror = null
+      recorder.onstop = null
+      if (recorder.state !== 'inactive') recorder.stop()
+    }
+    releaseRecording()
+    recordedAudioRef.current = null
+    dictationAutoSubmitRef.current = false
+    if (reset) dispatchDictation({ type: 'reset' })
+  }, [releaseRecording])
+
+  useEffect(() => () => { cancelDictation(false) }, [cancelDictation])
+  useEffect(() => {
+    if (dictationSessionRef.current === sessionId) return
+    dictationSessionRef.current = sessionId
+    cancelDictation()
+  }, [cancelDictation, sessionId])
+  useEffect(() => {
+    if ((locked || machineBusy) && (dictation.phase === 'requesting-permission'
+      || dictation.phase === 'recording' || dictation.phase === 'transcribing')) {
+      cancelDictation()
+    }
+  }, [cancelDictation, dictation.phase, locked, machineBusy])
+
+  useEffect(() => {
+    if (dictation.phase !== 'recording') return
+    const tick = (): void => { dispatchDictation({ type: 'tick', at: Date.now() }) }
+    const timer = globalThis.setInterval(tick, 250)
+    return () => { globalThis.clearInterval(timer) }
+  }, [dictation.phase])
+
+  const transcribeDictation = useCallback(async (audio: Blob, operation: number): Promise<void> => {
+    const controller = new AbortController()
+    transcriptionAbortRef.current = controller
+    try {
+      const form = new FormData()
+      form.append('audio', audio, 'dictation.webm')
+      form.append('language', 'auto')
+      const response = await fetch(resolveIndonesianTranscriptionUrl(), {
+        method: 'POST',
+        body: form,
+        signal: controller.signal,
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const result = await response.json() as { text?: unknown }
+      const transcript = typeof result.text === 'string' ? result.text.trim() : ''
+      if (transcript === '') throw new Error('No speech was recognized')
+      if (dictationOperationRef.current !== operation || keyboard === undefined) return
+      const current = keyboard.snapshot.draft
+      const separator = current === '' || /\s$/u.test(current) ? '' : ' '
+      const inserted = `${separator}${transcript}`
+      keyboard.setDraft(`${current}${inserted}`, {
+        start: current.length,
+        end: current.length,
+        insertedLength: inserted.length,
+      })
+      dispatchDictation({ type: 'transcribed', transcript })
+      const autoSubmit = dictationAutoSubmitRef.current
+      dictationAutoSubmitRef.current = false
+      requestAnimationFrame(() => {
+        if (dictationOperationRef.current !== operation) return
+        if (autoSubmit) {
+          keyboard.submit(dictationSubmitModeRef.current)
+          if (keyboard.snapshot.phase === 'adjudicating' || keyboard.snapshot.phase === 'submitting') {
+            dispatchDictation({ type: 'send' })
+          }
+        }
+        inputRef.current?.focus()
+      })
+    } catch (error) {
+      if (controller.signal.aborted || dictationOperationRef.current !== operation) return
+      const message = error instanceof Error ? error.message : String(error)
+      dispatchDictation({ type: 'transcription-failed', message: t('input.dictation.failed', { message }) })
+    } finally {
+      if (transcriptionAbortRef.current === controller) transcriptionAbortRef.current = null
+    }
+  }, [keyboard, t])
+
+  const requestDictation = useCallback(async (): Promise<void> => {
+    if (locked || machineBusy) return
+    const operation = dictationOperationRef.current + 1
+    dictationOperationRef.current = operation
+    recordedAudioRef.current = null
+    dispatchDictation({ type: 'request-permission' })
+    try {
+      const mediaDevices = (navigator as { mediaDevices?: MediaDevices }).mediaDevices
+      if (mediaDevices?.getUserMedia === undefined) throw new Error('Microphone capture is unavailable')
+      const Recorder = (globalThis as { MediaRecorder?: typeof MediaRecorder }).MediaRecorder
+      if (Recorder === undefined) throw new Error('Audio recording is unavailable')
+      const stream = await mediaDevices.getUserMedia({ audio: true })
+      if (dictationOperationRef.current !== operation) {
+        stream.getTracks().forEach((track) => { track.stop() })
+        return
+      }
+      recordingStreamRef.current = stream
+      const preferred = Recorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : undefined
+      const recorder = new Recorder(stream, preferred === undefined ? undefined : { mimeType: preferred })
+      const chunks: BlobPart[] = []
+      let recorderFailed = false
+      recorderRef.current = recorder
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunks.push(event.data)
+      }
+      recorder.onerror = (event) => {
+        if (dictationOperationRef.current !== operation) return
+        recorderFailed = true
+        const detail = event as Event & { readonly error?: DOMException }
+        const message = detail.error?.message ?? 'Media recorder error'
+        releaseRecording()
+        dispatchDictation({ type: 'transcription-failed', message: t('input.dictation.failed', { message }) })
+      }
+      recorder.onstop = () => {
+        if (dictationOperationRef.current !== operation || recorderFailed) return
+        const audio = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+        recordedAudioRef.current = audio
+        releaseRecording()
+        void transcribeDictation(audio, operation)
+      }
+      recorder.start(250)
+      startWaveform(stream)
+      dispatchDictation({ type: 'permission-granted', at: Date.now() })
+    } catch (error) {
+      if (dictationOperationRef.current !== operation) return
+      releaseRecording()
+      const message = error instanceof Error ? error.message : String(error)
+      dispatchDictation({ type: 'permission-failed', message: t('input.dictation.failed', { message }) })
+    }
+  }, [keyboard, locked, machineBusy, releaseRecording, startWaveform, t, transcribeDictation])
+
+  const stopDictation = useCallback((): void => {
+    const recorder = recorderRef.current
+    if (dictation.phase !== 'recording' || recorder === null || recorder.state !== 'recording') return
+    releaseWaveform()
+    dispatchDictation({ type: 'stop-recording' })
+    recorder.stop()
+  }, [dictation.phase, releaseWaveform])
+
+  const stopDictationAndSend = useCallback((): void => {
+    if (dictation.phase !== 'recording') return
+    dictationAutoSubmitRef.current = true
+    dictationSubmitModeRef.current = resolveSubmitMode(running, 'enter', subagent === null)
+    stopDictation()
+  }, [dictation.phase, resolveSubmitMode, running, stopDictation, subagent])
+
+  const toggleDictation = useCallback((): void => {
+    if (dictation.phase === 'recording') stopDictation()
+    else if (dictation.phase !== 'requesting-permission'
+      && dictation.phase !== 'transcribing' && dictation.phase !== 'sending') void requestDictation()
+  }, [dictation.phase, requestDictation, stopDictation])
+
+  useEffect(() => {
+    if (dictation.phase === 'review' && draft.trim() === '') {
+      recordedAudioRef.current = null
+      dispatchDictation({ type: 'reset' })
+    }
+  }, [dictation.phase, draft])
+
+  useEffect(() => {
+    if (dictation.phase !== 'sending' || machineBusy) return
+    if (draft.trim() === '') {
+      recordedAudioRef.current = null
+      dispatchDictation({ type: 'reset' })
+      return
+    }
+    const message = promptError?.error.message ?? (notice?.level === 'error' ? notice.text : 'Message was not sent')
+    dispatchDictation({ type: 'send-failed', message })
+  }, [dictation.phase, draft, machineBusy, notice, promptError])
+
+  const retryDictation = (): void => {
+    if (dictation.phase !== 'error' || locked || machineBusy) return
+    if (dictation.retry === 'transcription') {
+      const audio = recordedAudioRef.current
+      if (audio === null) {
+        void requestDictation()
+        return
+      }
+      const operation = dictationOperationRef.current + 1
+      dictationOperationRef.current = operation
+      dispatchDictation({ type: 'retry-transcription' })
+      void transcribeDictation(audio, operation)
+      return
+    }
+    if (dictation.retry === 'sending') {
+      keyboard.submit(dictationSubmitModeRef.current)
+      if (keyboard.snapshot.phase === 'adjudicating' || keyboard.snapshot.phase === 'submitting') {
+        dispatchDictation({ type: 'retry-send' })
+      }
+      return
+    }
+    void requestDictation()
+  }
+
   useEffect(() => {
     if (input === undefined || inputActions === undefined) return
     if (attachments.length !== input.imageIds.length) {
@@ -241,7 +578,6 @@ export function InputBar({
   const revealSelectionFocus = (el: HTMLTextAreaElement): void => {
     // selectionStart/End are number|null in lib.dom; the type-aware lint program narrows them.
     const caret = el.selectionDirection === 'backward' ? el.selectionStart : el.selectionEnd
-    // oxlint-disable-next-line typescript/no-unnecessary-condition
     revealCaret(caret ?? el.value.length)
   }
 
@@ -310,12 +646,10 @@ export function InputBar({
   }, [])
 
   // selectionStart/End are number|null in lib.dom; the type-aware lint program narrows them.
-  /* oxlint-disable typescript/no-unnecessary-condition */
   const selectionOf = (el: HTMLTextAreaElement) => ({
     start: el.selectionStart ?? 0,
     end: el.selectionEnd ?? el.selectionStart ?? 0,
   })
-  /* oxlint-enable typescript/no-unnecessary-condition */
 
   // The machine's occurrence math needs the edit's real range, and a controlled
   // textarea's change event carries only the resulting string. `beforeinput`
@@ -356,11 +690,20 @@ export function InputBar({
     // Absent machine without a Workspace recovery action stays disabled; the
     // guard narrows the faces for the paths below.
     if (input === undefined || keyboard === undefined || inputActions === undefined) return
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'm') {
+      e.preventDefault()
+      toggleDictation()
+      return
+    }
+    if (e.key === 'Escape' && dictation.phase === 'recording') {
+      e.preventDefault()
+      cancelDictation()
+      return
+    }
     // Shift+Enter is the native newline UNCONDITIONALLY — decided before the
     // IME guard so a composition-closing Shift+Enter still breaks the line.
     if (e.key === 'Enter' && e.shiftKey) return
     // keyCode 229 is the legacy IME-composition signal engines emit without isComposing.
-    // oxlint-disable-next-line typescript/no-deprecated
     const composing = composingRef.current || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229
     if (!composing && !machineBusy && !locked
       && (e.key === 'Backspace' || e.key === 'Delete')) {
@@ -428,11 +771,17 @@ export function InputBar({
       keyboard.steerQueue()
       return
     }
-    keyboard.submit(resolveSubmitMode(
+    const mode = resolveSubmitMode(
       running,
       accelerated ? 'accelerated' : 'enter',
       subagent === null,
-    ))
+    )
+    keyboard.submit(mode)
+    if (dictation.phase === 'review'
+      && (keyboard.snapshot.phase === 'adjudicating' || keyboard.snapshot.phase === 'submitting')) {
+      dictationSubmitModeRef.current = mode
+      dispatchDictation({ type: 'send' })
+    }
   }
 
   const onChange = (e: ChangeEvent<HTMLTextAreaElement>): void => {
@@ -444,7 +793,6 @@ export function InputBar({
     safariNativeShrinkRef.current = safari && next.length < draft.length
     keyboard.setDraft(next, editRangeOf(pending, draft.length, next.length))
     // selectionStart is number|null in lib.dom; the type-aware lint program narrows it.
-    // oxlint-disable-next-line typescript/no-unnecessary-condition
     keyboard.track(next, e.target.selectionStart ?? next.length)
   }
 
@@ -557,20 +905,31 @@ export function InputBar({
     if (el !== null) toggleCommandMenu?.(selectionOf(el))
   }
 
-  // Ordinary sessions retain their primary Send/Stop toggle. A continuable
-  // child keeps Send as the primary action and exposes Stop independently so
-  // pointer users can queue follow-ups while its current turn is running.
-  const primaryStops = running && subagent === null
-  const interruptible = running && continuable
-  const primaryLabel = primaryStops ? t('input.stop') : t('input.send')
+  // Running ordinary sessions and continuable children keep Send available
+  // beside an independent Stop so pointer users can queue or steer a follow-up
+  // without cancelling the active turn.
+  const interruptible = running && (subagent === null || continuable)
+  const primaryMode = resolveSubmitMode(running, 'enter', subagent === null)
+  const primaryLabel = dictation.phase === 'recording'
+    ? t('input.dictation.stopAndSend')
+    : running
+      ? t(primaryMode === 'steer' ? 'input.steer' : 'input.queue')
+      : t('input.send')
   const onPrimary = (): void => {
-    if (primaryStops) {
-      stop?.()
+    if (keyboard === undefined) return // absent machine: the button is disabled
+    if (dictation.phase === 'recording') {
+      stopDictationAndSend()
       return
     }
-    if (inputActions === undefined) return // absent machine: the button is disabled
     /* v8 ignore next -- defensive: the primary button is disabled while empty||disabled, so a click cannot reach the false arm. */
-    if (!empty && !disabled && !machineBusy) inputActions.submit()
+    if (!empty && !disabled && !machineBusy) {
+      keyboard.submit(primaryMode)
+      if (dictation.phase === 'review'
+        && (keyboard.snapshot.phase === 'adjudicating' || keyboard.snapshot.phase === 'submitting')) {
+        dictationSubmitModeRef.current = primaryMode
+        dispatchDictation({ type: 'send' })
+      }
+    }
   }
 
   // The Access seat: the projection-fed permission chip (renders nothing
@@ -677,6 +1036,25 @@ export function InputBar({
     }
   }
 
+  const dictationStatusText = dictation.phase === 'requesting-permission'
+    ? t('input.dictation.requestingPermission')
+    : dictation.phase === 'recording'
+      ? `${t('input.dictation.stop')} · ${dictationDuration(dictation.elapsedSeconds)}`
+      : dictation.phase === 'transcribing'
+        ? t('input.dictation.transcribing')
+        : dictation.phase === 'review'
+          ? t('input.dictation.ready')
+          : dictation.phase === 'sending'
+            ? t('input.dictation.sending')
+            : dictation.phase === 'error' ? dictation.message : null
+  const dictationControlLabel = dictation.phase === 'recording'
+    ? t('input.dictation.stop')
+    : dictation.phase === 'transcribing'
+      ? t('input.dictation.transcribing')
+      : dictation.phase === 'requesting-permission' || dictation.phase === 'sending'
+        ? dictationStatusText ?? t('input.dictation.start')
+        : t('input.dictation.start')
+
   return (
     <div className={clsx(css.root, variant === 'hero' && css.hero)}>
       {toast !== null && (
@@ -767,6 +1145,41 @@ export function InputBar({
             <div ref={mirrorRef} aria-hidden className={css.mirror} data-input-mirror>{`${draft}\n`}</div>
           </div>
         </div>
+        {dictationStatusText !== null && (
+          <div
+            className={clsx(css.dictationStatus, dictation.phase === 'recording' && css.dictationStatusRecording)}
+            data-dictation-state={dictation.phase}
+            role={dictation.phase === 'error' ? 'alert' : 'status'}
+            aria-live={dictation.phase === 'recording' ? 'off' : 'polite'}
+            aria-atomic="true"
+          >
+            {dictation.phase === 'recording'
+              ? (
+                <span ref={waveformRef} className={css.dictationWaveform} data-dictation-waveform aria-hidden>
+                  {Array.from({ length: DICTATION_WAVEFORM_BARS }, (_, index) => (
+                    <span
+                      key={index}
+                      className={css.dictationBar}
+                      data-waveform-bar
+                    />
+                  ))}
+                </span>
+              )
+              : <span className={css.dictationIndicator} aria-hidden />}
+            <span className={css.dictationStatusText}>{dictationStatusText}</span>
+            {dictation.phase === 'error' && (
+              <button
+                type="button"
+                className={css.retry}
+                aria-label={t('retry')}
+                onMouseDown={keepFocus}
+                onClick={retryDictation}
+              >
+                {t('retry')}
+              </button>
+            )}
+          </div>
+        )}
         <div className={css.row}>
           <div className={css.tools}>
             <Tooltip label={t('input.commands')} side="top" delayMs={500}>
@@ -789,10 +1202,26 @@ export function InputBar({
             </div>
             {leftItems}
           </div>
-          <div className={css.trailing}>
+          <div className={css.trailing} data-composer-trailing>
             {rightItems}
             {renderSlot('conversation.input.model', { locked: modelSeatLocked })}
             <ContextMeter useProjection={useProjection} t={t} />
+            <Tooltip label={dictationControlLabel} side="top" delayMs={500}>
+              <button
+                type="button"
+                className={clsx(css.add, dictation.phase === 'recording' && css.voiceActive)}
+                aria-label={dictationControlLabel}
+                aria-keyshortcuts="Control+Shift+M Meta+Shift+M"
+                aria-pressed={dictation.phase === 'recording'}
+                data-dictation-state={dictation.phase}
+                disabled={locked || machineBusy || dictation.phase === 'requesting-permission'
+                  || dictation.phase === 'transcribing' || dictation.phase === 'sending'}
+                onMouseDown={keepFocus}
+                onClick={toggleDictation}
+              >
+                <IconMicrophoneOutline16 size={16} />
+              </button>
+            </Tooltip>
             {interruptible && (
               <Tooltip label={t('input.stop')} side="top" delayMs={500}>
                 <button
@@ -814,19 +1243,15 @@ export function InputBar({
                 type="button"
                 className={css.primary}
                 aria-label={primaryLabel}
-                disabled={primaryStops ? stop === undefined : empty || disabled || machineBusy}
+                data-primary-action
+                data-submit-mode={dictation.phase === 'recording' ? 'dictation' : primaryMode}
+                disabled={(dictation.phase !== 'recording' && empty) || disabled || machineBusy}
                 onMouseDown={keepFocus}
                 onClick={onPrimary}
               >
-                {primaryStops ? (
-                  <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden>
-                    <rect x="3" y="3" width="10" height="10" rx="3" fill="currentColor" />
-                  </svg>
-                ) : (
-                  <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden>
-                    <path d="M8.3125 0.980183C8.66767 1.0531 8.97902 1.20418 9.2627 1.43233C9.48724 1.61297 9.73029 1.85793 9.97949 2.10714L14.707 6.83468L13.293 8.24874L9 3.95577V15.0417H7V3.95577L2.70703 8.24874L1.29297 6.83468L6.02051 2.10714C6.26971 1.85793 6.51277 1.61297 6.7373 1.43233C6.97662 1.23986 7.28445 1.04402 7.6875 0.980183C7.8973 0.947006 8.1031 0.95516 8.3125 0.980183Z" fill="currentColor" />
-                  </svg>
-                )}
+                <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden>
+                  <path d="M8.3125 0.980183C8.66767 1.0531 8.97902 1.20418 9.2627 1.43233C9.48724 1.61297 9.73029 1.85793 9.97949 2.10714L14.707 6.83468L13.293 8.24874L9 3.95577V15.0417H7V3.95577L2.70703 8.24874L1.29297 6.83468L6.02051 2.10714C6.26971 1.85793 6.51277 1.61297 6.7373 1.43233C6.97662 1.23986 7.28445 1.04402 7.6875 0.980183C7.8973 0.947006 8.1031 0.95516 8.3125 0.980183Z" fill="currentColor" />
+                </svg>
               </button>
             </Tooltip>
           </div>

@@ -25,6 +25,8 @@ export const name = 'tool-skill'
 export const inject = ['agents', 'tools', 'skills']
 
 const DEFAULT_CATALOG_DESCRIPTION_MAX_LENGTH = 500
+const DEFAULT_CATALOG_MAX_ENTRIES = Number.MAX_SAFE_INTEGER
+const DEFAULT_SEARCH_RESULT_LIMIT = 25
 /**
  * Durable provider and item records for one published session skill catalog. The catalog is a
  * `catalog`-form context, so it records the entries it published beside the
@@ -38,6 +40,8 @@ export interface SkillCatalogSource {
   readonly update?: true
   /** Exactly the entries this message published, in catalog order. */
   readonly entries: readonly { readonly name: string; readonly description: string }[]
+  /** Full model-invocable population when the rendered catalog is intentionally bounded. */
+  readonly totalAvailable?: number
 }
 
 declare module '@deepseek-ai/dsh-llm' {
@@ -61,11 +65,20 @@ function catalogSourceEntries(
 export interface Config {
   /** Maximum normalized description length rendered in the session catalog; minimum 3. */
   catalogDescriptionMaxLength?: number
+  /** Maximum entries rendered in the durable session catalog; all entries remain searchable. */
+  catalogMaxEntries?: number
+  /** Maximum entries returned by one model-facing skill search. */
+  searchResultLimit?: number
+  /** Names that should be rendered first when the catalog is bounded. */
+  catalogPinnedNames?: string[]
 }
 
 /** Validate and default the model-facing skill catalog configuration. */
 export const Config: z<Config> = z.object({
   catalogDescriptionMaxLength: z.number().default(DEFAULT_CATALOG_DESCRIPTION_MAX_LENGTH),
+  catalogMaxEntries: z.number().default(DEFAULT_CATALOG_MAX_ENTRIES),
+  searchResultLimit: z.number().default(DEFAULT_SEARCH_RESULT_LIMIT),
+  catalogPinnedNames: z.array(z.string()).default([]),
 })
 
 /**
@@ -76,7 +89,15 @@ export const Config: z<Config> = z.object({
  */
 export function apply(ctx: Context, config: Config = {}): void {
   const catalogDescriptionMaxLength = config.catalogDescriptionMaxLength ?? DEFAULT_CATALOG_DESCRIPTION_MAX_LENGTH
+  const catalogMaxEntries = config.catalogMaxEntries ?? DEFAULT_CATALOG_MAX_ENTRIES
+  const searchResultLimit = config.searchResultLimit ?? DEFAULT_SEARCH_RESULT_LIMIT
+  const catalogPinnedNames = config.catalogPinnedNames ?? []
   assertPositiveInteger('catalogDescriptionMaxLength', catalogDescriptionMaxLength, 3)
+  assertPositiveInteger('catalogMaxEntries', catalogMaxEntries)
+  assertPositiveInteger('searchResultLimit', searchResultLimit)
+  for (const pinnedName of catalogPinnedNames) {
+    if (!isSkillName(pinnedName)) throw new Error(`tool-skill: invalid catalogPinnedNames entry "${pinnedName}"`)
+  }
 
   const skillTool = defineTool({
     name: 'skill',
@@ -160,6 +181,63 @@ export function apply(ctx: Context, config: Config = {}): void {
   })
   ctx.tools.register(skillTool)
 
+  const skillSearchTool = defineTool({
+    name: 'skill_search',
+    description: 'Search every available model-invocable skill by name and description. Use this when the bounded session catalog does not list the capability you need, then call `skill` with an exact returned name.',
+    parameters: {
+      query: { type: 'string', required: true, description: 'Words describing the capability or skill name to find.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          query: { type: 'string', required: true },
+          totalMatches: { type: 'number', required: true },
+          results: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                name: { type: 'string', required: true },
+                description: { type: 'string', required: true },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => [{
+        type: 'text',
+        text: JSON.stringify(value, null, 2),
+      }],
+    },
+    async execute(args, exec) {
+      const query = args.query.replaceAll(/\s+/g, ' ').trim().toLowerCase()
+      if (query === '') throw new Error('skill_search query must not be empty')
+      const lookup = { cwd: exec.agent?.session.header.cwd, signal: exec.signal, scope: exec.agent }
+      const matches = (await ctx.skills.list(lookup))
+        .filter(isModelInvocable)
+        .map(skill => ({ skill, score: skillSearchScore(skill, query) }))
+        .filter(row => row.score !== undefined)
+        .sort((left, right) => (left.score as number) - (right.score as number)
+          || left.skill.name.localeCompare(right.skill.name))
+      return {
+        query,
+        totalMatches: matches.length,
+        results: matches.slice(0, searchResultLimit).map(({ skill }) => ({
+          name: skill.name,
+          description: catalogDescription(skill.description, catalogDescriptionMaxLength),
+        })),
+      }
+    },
+    presentCall(args) {
+      return { card: 'generic', title: `Search skills for ${args.query}`, kind: 'read', rawInput: args.query }
+    },
+  })
+  ctx.tools.register(skillSearchTool)
+
   // User-explicit skill invocation: a claimed user message whose first line
   // starts with `/<name>` naming a user-invocable skill is a deterministic
   // load gesture. The rendered body enters this step as injected
@@ -224,8 +302,10 @@ export function apply(ctx: Context, config: Config = {}): void {
     signal.throwIfAborted()
     if (!snapshot.complete) return decision
     const skills = snapshot.skills.filter(isModelInvocable)
-    const entries = catalogSourceEntries(skills, catalogDescriptionMaxLength)
-    const digest = digestCatalogEntries(entries)
+    const visibleSkills = selectCatalogSkills(skills, catalogMaxEntries, catalogPinnedNames)
+    const entries = catalogSourceEntries(visibleSkills, catalogDescriptionMaxLength)
+    const totalAvailable = skills.length > entries.length ? skills.length : undefined
+    const digest = digestCatalogEntries(entries, totalAvailable)
     const history = catalogHistory(agent)
     const existing = catalogMessage(decision.messages)
     if (history.visibleDigest === digest) {
@@ -233,15 +313,15 @@ export function apply(ctx: Context, config: Config = {}): void {
         ? decision
         : { kind: 'enter', messages: decision.messages.filter(message => message.id !== existing.message.id) }
     }
-    if (existing !== undefined && digestCatalogEntries(existing.entries) === digest) return decision
+    if (existing !== undefined && digestCatalogEntries(existing.entries, existing.totalAvailable) === digest) return decision
     if (!history.published && skills.length === 0) {
       return existing === undefined
         ? decision
         : { kind: 'enter', messages: decision.messages.filter(message => message.id !== existing.message.id) }
     }
     const catalog = history.published
-      ? renderCatalogUpdate(entries)
-      : renderCatalogMessage(entries)
+      ? renderCatalogUpdate(entries, totalAvailable)
+      : renderCatalogMessage(entries, totalAvailable)
     return {
       kind: 'enter',
       messages: existing === undefined
@@ -251,7 +331,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   })
 }
 
-function renderCatalogMessage(entries: SkillCatalogSource['entries']): UserMessage {
+function renderCatalogMessage(entries: SkillCatalogSource['entries'], totalAvailable?: number): UserMessage {
   return createUserMessage({
     content: [{
       type: 'text',
@@ -263,6 +343,7 @@ function renderCatalogMessage(entries: SkillCatalogSource['entries']): UserMessa
         ...renderCatalogEntries(entries),
         '</available_skills>',
         '',
+        ...catalogSearchGuidance(entries.length, totalAvailable),
         "If the user names a skill, or the task clearly matches a skill's description, call the `skill` tool with the exact skill name before taking task actions. Load all applicable skills, then follow their full instructions. This catalog contains summaries only; do not infer or follow a skill's instructions until it has been loaded.",
         'A user may also invoke a skill directly; its <skill_content> block then appears in this conversation. Follow it, and do not call the `skill` tool again for that skill.',
         '</system-reminder>',
@@ -272,11 +353,12 @@ function renderCatalogMessage(entries: SkillCatalogSource['entries']): UserMessa
       kind: 'skill-catalog',
       form: 'catalog',
       entries,
+      ...totalAvailable === undefined ? {} : { totalAvailable },
     },
   })
 }
 
-function renderCatalogUpdate(entries: SkillCatalogSource['entries']): UserMessage {
+function renderCatalogUpdate(entries: SkillCatalogSource['entries'], totalAvailable?: number): UserMessage {
   const availability = entries.length === 0
     ? [
       'No skills are currently available through the `skill` tool. Do not use names from earlier skill catalogs.',
@@ -297,6 +379,7 @@ function renderCatalogUpdate(entries: SkillCatalogSource['entries']): UserMessag
         ...renderCatalogEntries(entries),
         '</available_skills>',
         '',
+        ...catalogSearchGuidance(entries.length, totalAvailable),
         ...availability,
         '</system-reminder>',
       ].join('\n'),
@@ -306,6 +389,7 @@ function renderCatalogUpdate(entries: SkillCatalogSource['entries']): UserMessag
       form: 'catalog',
       update: true,
       entries,
+      ...totalAvailable === undefined ? {} : { totalAvailable },
     },
   })
 }
@@ -325,10 +409,10 @@ function renderCatalogEntries(entries: SkillCatalogSource['entries']): string[] 
  * The entries are what changes; the surrounding `<system-reminder>` framing is
  * written for the model and must not decide whether a republish is needed.
  */
-function digestCatalogEntries(entries: SkillCatalogSource['entries']): string {
+function digestCatalogEntries(entries: SkillCatalogSource['entries'], totalAvailable?: number): string {
   // JSON per entry rather than a separator character: every separator is itself
   // a legal description character, so only quoting makes the boundary exact.
-  const canonical = entries.map(entry => JSON.stringify([entry.name, entry.description])).join('\n')
+  const canonical = JSON.stringify({ totalAvailable: totalAvailable ?? entries.length, entries })
   return createHash('sha256')
     .update(canonical)
     .digest('hex')
@@ -345,7 +429,7 @@ function digestCatalogEntries(entries: SkillCatalogSource['entries']): string {
  * rather than throwing inside the step listener, which would fail every
  * subsequent turn of that session.
  */
-function readCatalogEntries(source: unknown): SkillCatalogSource['entries'] | undefined {
+function readCatalogRecord(source: unknown): { entries: SkillCatalogSource['entries']; totalAvailable?: number } | undefined {
   const entries = (source as { entries?: unknown }).entries
   if (!Array.isArray(entries)) return undefined
   const readable: { name: string; description: string }[] = []
@@ -355,7 +439,14 @@ function readCatalogEntries(source: unknown): SkillCatalogSource['entries'] | un
     if (typeof name !== 'string' || name === '' || typeof description !== 'string') return undefined
     readable.push({ name, description })
   }
-  return readable
+  const totalAvailable = (source as { totalAvailable?: unknown }).totalAvailable
+  if (totalAvailable !== undefined && (!Number.isInteger(totalAvailable) || (totalAvailable as number) < readable.length)) {
+    return undefined
+  }
+  return {
+    entries: readable,
+    ...totalAvailable === undefined ? {} : { totalAvailable: totalAvailable as number },
+  }
 }
 
 function catalogHistory(agent: Agent): { visibleDigest?: string; published: boolean } {
@@ -367,9 +458,9 @@ function catalogHistory(agent: Agent): { visibleDigest?: string; published: bool
     // oxlint-disable-next-line typescript/no-non-null-assertion
     const event = events[index]!
     if (event.type !== 'user/message' || event.data.source.kind !== 'skill-catalog') continue
-    const entries = readCatalogEntries(event.data.source)
-    if (entries === undefined) continue
-    const digest = digestCatalogEntries(entries)
+    const record = readCatalogRecord(event.data.source)
+    if (record === undefined) continue
+    const digest = digestCatalogEntries(record.entries, record.totalAvailable)
     published = true
     if (visible.has(event.seq)) return { visibleDigest: digest, published }
   }
@@ -378,11 +469,11 @@ function catalogHistory(agent: Agent): { visibleDigest?: string; published: bool
 
 function catalogMessage(
   messages: readonly UserMessage[],
-): { message: UserMessage; entries: SkillCatalogSource['entries'] } | undefined {
+): { message: UserMessage; entries: SkillCatalogSource['entries']; totalAvailable?: number } | undefined {
   for (const message of messages) {
     if (message.source.kind !== 'skill-catalog') continue
-    const entries = readCatalogEntries(message.source)
-    if (entries !== undefined) return { message, entries }
+    const record = readCatalogRecord(message.source)
+    if (record !== undefined) return { message, ...record }
   }
   return undefined
 }
@@ -391,6 +482,43 @@ function catalogMessage(
 function catalogDescription(value: string, maxLength: number): string {
   const normalized = value.replaceAll(/\s+/g, ' ').trim()
   return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength - 3)}...`
+}
+
+function selectCatalogSkills(skills: SkillSummary[], maximum: number, pinnedNames: readonly string[]): SkillSummary[] {
+  if (skills.length <= maximum) return skills
+  const byName = new Map(skills.map(skill => [skill.name, skill]))
+  const selected: SkillSummary[] = []
+  for (const name of pinnedNames) {
+    const skill = byName.get(name)
+    if (skill !== undefined && !selected.includes(skill)) selected.push(skill)
+    if (selected.length === maximum) return selected
+  }
+  for (const skill of skills) {
+    if (!selected.includes(skill)) selected.push(skill)
+    if (selected.length === maximum) break
+  }
+  return selected
+}
+
+function catalogSearchGuidance(rendered: number, totalAvailable?: number): string[] {
+  if (totalAvailable === undefined) return []
+  return [
+    `This bounded catalog shows ${rendered} of ${totalAvailable} available skills.`,
+    'Use `skill_search` to find every other indexed skill, then load the exact returned name with `skill`.',
+    '',
+  ]
+}
+
+function skillSearchScore(skill: SkillSummary, query: string): number | undefined {
+  const name = skill.name.toLowerCase()
+  const description = skill.description.toLowerCase()
+  if (name === query) return 0
+  if (name.startsWith(query)) return 1
+  if (name.includes(query)) return 2
+  const tokens = query.split(' ').filter(Boolean)
+  if (tokens.length > 0 && tokens.every(token => name.includes(token) || description.includes(token))) return 3
+  if (description.includes(query)) return 4
+  return undefined
 }
 
 function assertPositiveInteger(name: string, value: number, minimum = 1): void {

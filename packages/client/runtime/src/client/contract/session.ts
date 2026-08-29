@@ -35,7 +35,8 @@ export interface ISession {
   /**
    * Send a prompt into the session.
    * @param content - text plus browser-owned temporary image uploads.
-   * @param mode - 'queue' appends a turn; 'steer' interrupts the running one.
+   * @param mode - 'queue' appends a turn; 'steer' is consumed at the next
+   * step boundary without interrupting or cancelling the active turn.
    * @returns acceptance, or the business error (also mirrored into snapshot.promptError).
    */
   prompt(

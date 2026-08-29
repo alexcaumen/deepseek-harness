@@ -160,6 +160,21 @@ describe('built-in conversation node Definitions', () => {
     expect(interrupted?.data).toMatchObject({ status: 'interrupted' })
     expect((interrupted?.data as AssistantChatData).finalNode?.interrupted).toBe(true)
 
+    const completedWithoutAnchor = assembler([
+      at(14, 'turn/start', { turn: 2 }),
+      at(15, 'step/start', { turn: 2, step: 1 }),
+      at(16, 'assistant/chunk', {
+        turn: 2,
+        step: 1,
+        chunk: { type: 'text-delta', index: 0, text: 'completed prefix' },
+      }),
+      at(17, 'step/end', { turn: 2, step: 1 }),
+      at(18, 'turn/end', { turn: 2, reason: { kind: 'completed' } }),
+    ])
+    const completedProjection = node(snapshot(completedWithoutAnchor), 'assistant-step')
+    expect((completedProjection?.data as AssistantChatData).finalNode).toBeUndefined()
+    expect((completedProjection?.data as AssistantChatData).status).not.toBe('interrupted')
+
     const markedValue = assembler([
       at(20, 'turn/start', { turn: 3 }),
       at(21, 'step/start', { turn: 3, step: 1 }),

@@ -27,6 +27,9 @@ One plugin instance per MCP server in `cordis.yml`:
     url: http://localhost:3000/mcp
     headers:
       Authorization: !!js '`Bearer ${process.env.MCP_TOKEN}`'
+    # Secret-bearing headers can instead resolve from the process environment.
+    headersFromEnv:
+      X-Api-Key: MCP_API_KEY
 ```
 
 The model sees `mcp__github__create_issue`, `mcp__web__search`, … — the same server-qualified shape Claude Code and Codex use. HMR hot-swaps: editing the entry triggers disconnect + reconnect without process restart; an unchanged `serverName` reproduces identical tool names.
@@ -43,6 +46,7 @@ The model sees `mcp__github__create_issue`, `mcp__web__search`, … — the same
 | `cwd` | stdio | no | Working directory for the child process |
 | `url` | http | yes | MCP server URL |
 | `headers` | http | no | Extra headers (e.g. auth tokens) |
+| `headersFromEnv` | http | no | HTTP header names mapped to process environment-variable names |
 | `toolCallTimeoutMs` | both | no | Timeout per `callTool` invocation (default 60000) |
 | `failOnStartupError` | both | no | Reject plugin activation when initial connection or tool synchronization fails (default `false`) |
 | `reconnect.enabled` | both | no | Reconnect automatically after a lost connection (default `true`) |

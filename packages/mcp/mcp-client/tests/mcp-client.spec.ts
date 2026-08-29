@@ -1141,6 +1141,7 @@ describe('createTransport', () => {
       serverName: 'srv',
       url: 'http://localhost:3000/mcp',
       headers: {},
+      headersFromEnv: {},
       toolCallTimeoutMs: 60_000,
       failOnStartupError: false,
     }
@@ -1156,6 +1157,7 @@ describe('createTransport', () => {
       serverName: 'srv',
       url: 'http://localhost:3000/mcp',
       headers: { Authorization: 'Bearer token' },
+      headersFromEnv: {},
       toolCallTimeoutMs: 60_000,
       failOnStartupError: false,
     }
@@ -1163,6 +1165,47 @@ describe('createTransport', () => {
     expect(transport).toBeDefined()
     expect(transport).toHaveProperty('start')
     expect(transport).toHaveProperty('close')
+  })
+
+  it('resolves HTTP headers from process environment without storing the value in config', () => {
+    process.env.DSH_TEST_MCP_AUTH = 'Bearer process-only-token'
+    try {
+      const config: Config = {
+        transport: 'streamable-http',
+        serverName: 'srv',
+        url: 'http://localhost:3000/mcp',
+        headers: {},
+        headersFromEnv: { Authorization: 'DSH_TEST_MCP_AUTH' },
+        toolCallTimeoutMs: 60_000,
+        failOnStartupError: false,
+      }
+      expect(createTransport(config)).toBeDefined()
+    } finally {
+      delete process.env.DSH_TEST_MCP_AUTH
+    }
+  })
+
+  it('rejects missing and duplicate environment-backed HTTP headers', () => {
+    const base: Config = {
+      transport: 'streamable-http',
+      serverName: 'srv',
+      url: 'http://localhost:3000/mcp',
+      headers: {},
+      headersFromEnv: { Authorization: 'DSH_MISSING_MCP_AUTH' },
+      toolCallTimeoutMs: 60_000,
+      failOnStartupError: false,
+    }
+    expect(() => createTransport(base)).toThrow(/DSH_MISSING_MCP_AUTH/)
+    process.env.DSH_TEST_MCP_AUTH = 'Bearer hidden'
+    try {
+      expect(() => createTransport({
+        ...base,
+        headers: { Authorization: 'Bearer literal' },
+        headersFromEnv: { Authorization: 'DSH_TEST_MCP_AUTH' },
+      })).toThrow(/configured twice/)
+    } finally {
+      delete process.env.DSH_TEST_MCP_AUTH
+    }
   })
 
   it('scrubs sensitive env vars and forwards the rest', () => {

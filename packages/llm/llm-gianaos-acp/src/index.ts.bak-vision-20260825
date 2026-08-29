@@ -1,0 +1,572 @@
+/**
+ * Canonical GianaOS participants with native Giana Code tool access over ACP.
+ * @module @grinviro/dsh-llm-gianaos-acp
+ */
+
+import { accessSync, constants, statSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
+import { Readable as NodeReadable, Writable as NodeWritable } from 'node:stream'
+import {
+  ClientSideConnection,
+  ndJsonStream,
+  PROTOCOL_VERSION,
+  type Agent as AcpAgent,
+  type Client,
+  type ContentBlock as AcpContentBlock,
+  type RequestPermissionRequest,
+  type RequestPermissionResponse,
+  type SessionNotification,
+  type StopReason,
+} from '@agentclientprotocol/sdk'
+import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
+import {
+  LlmAdapter,
+  LlmError,
+  type GenerateOptions,
+  type LlmModelInfo,
+  type LlmProviderInfo,
+  type LlmResolvedModelInfo,
+  type Message,
+  type StreamChunk,
+} from '@deepseek-ai/dsh-llm'
+import type { McpToolRuntimeCapability } from '@deepseek-ai/dsh-mcp-server-tool-runtime'
+import type { Session } from '@deepseek-ai/dsh-session'
+import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess'
+import z from '@deepseek-ai/schemastery'
+
+export const name = 'llm-gianaos-acp'
+export const inject = ['llm', 'subprocess', 'agents', 'sessions', 'mcpToolRuntime']
+
+const DEFAULT_CONTEXT_WINDOW = 1_000_000
+const DEFAULT_MAX_TOKENS = 131_072
+
+export interface GianaOsAcpBindingEventData {
+  /** Canonical GianaOS principal represented by this remote ACP session. */
+  principalId: string
+  /** Opaque ACP session identifier. It is not an identity or credential. */
+  remoteSessionId: string
+  /** Adapter contract revision used to create the binding. */
+  routeRevision: string
+}
+
+declare module '@deepseek-ai/dsh-session/types' {
+  interface SessionEventMap {
+    /** Non-secret projection pointer to the canonical GianaOS ACP session. */
+    'gianaos/acp-binding': GianaOsAcpBindingEventData
+  }
+}
+
+export interface Config {
+  providerId: string
+  providerName: string
+  modelId: string
+  modelName: string
+  description: string
+  principalId: string
+  routeRevision: string
+  launchCommand: string
+  launchArguments: string[]
+  launchScript: string
+  localWorkspace: string
+  remoteWorkspace: string
+  remoteToolRuntimeUrl: string
+  permission: 'allow' | 'reject'
+  contextWindow: number
+  maxTokens: number
+}
+
+export const Config: z<Config> = z.object({
+  providerId: z.string().default('gianaos'),
+  providerName: z.string().default('GianaOS'),
+  modelId: z.string().default('putri'),
+  modelName: z.string().default('Putri'),
+  description: z.string().default('Canonical GianaOS participant with native Giana Code capabilities'),
+  principalId: z.string().default('giana.putri'),
+  routeRevision: z.string().default('giana-code-acp-native-v1'),
+  launchCommand: z.string().required(),
+  launchArguments: z.array(z.string()).default([]),
+  launchScript: z.string().required(),
+  localWorkspace: z.string().required(),
+  remoteWorkspace: z.string().default('/var/lib/gianaos'),
+  remoteToolRuntimeUrl: z.string().default('http://127.0.0.1:18643/mcp/tool-runtime'),
+  permission: z.union(['allow', 'reject'] as const).default('allow'),
+  contextWindow: z.natural().min(1).default(DEFAULT_CONTEXT_WINDOW),
+  maxTokens: z.natural().min(1).default(DEFAULT_MAX_TOKENS),
+})
+
+interface AcpTurnEvent {
+  kind: 'text' | 'reasoning'
+  text: string
+}
+
+class AcpTurnEventQueue implements AsyncIterable<AcpTurnEvent> {
+  private readonly pending: AcpTurnEvent[] = []
+  private waiter?: () => void
+  private closed = false
+
+  push(event: AcpTurnEvent): void {
+    if (this.closed || event.text === '') return
+    this.pending.push(event)
+    this.wake()
+  }
+
+  close(): void {
+    this.closed = true
+    this.wake()
+  }
+
+  private wake(): void {
+    const waiter = this.waiter
+    delete this.waiter
+    waiter?.()
+  }
+
+  async *[Symbol.asyncIterator](): AsyncIterator<AcpTurnEvent> {
+    while (!this.closed || this.pending.length > 0) {
+      const event = this.pending.shift()
+      if (event !== undefined) {
+        yield event
+        continue
+      }
+      await new Promise<void>((resolve) => { this.waiter = resolve })
+    }
+  }
+}
+
+interface AcpTurnBuffer {
+  text: string
+  reasoning: string
+  events: AcpTurnEventQueue
+}
+
+interface AcpSession {
+  child: SubprocessHandle
+  connection: ClientSideConnection
+  remoteSessionId: string
+  agent: Agent
+  localSession: Session
+  capability: McpToolRuntimeCapability
+  currentTurn?: AcpTurnBuffer
+  disposed: boolean
+}
+
+function isReadableDirectory(path: string): boolean {
+  try {
+    return statSync(path).isDirectory() && (accessSync(path, constants.R_OK | constants.X_OK), true)
+  } catch {
+    return false
+  }
+}
+
+function assertAbsoluteFile(label: string, path: string): void {
+  if (!isAbsolute(path)) throw new Error(`llm-gianaos-acp: ${label} must be absolute`)
+  try {
+    accessSync(path, constants.R_OK)
+  } catch {
+    throw new Error(`llm-gianaos-acp: ${label} is not readable`)
+  }
+}
+
+function assertAbsoluteDirectory(label: string, path: string): void {
+  if (!isAbsolute(path) || !isReadableDirectory(path)) {
+    throw new Error(`llm-gianaos-acp: ${label} must be an accessible absolute directory`)
+  }
+}
+
+function assertRemoteWorkspace(path: string): void {
+  if (!path.startsWith('/') || path.includes('\u0000')) {
+    throw new Error('llm-gianaos-acp: remoteWorkspace must be an absolute POSIX path')
+  }
+}
+
+function assertRemoteToolRuntimeUrl(value: string): void {
+  const url = new URL(value)
+  if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.username !== '' || url.password !== '') {
+    throw new Error('llm-gianaos-acp: remoteToolRuntimeUrl must use credential-free numeric loopback HTTP')
+  }
+}
+
+function assertCapabilityProjection(localEndpoint: string, remoteEndpoint: string): void {
+  const local = new URL(localEndpoint)
+  const remote = new URL(remoteEndpoint)
+  if (local.protocol !== 'http:'
+    || local.hostname !== '127.0.0.1'
+    || local.port !== remote.port
+    || local.pathname !== remote.pathname) {
+    throw new Error('llm-gianaos-acp: remote tool runtime does not project the issued local capability')
+  }
+}
+
+function contentText(content: AcpContentBlock): string {
+  return content.type === 'text' ? content.text : ''
+}
+
+function messageText(message: Message): string {
+  const blocks: string[] = []
+  for (const block of message.content) {
+    if (block.type === 'text') blocks.push(block.text)
+  }
+  return blocks.join('\n').trim()
+}
+
+/** Latest direct human input only; GianaOS owns persona, history, and memory. */
+export function latestUserPrompt(messages: readonly Message[]): string {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message?.role !== 'user' || message.source?.kind !== 'user') continue
+    const text = messageText(message)
+    if (text !== '') return text
+  }
+  return ''
+}
+
+export function latestAcpBinding(session: Session, principalId: string): GianaOsAcpBindingEventData | undefined {
+  for (let index = session.events.length - 1; index >= 0; index -= 1) {
+    const event = session.events[index]
+    if (event?.type !== 'gianaos/acp-binding') continue
+    const binding = event.data as GianaOsAcpBindingEventData
+    if (binding.principalId === principalId) return binding
+  }
+  return undefined
+}
+
+export function localSessionTitle(options: GenerateOptions, fallback: string): string {
+  const framed = [...options.messages].reverse().map(messageText).find(Boolean) ?? ''
+  const marker = 'Generate the session title from this JSON array of human messages:\n'
+  let source = framed
+  if (framed.startsWith(marker)) {
+    try {
+      const messages: unknown = JSON.parse(framed.slice(marker.length))
+      if (Array.isArray(messages)) {
+        const text = [...messages].reverse().find((item): item is { text: string } => (
+          typeof item === 'object' && item !== null && typeof (item as { text?: unknown }).text === 'string'
+        ))?.text
+        if (text !== undefined) source = text
+      }
+    } catch {
+      // A malformed auxiliary frame safely falls back to compact source text.
+    }
+  }
+  const compact = source.replace(/\s+/g, ' ').trim()
+  return (compact === '' ? `${fallback} session` : compact).slice(0, 72)
+}
+
+export function projectToolActivity(kind: 'tool_call' | 'tool_call_update'): string {
+  return kind === 'tool_call'
+    ? 'Giana Code tool started.\n'
+    : 'Giana Code tool activity updated.\n'
+}
+
+function finishKind(reason: StopReason): 'stop' | 'max-tokens' | 'aborted' | 'error' {
+  switch (reason) {
+    case 'end_turn': return 'stop'
+    case 'max_tokens': return 'max-tokens'
+    case 'cancelled': return 'aborted'
+    default: return 'error'
+  }
+}
+
+async function disposeAcpSession(session: AcpSession): Promise<void> {
+  if (session.disposed) return
+  session.disposed = true
+  await session.capability.revoke().catch(() => {})
+  session.child.stdin?.end()
+  const exited = await session.child.waitForExit(AbortSignal.timeout(3_000)).catch(() => false)
+  if (!exited) {
+    session.child.terminate()
+    await session.child.waitForExit().catch(() => {})
+  }
+}
+
+class GianaOsAcpAdapter extends LlmAdapter {
+  private readonly sessions = new Map<string, AcpSession>()
+
+  constructor(
+    private readonly ctx: Context,
+    private readonly config: Config,
+  ) {
+    super()
+  }
+
+  override providerInfo(provider: string): LlmProviderInfo {
+    return { id: provider, name: this.config.providerName }
+  }
+
+  override listModels(_provider: string): Promise<readonly LlmModelInfo[]> {
+    return Promise.resolve([{
+      provider: this.config.providerId,
+      id: this.config.modelId,
+      name: this.config.modelName,
+      description: this.config.description,
+      inputModalities: ['text', 'image'] as const,
+    }])
+  }
+
+  override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+    if (model !== this.config.modelId) {
+      return Promise.reject(new LlmError(`${this.config.providerName} has no participant named "${model}"`, 'UNKNOWN_GIANAOS_PARTICIPANT'))
+    }
+    return Promise.resolve({
+      provider,
+      id: this.config.modelId,
+      name: this.config.modelName,
+      description: this.config.description,
+      inputModalities: ['text', 'image'],
+      context: { contextWindow: this.config.contextWindow },
+      defaultMaxTokens: this.config.maxTokens,
+    })
+  }
+
+  async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    if (options.purpose === 'session-title') {
+      const title = localSessionTitle(options, this.config.modelName)
+      yield { type: 'block-start', index: 0, blockType: 'text' }
+      yield { type: 'text-delta', index: 0, text: title }
+      yield { type: 'block-end', index: 0, block: { type: 'text', text: title } }
+      yield { type: 'usage', usage: { inputTokens: 0, outputTokens: 0 } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+      return
+    }
+    if (options.model !== this.config.modelId) {
+      throw new LlmError(`${this.config.providerName} has no participant named "${options.model}"`, 'UNKNOWN_GIANAOS_PARTICIPANT')
+    }
+    if (options.sessionId === undefined) {
+      throw new LlmError('Putri requires an exact live Giana Code session', 'MISSING_GIANA_CODE_SESSION')
+    }
+
+    const agent = this.ctx.agents.get(options.sessionId)
+    const localSession = this.ctx.sessions.get(options.sessionId)
+    if (agent === undefined || localSession === undefined || agent.session !== localSession || agent.id !== localSession.id) {
+      throw new LlmError('Putri requires one exact live Giana Code agent/session identity', 'STALE_GIANA_CODE_SESSION')
+    }
+
+    const key = String(options.sessionId)
+    let session = this.sessions.get(key)
+    if (session !== undefined && (session.disposed || session.agent !== agent || session.localSession !== localSession)) {
+      await disposeAcpSession(session)
+      this.sessions.delete(key)
+      session = undefined
+    }
+    if (session === undefined) {
+      session = await this.startSession(agent, localSession)
+      this.sessions.set(key, session)
+    }
+
+    const prompt = latestUserPrompt(options.messages)
+    if (prompt === '') throw new LlmError('Putri received no direct human message', 'MISSING_HUMAN_MESSAGE')
+
+    const turn: AcpTurnBuffer = { text: '', reasoning: '', events: new AcpTurnEventQueue() }
+    session.currentTurn = turn
+    const abort = (): void => {
+      void session?.connection.cancel({ sessionId: session.remoteSessionId }).catch(() => {})
+    }
+    options.signal?.addEventListener('abort', abort, { once: true })
+    const promptOutcome = session.connection.prompt({
+      sessionId: session.remoteSessionId,
+      prompt: [{ type: 'text', text: prompt }],
+    }).then(result => ({ ok: true as const, stopReason: result.stopReason }),
+      (error: unknown) => ({ ok: false as const, error })).finally(() => { turn.events.close() })
+
+    let index = 0
+    let openBlock: { kind: AcpTurnEvent['kind'], index: number } | undefined
+    try {
+      for await (const event of turn.events) {
+        if (openBlock !== undefined && openBlock.kind !== event.kind) {
+          const block = openBlock.kind === 'reasoning'
+            ? { type: 'reasoning' as const, text: turn.reasoning }
+            : { type: 'text' as const, text: turn.text }
+          yield { type: 'block-end', index: openBlock.index, block }
+          openBlock = undefined
+        }
+        if (openBlock === undefined) {
+          openBlock = { kind: event.kind, index }
+          yield { type: 'block-start', index, blockType: event.kind }
+          index += 1
+        }
+        if (event.kind === 'reasoning') {
+          yield { type: 'reasoning-delta', index: openBlock.index, text: event.text }
+        } else {
+          yield { type: 'text-delta', index: openBlock.index, text: event.text }
+        }
+      }
+      if (openBlock !== undefined) {
+        const block = openBlock.kind === 'reasoning'
+          ? { type: 'reasoning' as const, text: turn.reasoning }
+          : { type: 'text' as const, text: turn.text }
+        yield { type: 'block-end', index: openBlock.index, block }
+      }
+    } finally {
+      options.signal?.removeEventListener('abort', abort)
+      delete session.currentTurn
+    }
+
+    const outcome = await promptOutcome
+    if (!outcome.ok) {
+      await disposeAcpSession(session)
+      this.sessions.delete(key)
+      const error = outcome.error
+      throw new LlmError(
+        error instanceof Error ? `Putri ACP failed: ${error.message}` : 'Putri ACP failed',
+        options.signal?.aborted === true ? 'ABORTED' : 'GIANAOS_ACP_ERROR',
+        error instanceof Error ? { cause: error } : undefined,
+      )
+    }
+
+    yield { type: 'usage', usage: { inputTokens: 0, outputTokens: 0 } }
+    const kind = finishKind(outcome.stopReason)
+    if (kind === 'stop' || kind === 'max-tokens') {
+      yield { type: 'finish', reason: { kind } }
+    } else {
+      yield {
+        type: 'finish',
+        reason: {
+          kind,
+          failure: {
+            message: kind === 'aborted' ? 'Putri request was cancelled' : `Putri stopped with ${outcome.stopReason}`,
+            code: kind === 'aborted' ? 'ABORTED' : 'GIANAOS_ACP_STOPPED',
+          },
+        },
+      }
+    }
+  }
+
+  async dispose(): Promise<void> {
+    const sessions = [...this.sessions.values()]
+    this.sessions.clear()
+    await Promise.allSettled(sessions.map(disposeAcpSession))
+  }
+
+  private async startSession(agent: Agent, localSession: Session): Promise<AcpSession> {
+    const capability = this.ctx.mcpToolRuntime.issue(agent)
+    assertCapabilityProjection(capability.endpoint, this.config.remoteToolRuntimeUrl)
+    const child = this.ctx.subprocess.spawn({
+      argv: [
+        this.config.launchCommand,
+        ...this.config.launchArguments,
+        this.config.launchScript,
+      ],
+      cwd: this.config.localWorkspace,
+      stdio: { stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' },
+      graceMs: 3_000,
+      env: {},
+    })
+    if (child.stdin === undefined || child.stdout === undefined) {
+      await capability.revoke().catch(() => {})
+      throw new LlmError('Putri ACP subprocess lost its protocol pipes', 'GIANAOS_ACP_PIPE_ERROR')
+    }
+
+    let currentSession: AcpSession | undefined
+    const permission = this.config.permission
+    const makeClient = (_agent: AcpAgent): Client => ({
+      sessionUpdate(params: SessionNotification): Promise<void> {
+        const update = params.update
+        const turn = currentSession?.currentTurn
+        if (turn === undefined) return Promise.resolve()
+        if (update.sessionUpdate === 'agent_message_chunk') {
+          const text = contentText(update.content)
+          turn.text += text
+          turn.events.push({ kind: 'text', text })
+        } else if (update.sessionUpdate === 'agent_thought_chunk') {
+          const text = contentText(update.content)
+          turn.reasoning += text
+          turn.events.push({ kind: 'reasoning', text })
+        } else if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
+          const text = projectToolActivity(update.sessionUpdate)
+          turn.reasoning += text
+          turn.events.push({ kind: 'reasoning', text })
+        }
+        return Promise.resolve()
+      },
+      requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
+        if (permission === 'allow') {
+          const allowed = params.options.find(option => option.kind === 'allow_once')
+            ?? params.options.find(option => option.kind === 'allow_always')
+          if (allowed !== undefined) {
+            return Promise.resolve({ outcome: { outcome: 'selected', optionId: allowed.optionId } })
+          }
+        }
+        return Promise.resolve({ outcome: { outcome: 'cancelled' } })
+      },
+    })
+    const connection = new ClientSideConnection(
+      makeClient,
+      ndJsonStream(
+        NodeWritable.toWeb(child.stdin) as WritableStream<Uint8Array>,
+        NodeReadable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
+      ),
+    )
+
+    try {
+      const initialized = await connection.initialize({
+        protocolVersion: PROTOCOL_VERSION,
+        clientCapabilities: {},
+        clientInfo: { name: 'Giana Code', version: '0.1.1-rc.2' },
+      })
+      // GianaOS R2.004 already accepts and registers HTTP MCP servers in
+      // newSession/loadSession, but its current initialize response omits the
+      // matching capability advertisement. Keep the projection explicit here
+      // until the canonical runtime advertises that source-backed behavior.
+      const mcpServers = [{
+        type: 'http' as const,
+        name: 'giana-code-tool-runtime',
+        url: this.config.remoteToolRuntimeUrl,
+        headers: [{ name: 'Authorization', value: `Bearer ${capability.token}` }],
+      }]
+      const binding = latestAcpBinding(localSession, this.config.principalId)
+      let remoteSessionId: string
+      if (binding !== undefined) {
+        if (binding.routeRevision !== this.config.routeRevision) {
+          throw new Error('stored Putri ACP binding uses a different route revision')
+        }
+        if (initialized.agentCapabilities?.loadSession !== true) {
+          throw new Error('canonical GianaOS ACP route cannot restore the stored session')
+        }
+        await connection.loadSession({
+          cwd: this.config.remoteWorkspace,
+          mcpServers,
+          sessionId: binding.remoteSessionId,
+        })
+        remoteSessionId = binding.remoteSessionId
+      } else {
+        const remote = await connection.newSession({ cwd: this.config.remoteWorkspace, mcpServers })
+        remoteSessionId = remote.sessionId
+        localSession.append('gianaos/acp-binding', {
+          principalId: this.config.principalId,
+          remoteSessionId,
+          routeRevision: this.config.routeRevision,
+        })
+      }
+      currentSession = {
+        child,
+        connection,
+        remoteSessionId,
+        agent,
+        localSession,
+        capability,
+        disposed: false,
+      }
+      return currentSession
+    } catch (error: unknown) {
+      await capability.revoke().catch(() => {})
+      child.terminate()
+      await child.waitForExit().catch(() => {})
+      throw error
+    }
+  }
+}
+
+export function apply(ctx: Context, config: Config): void {
+  assertAbsoluteFile('launchCommand', config.launchCommand)
+  assertAbsoluteFile('launchScript', config.launchScript)
+  assertAbsoluteDirectory('localWorkspace', config.localWorkspace)
+  assertRemoteWorkspace(config.remoteWorkspace)
+  assertRemoteToolRuntimeUrl(config.remoteToolRuntimeUrl)
+  if (config.providerId.trim() === '' || config.modelId.trim() === '' || config.principalId.trim() === '') {
+    throw new Error('llm-gianaos-acp: providerId, modelId, and principalId must not be empty')
+  }
+
+  const adapter = new GianaOsAcpAdapter(ctx, config)
+  ctx.llm.registerAdapter([config.providerId], adapter)
+  ctx.effect(() => () => adapter.dispose(), 'llm-gianaos-acp.sessions()')
+}

@@ -27,6 +27,9 @@ MCP 客户端桥接插件：连接外部 [Model Context Protocol](https://modelc
     url: http://localhost:3000/mcp
     headers:
       Authorization: !!js '`Bearer ${process.env.MCP_TOKEN}`'
+    # 涉及密钥的请求头也可以在连接时从进程环境读取。
+    headersFromEnv:
+      X-Api-Key: MCP_API_KEY
 ```
 
 模型会看到 `mcp__github__create_issue`、`mcp__web__search` 等工具，这与 Claude Code 和 Codex 使用的服务器限定形状相同。HMR（热模块替换）支持热替换：编辑配置项会触发断开 + 重新连接，无需重启进程；`serverName` 不变时会生成完全相同的工具名称。
@@ -43,6 +46,7 @@ MCP 客户端桥接插件：连接外部 [Model Context Protocol](https://modelc
 | `cwd` | stdio | 否 | 子进程工作目录 |
 | `url` | http | 是 | MCP 服务器 URL |
 | `headers` | http | 否 | 额外标头（例如认证 token） |
+| `headersFromEnv` | http | 否 | HTTP 请求头名称到进程环境变量名称的映射 |
 | `toolCallTimeoutMs` | 两者 | 否 | 每次 `callTool` 调用的超时（默认 60000） |
 | `failOnStartupError` | 两者 | 否 | 初始连接或工具同步失败时拒绝插件激活（默认 `false`） |
 | `reconnect.enabled` | 两者 | 否 | 连接丢失后自动重新连接（默认 `true`） |

@@ -14,13 +14,13 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import type { ReactNode } from 'react'
 import type { PropsRenderSlots, PropsRuntime, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
 import { computeColumns, SIDEBAR_AUTO_COLLAPSE, SIDEBAR_DEFAULT } from './columns.ts'
-import type { createLayoutStore } from './stores.ts'
+import type { createLayoutStore, PanePolicy } from './stores.ts'
 import css from './AppFrame.module.css'
 
 /** Full composed props: runtime share + child-slot render share + store share. */
 export type AppFrameProps =
   & PropsRuntime<'root'>
-  & PropsRenderSlots<'sidebar' | 'conversation' | 'details' | 'shell.overlay'>
+  & PropsRenderSlots<'sidebar' | 'conversation' | 'details' | 'shell.bottom' | 'shell.overlay'>
   & PropsStore<ReturnType<typeof createLayoutStore>>
 
 /** Center column grid item (session-body building block). */
@@ -31,6 +31,15 @@ function CenterColumn(props: { children?: ReactNode }) {
 /** Details column grid item; width 0 keeps the subtree mounted (never unmount on close). */
 function DetailsColumn(props: { children?: ReactNode }) {
   return <div className={css.detailsCol}>{props.children}</div>
+}
+
+/** Optional app-defined lower surface (simulator controls, timeline, terminal). */
+function BottomSurface(props: { children?: ReactNode; height: number; policy: PanePolicy }) {
+  return (
+    <div className={css.bottomSurface} data-mode={props.policy.mode} style={{ height: props.height }}>
+      {props.children}
+    </div>
+  )
 }
 
 /**
@@ -140,6 +149,7 @@ export function AppFrame({
     ? 0
     : panels.sidebar === 0 ? SIDEBAR_DEFAULT : panels.sidebar
   const cols = computeColumns(viewport, sidebarPreference, detailsSession === undefined ? 0 : panels.details)
+  const middleCollapsed = panels.middleCollapsed && cols.details > 0
   const colsRef = useRef(cols)
   colsRef.current = cols
 
@@ -165,9 +175,16 @@ export function AppFrame({
     <div
       ref={frameRef}
       className={css.frame}
-      style={{ gridTemplateColumns: `${cols.sidebar}px minmax(0, 1fr) ${cols.details}px` }}
+      style={{
+        gridTemplateColumns: middleCollapsed
+          ? `${cols.sidebar}px 0 minmax(0, 1fr)`
+          : `${cols.sidebar}px minmax(0, 1fr) ${cols.details}px`,
+        gridTemplateRows: panels.bottom > 0 ? `minmax(0, 1fr) ${panels.bottom}px` : 'minmax(0, 1fr) 0',
+      }}
       data-sidebar-collapsed={sidebarCollapsed || undefined}
+      data-middle-collapsed={middleCollapsed || undefined}
       data-details-collapsed={cols.details === 0 || undefined}
+      data-bottom-collapsed={panels.bottom === 0 || undefined}
       data-dragging={dragging || undefined}
     >
       <div className={css.sidebarCol}>
@@ -189,13 +206,20 @@ export function AppFrame({
             empty while no session is current. */}
         <CenterColumn>{renderSlot('conversation', {})}</CenterColumn>
         <DetailsColumn>{renderSlot('details', {})}</DetailsColumn>
+        <BottomSurface height={panels.bottom} policy={panels.policy.bottom}>
+          {renderSlot('shell.bottom', {
+            collapsed: panels.bottom === 0,
+            height: panels.bottom,
+            policy: panels.policy.bottom,
+          })}
+        </BottomSurface>
       </>
       <div className={css.overlayLayer} data-shell-overlay>
         {renderSlot('shell.overlay', {})}
       </div>
       {/* The collapsed rail is fixed-width: no resize handle while closed. */}
       {!sidebarCollapsed && <DragHandle side="sidebar" left={cols.sidebar} onStart={onSidebarStart} onDrag={onSidebarDrag} onEnd={onDragEnd} />}
-      {cols.details > 0 && <DragHandle side="details" left={viewport - cols.details} onStart={onDetailsStart} onDrag={onDetailsDrag} onEnd={onDragEnd} />}
+      {cols.details > 0 && !middleCollapsed && <DragHandle side="details" left={viewport - cols.details} onStart={onDetailsStart} onDrag={onDetailsDrag} onEnd={onDragEnd} />}
     </div>
   )
 }

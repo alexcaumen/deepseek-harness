@@ -10,6 +10,7 @@
  */
 import type { BoundActions } from '@deepseek-ai/dsh-client-ui-slots'
 import type { createLayoutStore } from './stores.ts'
+import type { LayoutPolicy } from './stores.ts'
 
 /** The layout store's bound action set (framework-baked, draft params peeled). */
 export type PanelActions = BoundActions<ReturnType<typeof createLayoutStore>>
@@ -23,10 +24,24 @@ export type PanelActions = BoundActions<ReturnType<typeof createLayoutStore>>
 export interface ILayout {
   /** Toggle the sidebar panel (closed ⟷ contract default width). */
   toggleSidebar(): void
+  /** Collapse or restore the conversation pane while the inspector is open. */
+  toggleMiddle(): void
+  /** Open the inspector and give it the full content area. */
+  focusDetails(): void
+  /** Restore the conversation pane. */
+  showMiddle(): void
   /** Open the details panel (no-op when already open). */
   openDetails(): void
+  /** Toggle the unified details inspector. */
+  toggleDetails(): void
   /** Close the details panel. */
   closeDetails(): void
+  /** Apply an application-owned pane policy. */
+  setPolicy(policy: LayoutPolicy): void
+  /** Open/toggle/close the optional application bottom surface. */
+  openBottom(): void
+  toggleBottom(): void
+  closeBottom(): void
 }
 
 /** Cross-plugin panel-action face (ctx.layout). */
@@ -49,14 +64,47 @@ export class LayoutController implements ILayout {
     this.#require().toggleSidebar()
   }
 
+  toggleMiddle(): void {
+    this.#require().toggleMiddle()
+  }
+
+  focusDetails(): void {
+    this.#require().focusDetails()
+  }
+
+  showMiddle(): void {
+    this.#require().showMiddle()
+  }
+
   /** Open the details panel (no-op when already open). */
   openDetails(): void {
     this.#require().openDetails()
   }
 
+  /** Toggle the unified details inspector. */
+  toggleDetails(): void {
+    this.#require().toggleDetails()
+  }
+
   /** Close the details panel. */
   closeDetails(): void {
     this.#require().closeDetails()
+  }
+
+  setPolicy(policy: LayoutPolicy): void {
+    this.#require().setPolicy(policy)
+  }
+
+  openBottom(): void {
+    this.#require().openBottom()
+  }
+
+  toggleBottom(): void {
+    this.#require().toggleBottom()
+  }
+
+  closeBottom(): void {
+    this.#require().closeBottom()
   }
 
   #require(): PanelActions {

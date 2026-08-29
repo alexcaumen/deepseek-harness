@@ -727,6 +727,39 @@ describe('degenerate composition (no persistence, no factory)', () => {
 })
 
 describe('sessions.prompt synchronous rejection', () => {
+  it('admits an explicit steer without cancelling the running request', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(UserQuestionService)
+    const session = ctx.sessions.create(sid('session-interrupt-steer'))
+    const calls: unknown[][] = []
+    ctx.agents.register({
+      id: session.id,
+      session,
+      status: 'running',
+      ctx,
+      cancel: (...args: unknown[]) => { calls.push(['cancel', ...args]) },
+      steer: (...args: unknown[]) => { calls.push(['steer', ...args]) },
+      followup: (...args: unknown[]) => { calls.push(['followup', ...args]) },
+    } as unknown as Agent)
+    const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
+
+    const response = await api.sessions.prompt(request({
+      sessionId: session.id,
+      mode: 'steer',
+      content: [{ type: 'text' as const, text: 'change direction now' }],
+    }))
+
+    expect(response.result.ok).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.[0]).toBe('steer')
+    expect(calls[0]?.[1]).toMatchObject({
+      content: [{ type: 'text', text: 'change direction now' }],
+      source: { kind: 'user' },
+    })
+  })
+
   it('maps a synchronous send throw (disposed/invalid input) to agent-busy with the reason attached', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)

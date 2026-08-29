@@ -131,13 +131,16 @@ function updateChunk(state: AssistantState, match: ConversationMatch): Assistant
   }
 }
 
-function closedBoundary(location: ConversationLocation): { seq: number; time: number } | undefined {
-  if (location.kind === 'step' && location.step.status === 'closed' && location.step.end !== undefined) {
-    return location.step.end
+function interruptionBoundary(location: ConversationLocation): { seq: number; time: number } | undefined {
+  const turn = location.kind === 'step' || location.kind === 'turn' ? location.turn : undefined
+  if (turn?.end !== undefined) {
+    const reason = turn.end.data.reason.kind
+    return reason === 'aborted' || reason === 'interrupted' ? turn.end : undefined
   }
-  if ((location.kind === 'step' || location.kind === 'turn')
-    && location.turn.status === 'closed' && location.turn.end !== undefined) {
-    return location.turn.end
+  if (location.kind === 'step' && location.step.status === 'closed' && location.step.end !== undefined) {
+    // A closed step without a durable turn/end is the crash-orphan shape. Keep
+    // the visible prefix, but only synthesize interruption for that shape.
+    return location.step.end
   }
   return undefined
 }
@@ -167,7 +170,7 @@ function finalNode(
     }
   }
   const location = context.start?.location ?? context.matches.at(-1)?.location
-  const boundary = location === undefined ? undefined : closedBoundary(location)
+  const boundary = location === undefined ? undefined : interruptionBoundary(location)
   const blocks = compactBlocks(state.blocks)
   if (boundary === undefined || !hasInterruptionEvidence(blocks)) return undefined
   return {

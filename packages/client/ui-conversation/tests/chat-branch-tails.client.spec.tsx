@@ -189,11 +189,39 @@ describe('MessageItem arms', () => {
     expect(exec).toHaveBeenCalledWith('copy')
   })
 
+  it('user copy falls back when clipboard.writeText is exposed but denied', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+    })
+    const exec = vi.fn().mockReturnValue(true)
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: exec,
+    })
+    render(
+      <MessageItem t={t} node={{
+        kind: 'user', seq: 1, time: 1_000,
+        content: [{ type: 'text', text: 'desktop fallback' }] as never,
+        source: null,
+      }}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '复制' }))
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(exec).toHaveBeenCalledWith('copy')
+    expect(screen.getByRole('button', { name: '复制成功' })).toBeTruthy()
+  })
+
   it('user copy never claims success when the host rejects the write', async () => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
     })
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: vi.fn(() => false) })
     render(
       <MessageItem t={t} node={{
         kind: 'user', seq: 1, time: 1_000,

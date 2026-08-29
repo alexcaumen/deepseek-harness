@@ -119,10 +119,10 @@ export function HeroShell({ t, renderSlot, children }: HeroShellProps) {
     <div className={css.root}>
       <div className={css.stack}>
         <div className={css.headline}>
-          {/* figma 34:10412: fish 34×25 leading the headline, gap 10. */}
+          {/* Giana mark is intentionally prominent on the empty-session hero. */}
           <span className={css.fishHitbox}>
-            {renderSlot('conversation.hero.brand.mark', { size: 34, className: css.fish }, {
-              fallback: <FishLogo size={34} className={css.fish} />,
+            {renderSlot('conversation.hero.brand.mark', { size: 68, className: css.fish }, {
+              fallback: <FishLogo size={68} className={css.fish} />,
             })}
           </span>
           <span className={css.headlineText}>{t('hero.headline')}</span>

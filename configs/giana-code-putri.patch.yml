@@ -1,0 +1,166 @@
+- insert:
+    - id: llm-gianaos-acp
+      name: '@grinviro/dsh-llm-gianaos-acp'
+      config:
+        providerId: gianaos
+        providerName: GianaOS
+        modelId: putri
+        modelName: Putri
+        description: Canonical Putri with native Giana Code tools through GianaOS ACP
+        principalId: giana.putri
+        routeRevision: giana-code-acp-native-v1
+        launchCommand: 'C:\Program Files\nodejs\node.exe'
+        launchArguments: []
+        launchScript: 'N:\worktrees\deepseek-harness\giana-code-putri-20260827\scripts\princess-os\Start-GianaOsPutriAcp.mjs'
+        localWorkspace: 'N:\worktrees\deepseek-harness\giana-code-putri-20260827'
+        remoteWorkspace: /srv/gianaos-data/objects/putri
+        remoteToolRuntimeUrl: http://127.0.0.1:18644/mcp/tool-runtime
+        permission: allow
+        contextWindow: 1000000
+        maxTokens: 131072
+
+    - id: llm-princess-os
+      name: '@grinviro/dsh-llm-princess-os'
+      config:
+        providerId: princess-os
+        providerName: Princess OS
+        agentDescription: Princess OS private agent via ACP
+        systemInstruction: Giana Code is only the workbench projection. Princess OS owns this private agent identity, session, memory, tools, and approvals. Do not claim to be one of the Giana Girls and do not write to any GianaOS profile or canonical database.
+        pythonCommand: 'N:\PrincessOS\runtime\Scripts\python.exe'
+        hermesSource: 'N:\GianaOS\gianaos-agent'
+        workspace: 'N:\worktrees\deepseek-harness\giana-code-putri-20260827'
+        credentialEnv: DEEPSEEK_API_KEY
+        permission: allow
+        agents:
+          - id: lara
+            name: Lara
+            hermesHome: 'N:\PrincessOS\agents\lara\home'
+            ownerPrivateWindowsBindingSha256: ''
+
+# The desktop app serves prebuilt client bundles. The upstream HMR row polls
+# every client bundle on the N: worktree every 500 ms and is only useful while
+# pnpm's watch build is running, so keep it out of the stable desktop runtime.
+- id: client-hmr
+  disabled: true
+
+- id: dsh-office
+  name: '@huiliyi37/dsh-office'
+  config:
+      enable:
+        xlsx: true
+        pdf: true
+        ppt: true
+        docx: true
+
+- insert:
+    - id: mcp-markitdown
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: markitdown
+        transport: stdio
+        command: 'N:\PrincessOS\workbench\third-party\markitdown-mcp-venv-20260822\Scripts\markitdown-mcp.exe'
+        cwd: 'N:\PrincessOS\workbench\third-party\markitdown-mcp-venv-20260822'
+    - id: mcp-playwright
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: playwright
+        transport: stdio
+        command: 'C:\Program Files\nodejs\node.exe'
+        cwd: 'N:\PrincessOS\workbench\ui-test-workspace'
+        args:
+          - 'C:\Users\grinv\.dsh-giana-code-putri-clean-20260827\profiles\web\node_modules\@playwright\mcp\cli.js'
+          - --isolated
+          - --headless
+          - --sandbox
+          - --browser
+          - chrome
+          - --caps
+          - vision,testing,devtools
+          - --image-responses
+          - allow
+          - --output-dir
+          - 'N:\worktrees\deepseek-harness\giana-code-putri-20260827\.artifacts\playwright-mcp\output'
+          - --output-max-size
+          - '104857600'
+          - --block-service-workers
+          - --codegen
+          - typescript
+          - --snapshot-mode
+          - full
+          - --timeout-action
+          - '10000'
+          - --timeout-navigation
+          - '60000'
+        toolCallTimeoutMs: 120000
+        failOnStartupError: true
+        reconnect:
+          enabled: true
+          initialDelayMs: 500
+          maxDelayMs: 5000
+          maxAttempts: 3
+    - id: mcp-connectors
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: connectors
+        transport: streamable-http
+        url: http://127.0.0.1:17301/mcp
+        headersFromEnv:
+          Authorization: OOMOL_CONNECT_RUNTIME_AUTHORIZATION
+        toolCallTimeoutMs: 120000
+        # Connector startup is supervised by the desktop launcher. A brief
+        # gateway restart must degrade this capability, not terminate DSH.
+        failOnStartupError: false
+        reconnect:
+          enabled: true
+          initialDelayMs: 500
+          maxDelayMs: 5000
+          maxAttempts: 30
+    - id: mcp-windows-desktop
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: windows_desktop
+        transport: stdio
+        command: 'N:\PrincessOS\workbench\third-party\windows-computer-use-mcp-20260822\.venv\Scripts\windows-computer-use-mcp.exe'
+        cwd: 'N:\PrincessOS\workbench\third-party\windows-computer-use-mcp-20260822'
+        env:
+          # Safe-by-default staging: desktop actions require explicit HITL
+          # approval and remain simulated until a separately reviewed route
+          # proves a reversible window handle.
+          WINDOWS_COMPUTER_USE_MCP_BYPASS_HITL: '0'
+          WINDOWS_COMPUTER_USE_MCP_KILL_SWITCH: '0'
+          WINDOWS_COMPUTER_USE_MCP_DRY_RUN: '1'
+          WINDOWS_COMPUTER_USE_MCP_ENABLE_FACE: '0'
+          WINDOWS_COMPUTER_USE_MCP_ENABLE_KEYLOGGER: '0'
+          WINDOWS_COMPUTER_USE_MCP_MAX_ACTIONS_PER_MINUTE: '240'
+        toolCallTimeoutMs: 120000
+        failOnStartupError: true
+        reconnect:
+          enabled: true
+          initialDelayMs: 500
+          maxDelayMs: 5000
+          maxAttempts: 3
+
+- insert:
+    - id: tool-access-policy
+      name: '@grinviro/dsh-tool-access-policy'
+      config:
+        denyPatterns: []
+    - id: subagent-codex
+      name: '@deepseek-ai/dsh-subagent-codex'
+      config:
+        providerName: codex
+        permissionMode: never
+    - id: subagent-claude-code
+      name: '@deepseek-ai/dsh-subagent-claude-code'
+      config:
+        providerName: claude-code
+        permissionMode: dontAsk
+
+# The preserved desktop runtime owns 18643. The isolated Putri candidate gets
+# its own loopback listener so its MCP tool bridge cannot collide with it.
+- id: mcp-tool-runtime
+  name: '@deepseek-ai/dsh-mcp-server-tool-runtime'
+  config:
+    host: 127.0.0.1
+    port: 18644
+    path: /mcp/tool-runtime

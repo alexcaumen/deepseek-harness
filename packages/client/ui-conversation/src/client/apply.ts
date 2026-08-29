@@ -8,6 +8,7 @@ import {
 // goes through the service, never a value import (client bundle purity gate).
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
+import type {} from 'dsh-better-sidebar/client'
 // Type-only: pulls the locale plugin's Context merge (ctx.locale).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { ViewTab } from './contract/views.ts'
@@ -27,6 +28,7 @@ import { ComposerSubmissionPolicy } from './input/submission-policy.ts'
 import { InputBar } from './skeleton/InputBar.tsx'
 import { EnterBehaviorRow } from './settings/EnterBehaviorRow.tsx'
 import type { EnterBehaviorRowInjected } from './settings/EnterBehaviorRow.tsx'
+import { ComputeRoutingRow } from './settings/ComputeRoutingRow.tsx'
 import { ChatView } from './chat/ChatView.tsx'
 import { StatsLine } from './chat/StatsLine.tsx'
 import { ApprovalPanel } from './skeleton/ApprovalPanel.tsx'
@@ -35,6 +37,9 @@ import { queueDockEntry } from './queue/QueueDock.tsx'
 import { ConversationRoot } from './skeleton/ConversationRoot.tsx'
 import { ConversationSession, ConversationSessionHeader } from './skeleton/ConversationSession.tsx'
 import { DetailsPanel } from './skeleton/DetailsPanel.tsx'
+import {
+  registerWorkbenchToolDetails, WorkbenchDetailsSelection,
+} from './skeleton/WorkbenchToolDetails.tsx'
 import { en, NS, zh, type ConversationKey } from './locales.ts'
 import { registerConversationNodes } from './conversation-nodes/register.ts'
 import { registerChatNodeRenderers } from './chat/register-node-renderers.ts'
@@ -117,6 +122,18 @@ export function apply(ctx: Context): void {
   const workspaces = ctx.workspaces
   const layout = ctx.layout
   const slots = ctx.slots
+  const t = ctx.locale.bind(NS)
+  const workbenchDetails = new WorkbenchDetailsSelection()
+
+  // Better Sidebar is the single Codex-style right-inspector owner in the
+  // Giana bundle. The optional injection keeps headless/minimal assemblies
+  // valid and falls back to the native details column when it is absent.
+  ctx.inject(['betterSidebar'], scope => registerWorkbenchToolDetails(
+    scope.betterSidebar,
+    sessions,
+    workbenchDetails,
+    t,
+  ))
 
   registerConversationNodes(ctx)
   registerChatNodeRenderers(ctx)
@@ -126,8 +143,6 @@ export function apply(ctx: Context): void {
   // Registration-time text (the view tab label) reads through the bound
   // translate as a thunk, so it follows the active locale without
   // re-registration; components read the standard `t` seat instead.
-  const t = ctx.locale.bind(NS)
-
   // Apply-time construction keeps store identity bound to this fiber.
   const chatStore = createChatStore()
   const submissionPolicy = new ComposerSubmissionPolicy(
@@ -144,6 +159,13 @@ export function apply(ctx: Context): void {
       setBusyEnter: (behavior) => { submissionPolicy.setBusyEnter(behavior) },
     }),
   }, EnterBehaviorRow))
+
+  ctx.slots.inject('settings.general.item', () => ctx.slots.register({
+    name: 'settings.general.item',
+    id: 'speech-compute-routing',
+    order: 30,
+    locale: NS,
+  }, ComputeRoutingRow))
 
   // Chat semantic reader positions by session, surviving view switches and
   // width reflow when the tab ring remounts the view. Deliberately not
@@ -394,7 +416,17 @@ export function apply(ctx: Context): void {
       return {
         openDetails: (target) => {
           actions.select(target)
-          layout.openDetails()
+          workbenchDetails.set(sessionId, target)
+          const betterSidebar = ctx.get('betterSidebar')
+          if (betterSidebar === undefined) {
+            layout.openDetails()
+            return
+          }
+          const cwd = sessions.list.getSnapshot().byId[sessionId]?.cwd
+          betterSidebar.openTab(
+            { type: 'conversation-details', title: t('details.title') },
+            { sessionId, ...(cwd === undefined ? {} : { cwd }) },
+          )
         },
         fileMentions: owner => ctx.get('chatFileMentions')?.forClosing(owner),
         openFile: (path) => {
@@ -452,6 +484,7 @@ export function apply(ctx: Context): void {
     store: chatStore,
     inject: (): DetailsInjected => ({
       closeDetails: () => { layout.closeDetails() },
+      toggleMiddle: () => { layout.toggleMiddle() },
     }),
   }, DetailsPanel)
 

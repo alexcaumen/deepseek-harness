@@ -27,6 +27,7 @@
  */
 
 import { createModels, getSupportedThinkingLevels } from '@earendil-works/pi-ai'
+import { clampMaxTokensToContext } from '@earendil-works/pi-ai/api/simple-options'
 import type {
   Api,
   AuthContext,
@@ -364,10 +365,13 @@ export class PiAiAdapter extends LlmAdapter {
           maxPixels: profile.requestImagePixelBudget,
           maxBytes: profile.requestImageMaxBytes,
         })
+      // Keep the request inside the model window even when a provider or a
+      // future pi-ai implementation does not apply its own output clamp.
+      const maxTokens = clampMaxTokensToContext(model, context, options.maxTokens ?? model.maxTokens)
       const events = snapshot.models.streamSimple(model, context, {
         ...profileOptions(profile, reasoning, apiKey),
         ...options.temperature === undefined ? {} : { temperature: options.temperature },
-        ...options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens },
+        maxTokens,
         ...options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) },
         signal: watchdog.signal,
         // Profile headers are deployment-owned; attribution names are

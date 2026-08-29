@@ -616,6 +616,56 @@ select.input {
   background: var(--dsw-alias-interactive-bg-hover-danger);
 }
 
+.nativeSubscriptions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+.nativeSubscriptionsTitle {
+  margin: 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+
+.nativeSubscriptionsDescription,
+.nativeSubscriptionNote {
+  margin: 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.nativeSubscriptionActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.nativeSubscriptionButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 20px;
+  text-decoration: none;
+}
+
+.nativeSubscriptionButton:hover {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
 /* Icon-button label seat: named for assistive tech and for the tests that
    query these controls by their text. */
 .hiddenLabel {

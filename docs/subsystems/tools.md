@@ -475,6 +475,26 @@ The full presentation field docs live in [`packages/core/tools/src/presentation.
 
 Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnpm run verify-cordis-catalog` in doc-sync; regenerate with `pnpm run gen-cordis-catalog`) — the language sides differ only in locale-specific paired document paths. Signature blocks use a `ts cordis-catalog` fence and keep the original source JSDoc; dispatch modes are defined in the [primer](../cordis-primer.md#dispatch-modes), and the framework-inherited `ctx` API lives in [cordis-api/inherited.md](../cordis-api/inherited.md).
 
+<a id="ctxmcptoolruntime--toolruntimemcpserver"></a>
+
+### `ctx.mcpToolRuntime` — `ToolRuntimeMcpServer`
+
+Cordis service plugin exposing scoped ToolRuntime calls over authenticated loopback Streamable HTTP.
+
+```ts cordis-catalog
+/**
+ * Issue or retrieve the single capability for an exact live agent/session.
+ * Object identity, not a caller-supplied id, is the authorization boundary.
+ * @param agent - Exact live Giana Code agent whose session owns the capability.
+ * @returns an opaque, revocable loopback MCP capability for that agent/session.
+ */
+issue(agent: Agent): McpToolRuntimeCapability
+```
+
+Types: [Agent](core.md)
+
+Source: [`packages/mcp/mcp-server-tool-runtime/src/index.ts`](../../packages/mcp/mcp-server-tool-runtime/src/index.ts)
+
 <a id="ctxtools--toolruntime"></a>
 
 ### `ctx.tools` — `ToolRuntime`

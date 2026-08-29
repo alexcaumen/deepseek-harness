@@ -376,11 +376,24 @@ describe('writeClipboard', () => {
     expect(writeText).toHaveBeenCalledWith('payload')
   })
 
-  it('reports false when the Clipboard API rejects', async () => {
+  it('falls back to execCommand when the Clipboard API rejects', async () => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
     })
+    const exec = vi.fn(() => true)
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: exec })
+    await expect(writeClipboard('payload')).resolves.toBe(true)
+    expect(exec).toHaveBeenCalledWith('copy')
+    expect(document.querySelector('textarea')).toBeNull()
+  })
+
+  it('reports false when both clipboard paths reject the write', async () => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+    })
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: vi.fn(() => false) })
     await expect(writeClipboard('payload')).resolves.toBe(false)
   })
 

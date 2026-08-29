@@ -203,7 +203,7 @@ describe('AppFrame', () => {
     expect(tracks(frame)).toEqual([280, 0])
   })
 
-  it('keeps details closed when the first Session materializes', () => {
+  it('keeps contextual details closed when the first Session materializes', () => {
     selectedSession.current = undefined
     const { frame, instance, rerenderFrame } = mountFrame()
     expect(tracks(frame)).toEqual([280, 0])
@@ -245,10 +245,39 @@ describe('AppFrame', () => {
   })
 
   it('details column stays mounted at zero width', () => {
-    const { frame, getByTestId } = mountFrame()
+    const { frame, instance, getByTestId } = mountFrame()
+    act(() => { instance.actions.closeDetails() })
     expect(tracks(frame)).toEqual([280, 0])
     expect(getByTestId('details-content')).toBeTruthy()
     expect(frame.hasAttribute('data-details-collapsed')).toBe(true)
+  })
+
+  it('lets the inspector take the full middle-and-right area and restores chat', () => {
+    const { frame, instance, getByTestId } = mountFrame()
+    act(() => { instance.actions.focusDetails() })
+    expect(frame.style.gridTemplateColumns).toBe('280px 0 minmax(0, 1fr)')
+    expect(frame.hasAttribute('data-middle-collapsed')).toBe(true)
+    expect(getByTestId('center-content')).toBeTruthy()
+    expect(getByTestId('details-content')).toBeTruthy()
+
+    act(() => { instance.actions.showMiddle() })
+    expect(tracks(frame)).toEqual([280, 360])
+    expect(frame.hasAttribute('data-middle-collapsed')).toBe(false)
+  })
+
+  it('keeps the application bottom surface mounted and exposes live owner state', () => {
+    const { frame, instance, slotCalls } = mountFrame()
+    expect(slotCalls.map(call => call.key)).toContain('shell.bottom')
+    expect(frame.style.gridTemplateRows).toBe('minmax(0, 1fr) 0')
+
+    act(() => { instance.actions.openBottom() })
+    expect(frame.style.gridTemplateRows).toBe('minmax(0, 1fr) 280px')
+    expect(frame.hasAttribute('data-bottom-collapsed')).toBe(false)
+    expect(slotCalls.filter(call => call.key === 'shell.bottom').at(-1)?.props).toMatchObject({
+      collapsed: false,
+      height: 280,
+      policy: { mode: 'collapsible' },
+    })
   })
 
   it('closed sidebar keeps its compact rail with mounted slot content and collapsed owner props', () => {
@@ -275,8 +304,6 @@ describe('AppFrame', () => {
   it('drag handles disappear for collapsed columns', () => {
     const { frame, instance } = mountFrame()
     expect(frame.querySelectorAll('[class*="handle"]')).toHaveLength(1)
-    act(() => { instance.actions.openDetails() })
-    expect(frame.querySelectorAll('[class*="handle"]')).toHaveLength(2)
     act(() => { instance.actions.closeDetails() })
     expect(frame.querySelectorAll('[class*="handle"]')).toHaveLength(1)
     act(() => { instance.actions.toggleSidebar() })

@@ -409,6 +409,19 @@ Source: [`packages/compaction/compaction/src/types.ts:33`](../packages/compactio
 
 Source: [`packages/feedback/command-feedback/src/index.ts:62`](../packages/feedback/command-feedback/src/index.ts)
 
+### `gianaos/*`
+
+<a id="gianaosacp-binding--log-only"></a>
+
+#### `gianaos/acp-binding` — log-only
+
+```ts persistence-catalog
+/** Non-secret projection pointer to the canonical GianaOS ACP session. */
+'gianaos/acp-binding': GianaOsAcpBindingEventData
+```
+
+Source: [`packages/llm/llm-gianaos-acp/src/index.ts:56`](../packages/llm/llm-gianaos-acp/src/index.ts)
+
 ### `goal/*`
 
 <a id="goalchange--log-only"></a>

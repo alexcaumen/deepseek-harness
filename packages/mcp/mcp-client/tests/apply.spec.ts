@@ -391,6 +391,7 @@ describe('apply (plugin lifecycle)', () => {
       serverName: 'web',
       url: 'http://localhost:3000/mcp',
       headers: { Authorization: 'Bearer x' },
+      headersFromEnv: {},
       toolCallTimeoutMs: 30_000,
       failOnStartupError: false,
     }

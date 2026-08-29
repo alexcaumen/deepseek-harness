@@ -1,6 +1,6 @@
 /** Browser runtime services for slots, sessions, workspaces, and connection-stream delivery. */
 import type { Context } from '@deepseek-ai/cordis'
-import type { ConnectionHandle, SessionId } from '@deepseek-ai/dsh-api-remotes/client'
+import type { ConnectionHandle, HostFrame, MuxFrame, SessionId } from '@deepseek-ai/dsh-api-remotes/client'
 // Type-only: the ctx.remote merge. Deliberately the gateway's Client half rather
 // than api-remotes': that face imports a Host-tsdown-generated artifact, and this
 // project sits in the Host build graph.
@@ -15,12 +15,20 @@ import type { ConversationSnapshot } from './sessions/conversation.ts'
 import type { UseProjection } from './sessions/projection-store.ts'
 import { ConversationEventRegistry } from './conversation/event-registry.ts'
 import { ConversationViewRegistry } from './conversation/view-registry.ts'
+import { DesktopNotificationController } from './notifications.ts'
 
 export { isAppendSurfaceEvent, isReplacementSurfaceEvent } from '@deepseek-ai/dsh-session/surface'
 
 export { SlotRegistry } from './slots.ts'
 export { ConversationEventRegistry } from './conversation/event-registry.ts'
 export { ConversationViewRegistry } from './conversation/view-registry.ts'
+export {
+  classifyNotification, createDesktopNotificationSink, DesktopNotificationController,
+} from './notifications.ts'
+export type {
+  DesktopNotificationCandidate, DesktopNotificationControllerOptions, DesktopNotificationEnvelope,
+  DesktopNotificationKind, DesktopNotificationSink,
+} from './notifications.ts'
 export { ConversationNodeAssembler } from './sessions/conversation-assembler.ts'
 export { ConversationLocationIndex } from './sessions/conversation-location-index.ts'
 export { conversationContextKey } from './contract/conversation.ts'
@@ -193,6 +201,7 @@ export function apply(ctx: Context): void {
   }
   const connection = ctx.get('connection') as ConnectionHandle
   const sessions = new SessionRuntime(ctx, connection.api, ctx.remote, conversation)
+  const notifications = new DesktopNotificationController()
   ctx.typert.contexts.registerClient('agent', {
     identity: candidate => sessions.scopeOf(candidate),
   })
@@ -203,9 +212,11 @@ export function apply(ctx: Context): void {
   )
   const loop = connection.start({
     onMuxEnvelope: (envelope) => {
+      notifications.handle(envelope as { rpcId: string; payload: MuxFrame })
       sessions.handleMuxEnvelope(envelope)
     },
     onHostEnvelope: (envelope) => {
+      notifications.handle(envelope as { rpcId: string; payload: HostFrame })
       sessions.handleHostEnvelope(envelope)
       workspaces.handleHostEnvelope(envelope)
       // Forwarded-event bridge: the session layer ignores registry frames (no
@@ -229,5 +240,8 @@ export function apply(ctx: Context): void {
       }
     },
   })
-  ctx.effect(() => () => { loop.stop() }, 'runtime: connection stream loop')
+  ctx.effect(() => () => {
+    notifications.dispose()
+    loop.stop()
+  }, 'runtime: connection stream loop')
 }

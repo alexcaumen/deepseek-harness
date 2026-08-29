@@ -12,15 +12,15 @@ it('ships install metadata with the built web application', async () => {
   const manifest: unknown = JSON.parse(await readFile(join(DIST_ROOT, 'manifest.webmanifest'), 'utf8'))
   expect(manifest).toEqual({
     id: '/',
-    name: 'DeepSeek Harness',
-    short_name: 'DSH',
+    name: 'Giana Code Putri',
+    short_name: 'Giana',
     start_url: '/',
     scope: '/',
     display: 'fullscreen',
     icons: [{
-      src: '/favicon.svg',
-      sizes: 'any',
-      type: 'image/svg+xml',
+      src: '/giana-os-logo.png',
+      sizes: '1254x1254',
+      type: 'image/png',
       purpose: 'any',
     }],
   })

@@ -16,8 +16,8 @@ const icons = Object.fromEntries(
 const iconNames = Object.keys(icons)
 
 describe('ic_ds_ icon set', () => {
-  it('exports the full icon set (46 deepsuite + 20 figma extracts + four product glyphs outside those sets)', () => {
-    expect(iconNames.length).toBe(70)
+  it('exports the full icon set including microphone and right-inspector controls', () => {
+    expect(iconNames.length).toBe(72)
   })
 
   it.each(iconNames)('%s renders an svg with currentColor fills and no hardcoded palette', (name) => {
@@ -55,27 +55,22 @@ describe('ic_ds_ icon set', () => {
 })
 
 describe('FishLogo', () => {
-  it('renders the fish path in currentColor at the native ratio', () => {
+  it('renders the Giana OS image mark at the requested square size', () => {
     const { container } = render(<primitives.FishLogo />)
-    const svg = container.querySelector('svg')!
-    expect(svg.getAttribute('width')).toBe('24')
-    expect(Number(svg.getAttribute('height'))).toBeCloseTo(17.66, 1)
-    expect(svg.getAttribute('viewBox')).toBe('0 0 23.16 17.04')
-    expect(container.querySelectorAll('path')).toHaveLength(1)
-    expect(container.innerHTML).toContain('currentColor')
-    expect(container.innerHTML).not.toContain('M0 0L23.16')
+    const image = container.querySelector('img')!
+    expect(image.getAttribute('width')).toBe('24')
+    expect(image.getAttribute('height')).toBe('24')
+    expect(image.getAttribute('src')).toBe('/giana-os-logo.png')
   })
 })
 
 describe('BrandWordmark', () => {
   it('can render the name artwork with or without its leading mark', () => {
     const view = render(<primitives.BrandWordmark />)
-    const svg = view.container.querySelector('svg')!
-    expect(svg.getAttribute('width')).toBe('182')
-    expect(svg.getAttribute('viewBox')).toBe('0 0 182 24')
+    expect(view.getByLabelText('Giana Code Putri')).toBeTruthy()
+    expect(view.container.querySelector('img')?.getAttribute('src')).toBe('/giana-os-logo.png')
 
     view.rerender(<primitives.BrandWordmark includeMark={false} />)
-    expect(svg.getAttribute('width')).toBe('156')
-    expect(svg.getAttribute('viewBox')).toBe('26 0 156 24')
+    expect(view.container.querySelector('img')).toBeNull()
   })
 })

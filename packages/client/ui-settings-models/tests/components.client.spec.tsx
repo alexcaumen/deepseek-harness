@@ -236,6 +236,14 @@ describe('ModelsSection', () => {
     expect(document.body.textContent).toBe('')
   })
 
+  it('offers native Codex and Claude sign-in without copying subscription credentials into DSH', async () => {
+    await mountSection()
+    expect(screen.getByRole('heading', { name: en.nativeSubscriptions })).toBeTruthy()
+    expect(screen.getByRole('link', { name: en.openCodexSignIn }).getAttribute('href')).toBe('dsh-auth://codex')
+    expect(screen.getByRole('link', { name: en.openClaudeSignIn }).getAttribute('href')).toBe('dsh-auth://claude')
+    expect(screen.getByText(en.nativeSubscriptionNote)).toBeTruthy()
+  })
+
   it('renders the unkeyed whole-section provider as an open setup card in the first-run posture', async () => {
     await mountFirstRun()
     // Nothing is reachable yet, and DeepSeek has no configured credential and

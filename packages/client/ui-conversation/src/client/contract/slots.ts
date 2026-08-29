@@ -804,6 +804,8 @@ export type MessageImagesProps = PropsRuntime<'conversation.message.images'> & P
 export interface DetailsInjected {
   /** Close the details panel (layout geometry stays with ctx.layout). */
   closeDetails: () => void
+  /** Toggle full-width inspector focus by collapsing/restoring the middle pane. */
+  toggleMiddle: () => void
 }
 
 /** Full details-slot props: selection store, Tool output seat, injected close callback, and locale. */

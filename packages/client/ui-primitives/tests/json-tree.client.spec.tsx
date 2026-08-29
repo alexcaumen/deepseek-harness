@@ -248,6 +248,7 @@ describe('JsonTree', () => {
   it('reports clipboard failure, resets feedback, and clears a prior timer', async () => {
     vi.useFakeTimers()
     writeText.mockRejectedValue(new Error('denied'))
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: vi.fn(() => false) })
     const view = render(<JsonTree data={{ value: 'x' }} />)
     const row = screen.getByRole('treeitem')
     fireEvent.mouseOver(row)
@@ -260,6 +261,17 @@ describe('JsonTree', () => {
     act(() => { vi.advanceTimersByTime(1_500) })
     expect(screen.getByRole('button', { name: 'Copy value' })).toBeDefined()
     view.unmount()
+  })
+
+  it('uses the shared fallback when the async clipboard is denied', async () => {
+    writeText.mockRejectedValue(new Error('denied'))
+    const exec = vi.fn(() => true)
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: exec })
+    render(<JsonTree data={{ value: 'fallback' }} />)
+    fireEvent.mouseOver(screen.getByRole('treeitem'))
+    fireEvent.click(screen.getByRole('button', { name: 'Copy value' }))
+    await waitFor(() => { expect(screen.getByRole('button', { name: 'Copied' })).toBeDefined() })
+    expect(exec).toHaveBeenCalledWith('copy')
   })
 
   it('keeps copy placement synchronized and clears stale targets', () => {

@@ -1,0 +1,95 @@
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { bindSnapshotSelector, makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
+import { createSnapshotStore, type SessionListState, type WorkspaceListState } from '@deepseek-ai/dsh-client-runtime/client'
+import {
+  ComputeRoutingRow, LOCAL_COMPUTE_CONFIG_URL, resolveComputeConfigUrl,
+  type ComputeRoutingResponse, type ComputeRoutingRowProps,
+} from '../src/client/settings/ComputeRoutingRow.tsx'
+import { en } from '../src/client/locales.ts'
+
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+})
+
+function emptySessions() {
+  return bindSnapshotSelector(createSnapshotStore<SessionListState>({
+    ids: [], byId: {}, current: undefined, phase: 'ready', subagentsByParent: {}, jobsBySession: {}, currentAddress: undefined,
+  }))
+}
+
+function emptyWorkspaces() {
+  return bindSnapshotSelector(createSnapshotStore<WorkspaceListState>({
+    items: [], archivedSessionIds: [], state: 'idle', phase: 'ready', error: null,
+    baselinesReady: true, recentWorkspaceId: undefined,
+  }))
+}
+
+const automatic: ComputeRoutingResponse = {
+  mode: 'automatic',
+  priority: ['r5300', 'prdg'],
+  probeOrder: ['r5300', 'prdg'],
+  selectedRoute: { id: 'prdg', state: 'ready', device: 'cuda' },
+}
+
+function response(payload: ComputeRoutingResponse) {
+  return Promise.resolve(new Response(JSON.stringify(payload), {
+    status: 200, headers: { 'Content-Type': 'application/json' },
+  }))
+}
+
+function mount() {
+  const props: ComputeRoutingRowProps = {
+    useSessions: emptySessions(),
+    useWorkspaces: emptyWorkspaces(),
+    t: makeTranslate(en),
+  }
+  render(<ComputeRoutingRow {...props} />)
+}
+
+describe('compute routing URL', () => {
+  it('uses the loopback service and rejects credential-bearing overrides', () => {
+    expect(resolveComputeConfigUrl({})).toBe(LOCAL_COMPUTE_CONFIG_URL)
+    expect(resolveComputeConfigUrl({
+      __GIANA_WINDOWS_RUNTIME__: { routes: { 'speech.compute.config': 'https://user:secret@example.test/config' } },
+    })).toBe(LOCAL_COMPUTE_CONFIG_URL)
+  })
+})
+
+describe('ComputeRoutingRow', () => {
+  it('loads honest selected route status', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => response(automatic)))
+    mount()
+    expect(await screen.findByText('Using PRDG · cuda · ready')).toBeDefined()
+    expect(screen.getByRole('button', { name: 'Automatic' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('persists an explicit selection through PUT', async () => {
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response(automatic))
+      .mockImplementationOnce(() => response({
+        ...automatic,
+        mode: 'r5300',
+        probeOrder: ['r5300'],
+        selectedRoute: { id: 'r5300', state: 'unavailable', device: 'unknown' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    mount()
+    await screen.findByText('Using PRDG · cuda · ready')
+    fireEvent.click(screen.getByRole('button', { name: 'R5300' }))
+    expect(await screen.findByText('Using R5300 · unknown · unavailable')).toBeDefined()
+    expect(fetchMock).toHaveBeenLastCalledWith(LOCAL_COMPUTE_CONFIG_URL, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'r5300' }),
+    })
+  })
+
+  it('surfaces service failures without claiming readiness', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('offline'))))
+    mount()
+    expect((await screen.findByRole('alert')).textContent).toBe('Compute routing unavailable: offline')
+  })
+})

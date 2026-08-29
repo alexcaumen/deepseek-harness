@@ -6,7 +6,9 @@
  * real engine instance (same create path as production).
  */
 import { beforeEach, describe, expect, it } from 'vitest'
-import { createLayoutStore } from '@deepseek-ai/dsh-client-ui-layout/src/client/stores.ts'
+import {
+  createLayoutStore, UNIVERSAL_LAYOUT_POLICY,
+} from '@deepseek-ai/dsh-client-ui-layout/src/client/stores.ts'
 import {
   DETAILS_DEFAULT, DETAILS_MAX, DETAILS_MIN,
   SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN,
@@ -17,9 +19,17 @@ const PERSIST_KEY = 'dsh.layout.panels'
 beforeEach(() => { localStorage.clear() })
 
 describe('createLayoutStore', () => {
-  it('initializes the sidebar at its default width, details closed, wide viewport assumed', () => {
+  it('initializes the sidebar open and the contextual details panel closed', () => {
     const { store } = createLayoutStore().create()
-    expect(store.getSnapshot()).toEqual({ sidebar: SIDEBAR_DEFAULT, details: 0, narrow: false, narrowExpanded: false })
+    expect(store.getSnapshot()).toEqual({
+      sidebar: SIDEBAR_DEFAULT,
+      details: 0,
+      bottom: 0,
+      middleCollapsed: false,
+      narrow: false,
+      narrowExpanded: false,
+      policy: UNIVERSAL_LAYOUT_POLICY,
+    })
   })
 
   it('each create() is an independent instance (factory is not a singleton)', () => {
@@ -55,7 +65,15 @@ describe('createLayoutStore', () => {
     actions.setSidebar(400)
     actions.setNarrow(true)
     actions.toggleSidebar()
-    expect(store.getSnapshot()).toEqual({ sidebar: 400, details: 0, narrow: true, narrowExpanded: true })
+    expect(store.getSnapshot()).toEqual({
+      sidebar: 400,
+      details: 0,
+      bottom: 0,
+      middleCollapsed: false,
+      narrow: true,
+      narrowExpanded: true,
+      policy: UNIVERSAL_LAYOUT_POLICY,
+    })
     actions.toggleSidebar()
     expect(store.getSnapshot().narrowExpanded).toBe(false)
     expect(store.getSnapshot().sidebar).toBe(400)
@@ -76,6 +94,7 @@ describe('createLayoutStore', () => {
 
   it('openDetails uses the contract default, preserves an open width, and closeDetails zeroes', () => {
     const { store, actions } = createLayoutStore().create()
+    actions.closeDetails()
     actions.openDetails()
     expect(store.getSnapshot().details).toBe(DETAILS_DEFAULT)
     actions.setDetails(500)
@@ -83,6 +102,60 @@ describe('createLayoutStore', () => {
     expect(store.getSnapshot().details).toBe(500)
     actions.closeDetails()
     expect(store.getSnapshot().details).toBe(0)
+  })
+
+  it('toggleDetails opens the unified inspector once and closes it on the next gesture', () => {
+    const { store, actions } = createLayoutStore().create()
+    actions.toggleDetails()
+    expect(store.getSnapshot().details).toBe(DETAILS_DEFAULT)
+    actions.toggleDetails()
+    expect(store.getSnapshot().details).toBe(0)
+  })
+
+  it('focuses the inspector full-width and restores the conversation pane', () => {
+    const { store, actions } = createLayoutStore().create()
+    actions.focusDetails()
+    expect(store.getSnapshot()).toMatchObject({ details: DETAILS_DEFAULT, middleCollapsed: true })
+    actions.showMiddle()
+    expect(store.getSnapshot().middleCollapsed).toBe(false)
+    actions.toggleMiddle()
+    expect(store.getSnapshot().middleCollapsed).toBe(true)
+    actions.closeDetails()
+    expect(store.getSnapshot()).toMatchObject({ details: 0, middleCollapsed: false })
+  })
+
+  it('opens, resizes, toggles, and closes the optional bottom surface', () => {
+    const { store, actions } = createLayoutStore().create()
+    actions.openBottom()
+    expect(store.getSnapshot().bottom).toBe(280)
+    actions.setBottom(9999)
+    expect(store.getSnapshot().bottom).toBe(520)
+    actions.toggleBottom()
+    expect(store.getSnapshot().bottom).toBe(0)
+    actions.openBottom()
+    actions.closeBottom()
+    expect(store.getSnapshot().bottom).toBe(0)
+  })
+
+  it('applies application pane policy and fails closed for hidden or locked surfaces', () => {
+    const { store, actions } = createLayoutStore().create()
+    actions.setPolicy({
+      id: 'test.policy',
+      sidebar: { ...UNIVERSAL_LAYOUT_POLICY.sidebar, mode: 'locked-open' },
+      middle: { ...UNIVERSAL_LAYOUT_POLICY.middle, mode: 'hidden' },
+      details: { ...UNIVERSAL_LAYOUT_POLICY.details, mode: 'locked-open' },
+      bottom: { ...UNIVERSAL_LAYOUT_POLICY.bottom, mode: 'hidden' },
+    })
+    expect(store.getSnapshot()).toMatchObject({
+      middleCollapsed: true,
+      details: DETAILS_DEFAULT,
+      bottom: 0,
+      policy: { id: 'test.policy' },
+    })
+    actions.toggleSidebar()
+    actions.closeDetails()
+    actions.openBottom()
+    expect(store.getSnapshot()).toMatchObject({ sidebar: SIDEBAR_DEFAULT, details: DETAILS_DEFAULT, bottom: 0 })
   })
 
   it('does not persist panel geometry', () => {
@@ -96,8 +169,11 @@ describe('createLayoutStore', () => {
     expect(second.store.getSnapshot()).toEqual({
       sidebar: SIDEBAR_DEFAULT,
       details: 0,
+      bottom: 0,
+      middleCollapsed: false,
       narrow: false,
       narrowExpanded: false,
+      policy: UNIVERSAL_LAYOUT_POLICY,
     })
   })
 })

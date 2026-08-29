@@ -14,7 +14,7 @@ Every catalog message carries the `skill-catalog` source: a `catalog`-form conte
 
 The catalog is omitted when no model-invocable skills are initially available, and also when that agent's tool view restricts away the shipped `skill` tool or resolves a same-name scoped shadow instead. Identity is compared against the definition this plugin registered rather than a lookup of its own name, so the plugin works mounted globally or inside one agent's composition, where `register()` files into that agent's layer alone. Visibility changes participate in the digest, keeping prompt guidance, model-visible schema, and executable dispatch aligned.
 
-`catalogDescriptionMaxLength` controls normalized catalog descriptions; rendering XML-escapes them. Its default is `500` and values must be integers of at least `3`, which reserves room for a truncation ellipsis. The [skill catalog hot-refresh Agent Note](../../../.agents/notes/implemented/feature/2026-07-27-skill-catalog-hot-refresh.md) owns the durable initial catalog and replacement lifecycle.
+`catalogDescriptionMaxLength` controls normalized catalog descriptions; rendering XML-escapes them. Its default is `500` and values must be integers of at least `3`, which reserves room for a truncation ellipsis. `catalogMaxEntries` bounds the durable catalog without removing skills from the provider, `catalogPinnedNames` orders selected skills before the sorted remainder, and `searchResultLimit` bounds one `skill_search` result. All three numeric limits must be positive integers, and pinned names must use the canonical skill-name syntax. When the catalog is bounded, its durable source records `totalAvailable`; that count participates in the digest, so population changes still append an explicit replacement. The [skill catalog hot-refresh Agent Note](../../../.agents/notes/implemented/feature/2026-07-27-skill-catalog-hot-refresh.md) owns the durable initial catalog and replacement lifecycle.
 
 ## Tool: `skill`
 
@@ -30,13 +30,21 @@ An unresolved name reports that the skill is unknown or no longer available. Inv
 
 Tool execution does not add a synthetic context message. Its freshly loaded result is already recorded as the tool result and becomes available to the next model step without duplicating the body. Only the catalog projection adds replacement summaries.
 
+## Tool: `skill_search`
+
+| Arg | Type | Notes |
+|---|---|---|
+| `query` | string (required) | Non-empty words matched case-insensitively against every model-invocable skill name and description. |
+
+`skill_search` queries the complete cwd- and agent-scoped provider view even when the durable catalog is bounded. Exact names rank first, followed by name prefixes, name substrings, all-token matches, and description substrings; ties sort by skill name. The result reports the normalized query, total match count, and at most `searchResultLimit` `{ name, description }` rows. It does not load skill bodies or expose provider paths. The model then calls `skill` with an exact returned name.
+
 ## Model Experience
 
 ### Session catalog
 
 #### What the model sees
 
-If model-invocable skills exist and this exact `skill` tool is visible, the agent receives the catalog template below as a durable user-role message before the first request, with one data-dependent entry per sorted skill. Later membership, description, or visibility changes append a complete replacement using the same `<available_skills>` envelope; deleting every skill appends an empty envelope with an explicit instruction not to use older names. The template's closing sentence is the rule against double-loading: the user-explicit gesture boundary (the pre-step listener below) injects the same `renderSkillContent` output (shared from `@deepseek-ai/dsh-skill`) inline, and the catalog tells the model to follow that block instead of re-loading the skill through the tool; the replacement-catalog template carries the same sentence in both arms, including the emptied catalog.
+If model-invocable skills exist and this exact `skill` tool is visible, the agent receives the catalog template below as a durable user-role message before the first request, with the configured bounded selection. When more skills exist, the message states the rendered and total counts and directs the model to `skill_search`. Later membership, description, count, or visibility changes append a complete replacement using the same `<available_skills>` envelope; deleting every skill appends an empty envelope with an explicit instruction not to use older names. The template's closing sentence is the rule against double-loading: the user-explicit gesture boundary (the pre-step listener below) injects the same `renderSkillContent` output (shared from `@deepseek-ai/dsh-skill`) inline, and the catalog tells the model to follow that block instead of re-loading the skill through the tool; the replacement-catalog template carries the same sentence in both arms, including the emptied catalog.
 
 ##### Skill catalog template
 
@@ -48,6 +56,9 @@ A skill is a reusable set of task-specific instructions. The following skills ar
 - `<name>`: <normalized-and-capped-description>
 </available_skills>
 
+This bounded catalog shows <rendered> of <total> available skills.
+Use `skill_search` to find every other indexed skill, then load the exact returned name with `skill`.
+
 If the user names a skill, or the task clearly matches a skill's description, call the `skill` tool with the exact skill name before taking task actions. Load all applicable skills, then follow their full instructions. This catalog contains summaries only; do not infer or follow a skill's instructions until it has been loaded.
 A user may also invoke a skill directly; its <skill_content> block then appears in this conversation. Follow it, and do not call the `skill` tool again for that skill.
 </system-reminder>
@@ -55,7 +66,7 @@ A user may also invoke a skill directly; its <skill_content> block then appears 
 
 #### Token effect
 
-Repeated input cost scales with skill count and `catalogDescriptionMaxLength`; no initial catalog tokens are sent when the list is empty or the tool is hidden or shadowed. Each actual catalog change adds one retained complete replacement message.
+Repeated input cost scales with `catalogMaxEntries` and `catalogDescriptionMaxLength`, not the complete searchable population; no initial catalog tokens are sent when the list is empty or the tool is hidden or shadowed. Each actual catalog change adds one retained complete replacement message.
 
 #### KV Cache effect
 
@@ -65,7 +76,7 @@ The initial durable catalog is appended after the existing reusable prefix. Dyna
 
 #### What the model sees
 
-The model sees the generated [`skill` schema](../../../docs/tool-catalog.md#deepseek-aidsh-tool-skill).
+The model sees the generated [`skill` and `skill_search` schemas](../../../docs/tool-catalog.md#deepseek-aidsh-tool-skill).
 
 #### Token effect
 
@@ -162,6 +173,7 @@ Append-only; the injection lands after the reusable request prefix inside the st
 ## Known Limitations and Deferred Work
 
 - **The catalog omits `whenToUse`, source, and provider metadata** — routing is based only on name and a capped description; `whenToUse` remains provider metadata and is not rendered by the loaded wrapper either.
+- **Search is lexical** — it does not embed, rerank, or infer synonyms beyond query-token matches in the current skill name and description.
 - **Loaded instruction bodies have no size cap** — a provider can return a skill large enough to consume substantial next-step context; only catalog descriptions are truncated.
 - **Resources are guidance, not attachments** — the tool reports a base directory/URL/opaque hint but neither enumerates nor fetches referenced files for the model.
 - **Loading is one-shot text** — there is no partial, streaming, or cached-content handle when a remote provider is slow or a skill body is large.

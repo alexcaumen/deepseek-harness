@@ -499,6 +499,21 @@ function Loaded({ injected }: { injected: ModelsSectionFace }): ReactNode {
               </div>
             )}
       </div>
+      <section className={styles['nativeSubscriptions']} aria-labelledby="native-subscriptions-title">
+        <h3 id="native-subscriptions-title" className={styles['nativeSubscriptionsTitle']}>
+          {t('nativeSubscriptions')}
+        </h3>
+        <p className={styles['nativeSubscriptionsDescription']}>{t('nativeSubscriptionsDescription')}</p>
+        <div className={styles['nativeSubscriptionActions']}>
+          <a className={styles['nativeSubscriptionButton']} href="dsh-auth://codex" target="_blank" rel="noreferrer">
+            {t('openCodexSignIn')}
+          </a>
+          <a className={styles['nativeSubscriptionButton']} href="dsh-auth://claude" target="_blank" rel="noreferrer">
+            {t('openClaudeSignIn')}
+          </a>
+        </div>
+        <p className={styles['nativeSubscriptionNote']}>{t('nativeSubscriptionNote')}</p>
+      </section>
       <Modal
         open={deleteTarget !== undefined}
         onClose={closeDelete}

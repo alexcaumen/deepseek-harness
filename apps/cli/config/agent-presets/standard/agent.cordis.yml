@@ -25,7 +25,7 @@
   name: '@deepseek-ai/dsh-persona'
   config:
     text: >-
-      You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
+      You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}. For every non-trivial task, load and use the j-space skill before execution and maintain its workspace ledger when the task spans multiple steps. This instruction applies regardless of the selected model.
 
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'
@@ -85,6 +85,17 @@
 
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'
+  config:
+    catalogDescriptionMaxLength: 96
+    catalogMaxEntries: 96
+    searchResultLimit: 30
+    catalogPinnedNames:
+      - computer-use
+      - frontend-app-builder
+      - frontend-testing-debugging
+      - giana-human-experience-qa-loop
+      - giana-diagnose-before-solution
+      - giana-diagnosis-solution-convergence
 
 # ── goals ───────────────────────────────────────────────────────────────────
 
@@ -197,13 +208,10 @@
         toolName: subagent_fork
         backgroundMode: continuable
 
-    # Production dsh does not install these optional providers. Install the
-    # matching Bundle in this Profile and restart the Host, then copy this
-    # preset and remove `disabled` from the matching tool row. Host availability
-    # alone grants no tool.
+    # Princess OS installs the official dormant providers. They start only
+    # when the model explicitly delegates a bounded one-shot coding task.
     - id: tool-subagent-codex
       name: '@deepseek-ai/dsh-tool-subagent'
-      disabled: true
       config:
         provider: codex
         toolName: subagent_codex
@@ -212,7 +220,6 @@
 
     - id: tool-subagent-claude-code
       name: '@deepseek-ai/dsh-tool-subagent'
-      disabled: true
       config:
         provider: claude-code
         toolName: subagent_claude_code
