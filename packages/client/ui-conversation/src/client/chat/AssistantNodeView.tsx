@@ -1,10 +1,11 @@
 import { memo, useMemo } from 'react'
 import type { ChatNodeViewProps, TurnTailOwnerProps } from '../contract/slots.ts'
 import { AssistantMarkdown } from './AssistantMarkdown.tsx'
+import { ResponseSelectionActions } from './ResponseSelectionActions.tsx'
 
 /** Streaming, settled, and interrupted Assistant states share one keyed renderer instance. */
 export const AssistantNodeView = memo(function AssistantNodeView({
-  node, useTurnData, openFile, renderMessageImages, fileMentions, t,
+  node, useTurnData, openFile, renderMessageImages, fileMentions, inputActions, t,
 }: ChatNodeViewProps<'assistant-step'>) {
   const data = node.data
   const turn = node.location.kind === 'turn' || node.location.kind === 'step'
@@ -20,7 +21,7 @@ export const AssistantNodeView = memo(function AssistantNodeView({
     () => owner === undefined ? undefined : fileMentions(owner),
     [fileMentions, owner],
   )
-  return (
+  const content = (
     <AssistantMarkdown
       blocks={data.blocks}
       streaming={data.status === 'running'}
@@ -30,4 +31,12 @@ export const AssistantNodeView = memo(function AssistantNodeView({
       t={t}
     />
   )
+  const messageId = data.finalNode?.messageId
+  return messageId === undefined
+    ? content
+    : (
+      <ResponseSelectionActions messageId={messageId} inputActions={inputActions} t={t}>
+        {content}
+      </ResponseSelectionActions>
+    )
 })

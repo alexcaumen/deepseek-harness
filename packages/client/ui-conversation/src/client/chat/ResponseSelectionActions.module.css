@@ -1,0 +1,31 @@
+.root {
+  display: contents;
+}
+
+.toolbar {
+  position: fixed;
+  z-index: 1000;
+  transform: translate(-50%, -100%);
+  padding: 4px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-base);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 16%);
+}
+
+.action {
+  min-height: 30px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.action:hover,
+.action:focus-visible {
+  background: var(--dsw-alias-interactive-bg-hover);
+  outline: none;
+}

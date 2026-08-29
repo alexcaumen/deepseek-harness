@@ -48,8 +48,16 @@ function WorkspaceProbe({ open }: EmptyWorkspaceOwnerProps) {
   )
 }
 
+function provideInputTriggers(runtime: SlotTestRuntime): void {
+  runtime.provide('inputTriggers', {
+    registerSource: () => () => {},
+    sessionOf: () => undefined as never,
+  })
+}
+
 async function bench(opts?: { blank?: boolean }) {
   const runtime = await SlotTestRuntime.create()
+  provideInputTriggers(runtime)
   runtime.provide('connection', { api: { settings: {} }, isLoopback: false })
   // The plugin injects both; these specs exercise no settings path.
   runtime.provide('remote', { $on: () => () => {} })
@@ -78,6 +86,7 @@ async function bench(opts?: { blank?: boolean }) {
 describe('resident composer', () => {
   it('renders the locked view state while no session exists at all', async () => {
     const runtime = await SlotTestRuntime.create()
+    provideInputTriggers(runtime)
     runtime.provide('connection', { api: { settings: {} }, isLoopback: false })
     // The plugin injects both; these specs exercise no settings path.
     runtime.provide('remote', { $on: () => () => {} })
@@ -108,6 +117,7 @@ describe('resident composer', () => {
 
   it('keeps the complete Hero tree mounted when the first Workspace session appears', async () => {
     const runtime = await SlotTestRuntime.create()
+    provideInputTriggers(runtime)
     runtime.provide('connection', { api: { settings: {} }, isLoopback: false })
     // The plugin injects both; these specs exercise no settings path.
     runtime.provide('remote', { $on: () => () => {} })
@@ -177,6 +187,7 @@ describe('resident composer', () => {
 describe('prompt rejection through the assembled composer', () => {
   it('renders the promptError alert strip and keeps the draft in the machine', async () => {
     const runtime = await SlotTestRuntime.create()
+    provideInputTriggers(runtime)
     runtime.provide('connection', { api: { settings: {} }, isLoopback: false })
     // The plugin injects both; these specs exercise no settings path.
     runtime.provide('remote', { $on: () => () => {} })

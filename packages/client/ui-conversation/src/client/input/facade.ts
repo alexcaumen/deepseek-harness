@@ -14,10 +14,13 @@ import type {
 } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type {
   DraftAttachmentId, EditRange, EditSelection, InputActions, InputEffect, InputNotice, InputState,
-  PasteComponent, QueuedMessage, SessionInput, SubmitAttempt,
+  PasteComponent, QueuedMessage, ResponseAnnotationDraft, SessionInput, SubmitAttempt,
 } from './contract.ts'
 import type { InputSubmitMode } from '../contract/composer-submission.ts'
 import { InputMachine, projectClipboard } from './machine.ts'
+import {
+  RESPONSE_ANNOTATION_SOURCE, responseAnnotationIndex, responseAnnotationReference,
+} from './response-annotation.ts'
 
 /** Popup face the shell needs (dismissal only; typed structurally to avoid a value import). */
 export interface PopupDismissFace {
@@ -88,10 +91,35 @@ export class SessionInputShell implements SessionInput {
   /** The public provide-channel action face (one stable identity per session). */
   readonly actions: InputActions = {
     setDraft: (text) => { this.setDraft(text) },
+    addResponseAnnotation: annotation => this.addResponseAnnotation(annotation),
     addImages: ids => this.addImages(ids),
     removeImage: (id) => { this.removeImage(id) },
     pruneImages: (ids) => { this.pruneImages(ids) },
     submit: () => { this.submit('queue') },
+  }
+
+  /** Add one selected response passage at the draft tail as a structured reference. */
+  addResponseAnnotation(annotation: ResponseAnnotationDraft): boolean {
+    const text = annotation.text.trim()
+    if (text.length === 0) return false
+    if (this.snapshot.phase !== 'plain' && this.snapshot.phase !== 'claimed') return false
+    const index = this.snapshot.occurrences.reduce((maximum, occurrence) => {
+      if (occurrence.source !== RESPONSE_ANNOTATION_SOURCE) return maximum
+      return Math.max(maximum, responseAnnotationIndex(occurrence.ref) ?? 0)
+    }, 0) + 1
+    if (this.snapshot.draft !== '' && !/\s$/u.test(this.snapshot.draft)) {
+      this.setDraft(`${this.snapshot.draft} `)
+    }
+    const end = this.snapshot.draft.length
+    return this.insertReference(responseAnnotationReference({
+      index,
+      messageId: annotation.messageId,
+      text,
+    }), {
+      start: end,
+      end,
+      draftRev: this.snapshot.draftRev,
+    })
   }
 
   // Real wall clock: the typing-run merge window must actually expire in

@@ -21,6 +21,10 @@ const CHILD = 'child-1' as SessionId
 
 async function bench() {
   const runtime = await SlotTestRuntime.create()
+  runtime.provide('inputTriggers', {
+    registerSource: () => () => {},
+    sessionOf: () => undefined as never,
+  })
   runtime.provide('connection', { api: { settings: {} }, isLoopback: false })
   // The plugin injects both; these specs exercise no settings path.
   runtime.provide('remote', { $on: () => () => {} })

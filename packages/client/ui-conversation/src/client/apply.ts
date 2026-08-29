@@ -11,6 +11,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from 'dsh-better-sidebar/client'
 // Type-only: pulls the locale plugin's Context merge (ctx.locale).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type { InputTriggerServiceContract } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { ViewTab } from './contract/views.ts'
 import type {
   ApprovalWait, ChatNodeTurnDataInjected, ChatScrollPosition, ChatViewInjected, ComposerBarInjected,
@@ -25,6 +26,7 @@ import { ComposerBlockRegistry } from './input/blocks.ts'
 import type { ComposerBlock } from './input/blocks.ts'
 import { InputHub } from './input/hub.ts'
 import { ComposerSubmissionPolicy } from './input/submission-policy.ts'
+import { responseAnnotationSource } from './input/response-annotation.ts'
 import { InputBar } from './skeleton/InputBar.tsx'
 import { EnterBehaviorRow } from './settings/EnterBehaviorRow.tsx'
 import type { EnterBehaviorRowInjected } from './settings/EnterBehaviorRow.tsx'
@@ -55,7 +57,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 /** Services required by the conversation plugin. */
 export const inject = [
   'slots', 'layout', 'sessions', 'workspaces', 'locale', 'connection', 'remote', 'settingsScope',
-  'conversationEvents', 'conversationViews',
+  'conversationEvents', 'conversationViews', 'inputTriggers',
 ]
 
 // Static no-session sources for the composer-bar hooks compartment: module
@@ -139,6 +141,12 @@ export function apply(ctx: Context): void {
   registerChatNodeRenderers(ctx)
 
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-conversation: dictionaries')
+
+  const inputTriggers = ctx.get('inputTriggers') as InputTriggerServiceContract
+  ctx.effect(
+    () => inputTriggers.registerSource(responseAnnotationSource()),
+    'ui-conversation: response-annotation codec',
+  )
 
   // Registration-time text (the view tab label) reads through the bound
   // translate as a thunk, so it follows the active locale without

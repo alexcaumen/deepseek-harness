@@ -19,6 +19,7 @@ import { SlotTestRuntime, usePinnedBrowserLanguages, stubSettingsScope } from '@
 import type { SessionBehaviorOverrides } from '@deepseek-ai/dsh-client-test-runtime'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import type { ISession, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
+import type { InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import { apply, inject } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type {
   ChatViewInjected, ComposerBarInjected, ConversationInjected, ConversationSessionHeaderInjected,
@@ -47,6 +48,17 @@ function sessionFakeFor() {
 
 async function bench() {
   const runtime = await SlotTestRuntime.create()
+  const registeredInputSources: InputTriggerSource[] = []
+  runtime.provide('inputTriggers', {
+    registerSource: (source: InputTriggerSource) => {
+      registeredInputSources.push(source)
+      return () => {
+        const at = registeredInputSources.indexOf(source)
+        if (at >= 0) registeredInputSources.splice(at, 1)
+      }
+    },
+    sessionOf: () => undefined as never,
+  })
   runtime.provide('connection', { api: { settings: {} }, isLoopback: false })
   // The plugin injects both; these specs exercise no settings path.
   runtime.provide('remote', { $on: () => () => {} })
@@ -124,11 +136,19 @@ async function bench() {
   return {
     runtime, feature, slots: runtime.slots, entryOf,
     conversationApi, conversationHeaderApi, residentApi, composerApi, chatViewApi, inputApi,
-    sessionFake, layoutFake,
+    sessionFake, layoutFake, registeredInputSources,
   }
 }
 
 describe('conversation slot inject API', () => {
+  it('registers the model-facing response annotation codec exactly once', async () => {
+    const b = await bench()
+    expect(b.registeredInputSources.map(source => source.name)).toEqual(['response-annotation'])
+    expect(b.registeredInputSources[0]?.codec).toBeDefined()
+    await b.runtime.dispose()
+    expect(b.registeredInputSources).toEqual([])
+  })
+
   it('assembles the thin API side-effect-free', async () => {
     const b = await bench()
     const { injected } = b.conversationApi(ROOT)

@@ -7,6 +7,7 @@
  */
 import type { ClientContext, SnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
 import type { Branded } from '@deepseek-ai/dsh-brand'
+import type { MessageId } from '@deepseek-ai/dsh-client-connection/client'
 import type {
   ArbitrateKey, ArbitrateOutcome, CommandClaim, ConsumeTokenRequest, PickOutcome,
   ReferenceInsert, SubmitOutcome, TokenSpan,
@@ -16,6 +17,12 @@ import type { InputSubmitMode } from '../contract/composer-submission.ts'
 
 /** Browser-runtime identity of one unsent image draft. */
 export type DraftAttachmentId = Branded<'DraftAttachmentId'>
+
+/** Selected text from one finalized assistant response. */
+export interface ResponseAnnotationDraft {
+  readonly messageId: MessageId
+  readonly text: string
+}
 
 /**
  * The scoped-event application verbs: the hub's bail listeners call these,
@@ -33,6 +40,8 @@ export interface InputTarget {
 export interface SessionInput extends InputTarget {
   /** Single write path for draft text (all mutation rides machine events). */
   setDraft(text: string): void
+  /** Add selected response text as a numbered structured reference. */
+  addResponseAnnotation(annotation: ResponseAnnotationDraft): boolean
   /** Append ordered browser-owned image ids; busy admission phases refuse. */
   addImages(ids: readonly DraftAttachmentId[]): boolean
   /** Remove one browser-owned image id; busy admission phases refuse. */
@@ -73,6 +82,8 @@ export interface SessionInputResolver {
 export interface InputActions {
   /** Single public draft write path (full next draft; occurrence math via diff scan). */
   setDraft(text: string): void
+  /** Add selected response text as a numbered structured reference. */
+  addResponseAnnotation(annotation: ResponseAnnotationDraft): boolean
   /** Append ordered browser-owned image ids; busy admission phases refuse. */
   addImages(ids: readonly DraftAttachmentId[]): boolean
   /** Remove one browser-owned image id; busy admission phases refuse. */
