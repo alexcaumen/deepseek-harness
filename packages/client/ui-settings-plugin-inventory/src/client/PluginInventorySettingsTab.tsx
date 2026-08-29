@@ -2,14 +2,13 @@ import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'rea
 import type { PluginInventorySnapshot } from '@deepseek-ai/dsh-api-remotes/client'
 import { IconChevronDownOutline14, IconSearchOutline16 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import { capabilityStatus, capabilityTitle, inferCapabilityCategory } from './inventoryPresentation.ts'
+import { capabilityTitle, inferCapabilityCategory, loaderStatus, type LoaderStatus } from './inventoryPresentation.ts'
 import type { PluginInventoryLocaleKey } from './locales.ts'
 import {
   PUBLIC_FEATURES,
   PUBLIC_FEATURE_CATEGORIES,
   type PublicFeature,
   type PublicFeatureCategory,
-  type PublicFeatureState,
 } from './publicFeatureCatalog.ts'
 import css from './PluginInventorySettingsTab.module.css'
 
@@ -86,11 +85,15 @@ const PHASE_KEYS = {
   pending: 'pending', loading: 'loadingPhase', active: 'active', failed: 'failed', unloading: 'unloading',
 } satisfies Record<Exclude<PluginFiberPhase, null>, PluginInventoryLocaleKey>
 
-const STATE_KEYS = {
-  DISCOVERABLE: 'stateDiscoverable', INSTALLED: 'stateInstalled', REGISTERED: 'stateRegistered',
-  ENABLED: 'stateEnabled', NEEDS_SIGN_IN: 'stateNeedsSignIn', NEEDS_RUNTIME: 'stateNeedsRuntime',
-  READY: 'stateReady', DEGRADED: 'stateDegraded', FAILED: 'stateFailed', HELD: 'stateHeld',
-} satisfies Record<PublicFeatureState, PluginInventoryLocaleKey>
+const LOADER_STATUS_KEYS = {
+  disabled: 'statusDisabled',
+  'enabled-unmounted': 'statusEnabledUnmounted',
+  pending: 'statusPending',
+  loading: 'statusLoading',
+  mounted: 'statusMounted',
+  'mount-failed': 'statusMountFailed',
+  unloading: 'statusUnloading',
+} satisfies Record<LoaderStatus, PluginInventoryLocaleKey>
 
 const CATEGORY_KEYS = {
   'communication-collaboration': 'categoryCommunicationCollaboration',
@@ -140,6 +143,16 @@ function isCatalogView(view: InventoryView): view is CatalogView {
   return view === 'skills' || view === 'connectors' || view === 'marketplace'
 }
 
+function isBrowserCatalogEntry(value: unknown): value is BrowserCatalogEntry {
+  if (value === null || typeof value !== 'object') return false
+  const entry = value as Record<string, unknown>
+  return typeof entry.id === 'string'
+    && typeof entry.title === 'string'
+    && typeof entry.status === 'string'
+    && entry.provenance !== null
+    && typeof entry.provenance === 'object'
+}
+
 function isBrowserCatalog(value: unknown, expected: CatalogView): value is BrowserCatalog {
   if (value === null || typeof value !== 'object') return false
   const candidate = value as Partial<BrowserCatalog>
@@ -155,12 +168,7 @@ function isBrowserCatalog(value: unknown, expected: CatalogView): value is Brows
     && candidate.counts !== undefined
     && typeof candidate.counts.total === 'number'
     && Array.isArray(candidate.entries)
-    && candidate.entries.every(entry => (
-      entry !== null && typeof entry === 'object'
-      && typeof entry.id === 'string' && typeof entry.title === 'string'
-      && typeof entry.status === 'string' && entry.provenance !== null
-      && typeof entry.provenance === 'object'
-    ))
+    && candidate.entries.every(isBrowserCatalogEntry)
 }
 
 function phaseLabel(phase: PluginFiberPhase, t: PluginInventorySettingsTabProps['t']): string {
@@ -169,7 +177,7 @@ function phaseLabel(phase: PluginFiberPhase, t: PluginInventorySettingsTabProps[
 
 function featureMatches(feature: PublicFeature, query: string, t: PluginInventorySettingsTabProps['t']): boolean {
   if (query.length === 0) return true
-  return [feature.title, t(CATEGORY_KEYS[feature.category]), t(STATE_KEYS[feature.state]), feature.detail]
+  return [feature.title, t(CATEGORY_KEYS[feature.category]), t('catalogClaim'), feature.detail]
     .some(value => value.toLocaleLowerCase().includes(query))
 }
 
@@ -184,14 +192,6 @@ function catalogEntryMatches(entry: BrowserCatalogEntry, query: string): boolean
   return values.some(value => typeof value === 'string' && value.toLocaleLowerCase().includes(query))
 }
 
-function catalogStatusLabel(status: string): string {
-  if (status === 'READY_HISTORICAL_INVENTORY') return 'Historical runtime evidence'
-  if (status === 'PENDING_RUNTIME_OR_CONNECTOR') return 'Needs runtime or connector'
-  if (status === 'DISCOVERABLE_NOT_CONNECTED_BY_DEFAULT') return 'Discoverable, not connected'
-  if (status === 'DISCOVERABLE_UNVERIFIED') return 'Discoverable, unverified'
-  return status
-}
-
 function formatCatalogDate(value: string): string {
   const date = new Date(value)
   return Number.isNaN(date.valueOf())
@@ -199,9 +199,10 @@ function formatCatalogDate(value: string): string {
     : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(date)
 }
 
-function CatalogFacts({ entry, view }: {
+function CatalogFacts({ entry, view, t }: {
   readonly entry: BrowserCatalogEntry
   readonly view: CatalogView
+  readonly t: PluginInventorySettingsTabProps['t']
 }): ReactNode {
   if (view === 'skills') {
     return (
@@ -214,7 +215,7 @@ function CatalogFacts({ entry, view }: {
   if (view === 'connectors') {
     return (
       <div className={css.catalogFacts}>
-        <span>{entry.actionCount?.toLocaleString() ?? 0} actions</span>
+        <span>{entry.actionCount?.toLocaleString() ?? 0} {t('catalogActions')}</span>
         {(entry.categories ?? []).map(category => <span key={category}>{category}</span>)}
         {(entry.authTypes ?? []).map(authType => <span key={authType}>{authType}</span>)}
         <span>Service: {entry.provenance.service ?? entry.id}</span>
@@ -263,11 +264,11 @@ function CatalogBrowser({ state, view, query, visibleLimit, onLoadMore, onRetry,
         <h4>{t(VIEW_KEYS[view])}</h4><span>{catalog.counts.total.toLocaleString()}</span>
       </div>
       <div className={css.catalogEvidence}>
-        <span className={css.statusTag} data-catalog-status={catalog.status.code}>{catalog.status.label}</span>
+        <span className={css.statusTag} data-claim="discoverable">{t('catalogClaim')}</span>
         <span>As of <time dateTime={catalog.currentness.asOf}>{formatCatalogDate(catalog.currentness.asOf)}</time></span>
         <span>Source: <code>{catalog.provenance.name}</code></span>
       </div>
-      <p className={css.catalogQualification}>{catalog.status.detail}</p>
+      <p className={css.catalogQualification}>{t('sourceQualification')}: {catalog.status.detail}</p>
       {filteredEntries.length === 0 ? <p className={css.status}>{t('emptySearch')}</p> : null}
       {visibleEntries.length > 0 ? (
         <>
@@ -276,13 +277,14 @@ function CatalogBrowser({ state, view, query, visibleLimit, onLoadMore, onRetry,
           </div>
           <ul className={css.catalogCards} aria-label={t(VIEW_KEYS[view])}>
             {visibleEntries.map(entry => (
-              <li className={css.catalogCard} key={entry.id} data-catalog-entry={entry.id} data-catalog-entry-status={entry.status}>
+              <li className={css.catalogCard} key={entry.id} data-catalog-entry={entry.id}
+                data-catalog-entry-claim="discoverable">
                 <div className={css.catalogItemHeading}>
                   <strong>{entry.title}</strong>
-                  <span className={css.statusTag} data-catalog-status={entry.status}>{catalogStatusLabel(entry.status)}</span>
+                  <span className={css.statusTag} data-claim="discoverable">{t('catalogClaim')}</span>
                 </div>
                 {entry.description ? <p>{entry.description}</p> : null}
-                <CatalogFacts entry={entry} view={view} />
+                <CatalogFacts entry={entry} view={view} t={t} />
                 {view === 'marketplace' && entry.provenance.lastCheckedAt ? (
                   <div className={css.catalogProvenance} data-entry-provenance>
                     <span>
@@ -382,7 +384,7 @@ export function PluginInventorySettingsTab({ list, t }: PluginInventorySettingsT
     ? inventoryState.snapshot.entries.map(entry => ({
       entry,
       category: inferCapabilityCategory(entry.moduleName, entry.entryId),
-      status: capabilityStatus(entry),
+      status: loaderStatus(entry),
       title: capabilityTitle(entry.moduleName),
     })).filter(({ entry, category, title, status }) => (
       category === 'system-internals'
@@ -391,11 +393,6 @@ export function PluginInventorySettingsTab({ list, t }: PluginInventorySettingsT
     ))
     : [], [inventoryState, normalizedQuery])
 
-  const readyCount = PUBLIC_FEATURES.filter(feature => feature.runtimeState === 'READY').length
-  const attentionCount = PUBLIC_FEATURES.filter(feature => (
-    feature.runtimeState === 'NEEDS_SIGN_IN' || feature.runtimeState === 'NEEDS_RUNTIME'
-    || feature.runtimeState === 'DEGRADED' || feature.runtimeState === 'FAILED' || feature.runtimeState === 'HELD'
-  )).length
   const internalCount = inventoryState.status === 'ready'
     ? inventoryState.snapshot.entries.filter(entry => (
       inferCapabilityCategory(entry.moduleName, entry.entryId) === 'system-internals'
@@ -457,7 +454,7 @@ export function PluginInventorySettingsTab({ list, t }: PluginInventorySettingsT
             <div className={css.catalogHeading}>
               <h3>{t('featuresView')}</h3>
               <span data-plugin-count={filteredFeatures.length}>{filteredFeatures.length}</span>
-              <span className={css.catalogMeta}>{readyCount} {t('stateReady')} · {attentionCount} {t('summaryNeedsAttention')}</span>
+              <span className={css.catalogMeta}>{filteredFeatures.length} {t('catalogClaims')}</span>
             </div>
             {filteredFeatures.length === 0 ? <p className={css.status}>{t('emptySearch')}</p> : null}
             {featureGroups.map(({ category, features }) => {
@@ -471,16 +468,17 @@ export function PluginInventorySettingsTab({ list, t }: PluginInventorySettingsT
                   <ul className={css.cards} aria-labelledby={categoryId}>
                     {features.map((feature) => {
                       const open = expandedFeature === feature.id
-                      const statusText = t(STATE_KEYS[feature.runtimeState])
+                      const statusText = t('catalogClaim')
                       const detailId = `${catalogId}-feature-${feature.id}`
                       return (
-                        <li className={css.card} key={feature.id} data-feature-id={feature.id} data-open={open ? 'true' : undefined}>
+                        <li className={css.card} key={feature.id} data-feature-id={feature.id}
+                          data-feature-claim={feature.claim} data-open={open ? 'true' : undefined}>
                           <button className={css.cardContent} type="button" aria-expanded={open}
                             aria-controls={detailId} aria-label={`${feature.title}, ${statusText}`}
                             onClick={() => { setExpandedFeature(current => current === feature.id ? null : feature.id) }}>
                             <strong className={css.cardTitle}>{feature.title}</strong>
                             <span className={css.cardTrailing}>
-                              <span className={css.statusTag} data-state={feature.runtimeState}>{statusText}</span>
+                              <span className={css.statusTag} data-claim={feature.claim}>{statusText}</span>
                               <IconChevronDownOutline14 className={css.chevron} size={12} aria-hidden="true" />
                             </span>
                           </button>
@@ -522,13 +520,17 @@ export function PluginInventorySettingsTab({ list, t }: PluginInventorySettingsT
                 {internalEntries.map(({ entry, status, title }) => {
                   const open = expandedInternal === entry.entryId
                   const detailId = `${catalogId}-internal-${encodeURIComponent(entry.entryId)}`
+                  const statusText = t(LOADER_STATUS_KEYS[status])
                   return (
-                    <li className={css.card} key={entry.entryId} data-plugin-entry={entry.entryId} data-open={open ? 'true' : undefined}>
+                    <li className={css.card} key={entry.entryId} data-plugin-entry={entry.entryId}
+                      data-live-evidence="pluginInventory.list" data-loader-status={status}
+                      data-open={open ? 'true' : undefined}>
                       <button className={css.cardContent} type="button" aria-expanded={open} aria-controls={detailId}
                         onClick={() => { setExpandedInternal(current => current === entry.entryId ? null : entry.entryId) }}>
                         <strong className={css.cardTitle}>{title}</strong>
-                        <span className={css.cardTrailing}><span className={css.statusTag}>{status}</span>
-                          <IconChevronDownOutline14 className={css.chevron} size={12} aria-hidden="true" /></span>
+                        <span className={css.cardTrailing}><span className={css.statusTag}
+                          data-loader-status={status}>{statusText}</span>
+                        <IconChevronDownOutline14 className={css.chevron} size={12} aria-hidden="true" /></span>
                       </button>
                       {open ? (
                         <div className={css.cardDetails} id={detailId}>

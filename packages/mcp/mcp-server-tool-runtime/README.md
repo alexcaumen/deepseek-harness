@@ -15,3 +15,5 @@ does not accept an agent or session identifier over MCP. Tool listing comes
 from `ctx.tools.schemas(agent)` and calls pass through `ctx.tools.execute`, so
 the existing scoped visibility, guards, approval flow, and cancellation rules
 remain authoritative.
+
+Typed image result blocks are resolved only through the exact agent scope's active `attachments` service. The bridge reads verified attachment bytes with the MCP call's cancellation signal and emits MCP image content containing canonical base64 data plus the verified MIME type; it never sends an attachment storage path or path-bearing URI. Image projection is all-or-nothing and uses the tighter of deployment attachment limits and fixed transport caps of 20 images and 20 MiB of aggregate raw image bytes. A missing store, refused metadata, mismatched stored object, read failure, or cancellation returns the generic bridge failure without partial bytes or backend details.

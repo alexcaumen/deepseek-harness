@@ -18,14 +18,15 @@ export const CAPABILITY_CATEGORIES = [
 /** Stable identifier for one human-facing capability category. */
 export type CapabilityCategory = typeof CAPABILITY_CATEGORIES[number]
 
-/** Status vocabulary exposed by the capability catalog. */
-export type CapabilityStatus =
-  | 'ready'
-  | 'available'
-  | 'needs-sign-in'
-  | 'loading'
-  | 'failed'
+/** Literal projection of the live Loader inventory schema. */
+export type LoaderStatus =
   | 'disabled'
+  | 'enabled-unmounted'
+  | 'pending'
+  | 'loading'
+  | 'mounted'
+  | 'mount-failed'
+  | 'unloading'
 
 type FiberPhase = 'pending' | 'loading' | 'active' | 'failed' | 'unloading' | null
 
@@ -173,24 +174,20 @@ export function inferCapabilityCategory(moduleName: string, entryId: string): Ca
 }
 
 /**
- * Map Loader state to the deliberately small user-facing status vocabulary.
- *
- * An active Loader fiber proves only that the implementation module mounted.
- * It does not prove that credentials, dependencies, remote infrastructure, or
- * an end-to-end capability canary are healthy, so it must never be presented
- * as human-facing readiness.
+ * Project only facts carried by the current Loader snapshot. In particular,
+ * mounted does not imply connection, callability, or end-to-end behavior.
  */
-export function capabilityStatus(
+export function loaderStatus(
   entry: Readonly<{ enabled: boolean; fiberPhase: FiberPhase }>,
-): CapabilityStatus {
+): LoaderStatus {
   if (!entry.enabled) return 'disabled'
   switch (entry.fiberPhase) {
-    case 'active': return 'available'
-    case null: return 'available'
-    case 'pending': return 'needs-sign-in'
-    case 'loading':
-    case 'unloading': return 'loading'
-    case 'failed': return 'failed'
+    case null: return 'enabled-unmounted'
+    case 'pending': return 'pending'
+    case 'loading': return 'loading'
+    case 'active': return 'mounted'
+    case 'failed': return 'mount-failed'
+    case 'unloading': return 'unloading'
   }
 }
 

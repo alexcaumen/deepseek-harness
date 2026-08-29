@@ -304,40 +304,26 @@
   white-space: nowrap;
 }
 
-.statusTag[data-status='ready'] {
+.statusTag[data-loader-status='mounted'] {
   background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent);
   color: var(--dsw-alias-state-success-primary);
 }
 
-.statusTag[data-state='READY'],
-.statusTag[data-state='INSTALLED'],
-.statusTag[data-state='REGISTERED'],
-.statusTag[data-state='ENABLED'] {
-  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent);
-  color: var(--dsw-alias-state-success-primary);
-}
-
-.statusTag[data-state='NEEDS_SIGN_IN'],
-.statusTag[data-state='NEEDS_RUNTIME'],
-.statusTag[data-state='DEGRADED'] {
+.statusTag[data-loader-status='pending'],
+.statusTag[data-loader-status='loading'],
+.statusTag[data-loader-status='unloading'] {
   background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent);
   color: var(--dsw-alias-state-business-primary);
 }
 
-.statusTag[data-state='FAILED'],
-.statusTag[data-state='HELD'] {
+.statusTag[data-loader-status='mount-failed'] {
   background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent);
   color: var(--dsw-alias-state-error-primary);
 }
 
-.statusTag[data-catalog-status='READY_HISTORICAL_INVENTORY'] {
-  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent);
-  color: var(--dsw-alias-state-success-primary);
-}
-
-.statusTag[data-catalog-status='PENDING_RUNTIME_OR_CONNECTOR'] {
-  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent);
-  color: var(--dsw-alias-state-business-primary);
+.statusTag[data-loader-status='disabled'],
+.statusTag[data-loader-status='enabled-unmounted'] {
+  color: var(--dsw-alias-label-tertiary);
 }
 
 .catalogEvidence {
@@ -528,21 +514,6 @@
 
 .catalogCallout > .statusTag {
   justify-self: start;
-}
-
-.statusTag[data-status='needs-sign-in'],
-.statusTag[data-status='loading'] {
-  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent);
-  color: var(--dsw-alias-state-business-primary);
-}
-
-.statusTag[data-status='failed'] {
-  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent);
-  color: var(--dsw-alias-state-error-primary);
-}
-
-.statusTag[data-status='disabled'] {
-  color: var(--dsw-alias-label-tertiary);
 }
 
 .chevron {

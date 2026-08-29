@@ -2,13 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   PUBLIC_FEATURES,
   PUBLIC_FEATURE_CATEGORIES,
-  type PublicFeatureState,
 } from '../src/client/publicFeatureCatalog.ts'
-
-const STATES: readonly PublicFeatureState[] = [
-  'DISCOVERABLE', 'INSTALLED', 'REGISTERED', 'ENABLED', 'NEEDS_SIGN_IN',
-  'NEEDS_RUNTIME', 'READY', 'DEGRADED', 'FAILED', 'HELD',
-]
 
 describe('public feature catalog', () => {
   it('contains exactly 96 unique features across 12 balanced categories', () => {
@@ -21,13 +15,12 @@ describe('public feature catalog', () => {
     }
   })
 
-  it('uses canonical states and promotes only routes backed by current evidence', () => {
-    expect(PUBLIC_FEATURES.every(feature => STATES.includes(feature.state))).toBe(true)
-    expect(PUBLIC_FEATURES.find(feature => feature.title === 'Qwen and Alibaba Open Models')?.state)
-      .toBe('READY')
-    expect(PUBLIC_FEATURES.find(feature => feature.title === 'Windows Desktop Computer Use and UI Automation')?.state)
-      .toBe('READY')
-    expect(PUBLIC_FEATURES.find(feature => feature.title === 'OpenAI Models and Official Sign-In/API Routes')?.state)
-      .toBe('NEEDS_SIGN_IN')
+  it('keeps every catalog entry a discoverable claim without a runtime-state field', () => {
+    expect(PUBLIC_FEATURES.every(feature => feature.claim === 'discoverable')).toBe(true)
+    for (const feature of PUBLIC_FEATURES) {
+      expect(feature).not.toHaveProperty('state')
+      expect(feature).not.toHaveProperty('runtimeState')
+      expect(feature.detail).toContain('require live runtime evidence')
+    }
   })
 })

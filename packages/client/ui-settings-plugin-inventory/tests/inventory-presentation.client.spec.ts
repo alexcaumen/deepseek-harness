@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
-  capabilityStatus,
   capabilityTitle,
   inferCapabilityCategory,
+  loaderStatus,
   type CapabilityCategory,
 } from '../src/client/inventoryPresentation.ts'
 
@@ -27,15 +27,15 @@ describe('capability inventory presentation', () => {
   })
 
   it.each([
-    [{ enabled: true, fiberPhase: 'active' as const }, 'available'],
-    [{ enabled: true, fiberPhase: null }, 'available'],
-    [{ enabled: true, fiberPhase: 'pending' as const }, 'needs-sign-in'],
+    [{ enabled: true, fiberPhase: 'active' as const }, 'mounted'],
+    [{ enabled: true, fiberPhase: null }, 'enabled-unmounted'],
+    [{ enabled: true, fiberPhase: 'pending' as const }, 'pending'],
     [{ enabled: true, fiberPhase: 'loading' as const }, 'loading'],
-    [{ enabled: true, fiberPhase: 'unloading' as const }, 'loading'],
-    [{ enabled: true, fiberPhase: 'failed' as const }, 'failed'],
+    [{ enabled: true, fiberPhase: 'unloading' as const }, 'unloading'],
+    [{ enabled: true, fiberPhase: 'failed' as const }, 'mount-failed'],
     [{ enabled: false, fiberPhase: 'active' as const }, 'disabled'],
-  ])('maps %# to the %s public status', (entry, expected) => {
-    expect(capabilityStatus(entry)).toBe(expected)
+  ])('maps %# to the literal %s Loader status', (entry, expected) => {
+    expect(loaderStatus(entry)).toBe(expected)
   })
 
   it('creates a readable title without discarding the technical source value', () => {

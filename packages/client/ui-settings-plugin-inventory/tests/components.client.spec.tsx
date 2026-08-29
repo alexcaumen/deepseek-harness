@@ -121,7 +121,7 @@ function response(value: unknown, ok = true): Response {
 
 function catalogFetch(counts: Partial<Record<CatalogView, number>> = {}): ReturnType<typeof vi.fn<typeof fetch>> {
   return vi.fn<typeof fetch>(async (input) => {
-    const path = String(input)
+    const path = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
     const selected = (Object.keys(CATALOG_PATHS) as CatalogView[])
       .find(view => CATALOG_PATHS[view] === path)
     if (selected === undefined) return response(null, false)
@@ -164,7 +164,7 @@ describe('PluginInventorySettingsTab', () => {
     fireEvent.change(search, { target: { value: 'Qwen' } })
     expect(view.container.querySelectorAll('[data-feature-id]')).toHaveLength(1)
     expect(screen.getByText('Qwen and Alibaba Open Models')).toBeTruthy()
-    expect(screen.getByText(en.stateDiscoverable)).toBeTruthy()
+    expect(screen.getByText(en.catalogClaim)).toBeTruthy()
 
     fireEvent.change(search, { target: { value: 'office-entry' } })
     expect(view.container.querySelectorAll('[data-feature-id]')).toHaveLength(0)
@@ -182,16 +182,19 @@ describe('PluginInventorySettingsTab', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(fetchMock.mock.calls[0]?.[0]).toBe(CATALOG_PATHS.skills)
     expect(view.container.querySelector('[data-catalog-entry="skill-001"]')).toBeTruthy()
-    expect(screen.getAllByText('Historical runtime evidence').length).toBeGreaterThan(0)
-    expect(screen.getAllByText('Needs runtime or connector').length).toBeGreaterThan(0)
-    expect(view.container.querySelector('[data-catalog-entry-status="READY"]')).toBeNull()
+    expect(screen.getAllByText(en.catalogClaim).length).toBeGreaterThan(0)
+    expect(screen.queryByText('Historical runtime evidence')).toBeNull()
+    expect(screen.queryByText('Needs runtime or connector')).toBeNull()
+    expect(view.container.querySelector('[data-catalog-entry-status]')).toBeNull()
+    expect(view.container.querySelectorAll('[data-catalog-entry-claim="discoverable"]')).toHaveLength(3)
     expect(summaryCount(view.container, 'skills')).toBe('3')
 
     fireEvent.click(screen.getByRole('button', { name: en.connectorsView }))
     await waitFor(() => { expect(view.container.querySelector('[data-catalog-view="connectors"]')).toBeTruthy() })
     expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(fetchMock.mock.calls[1]?.[0]).toBe(CATALOG_PATHS.connectors)
-    expect(screen.getAllByText('Discoverable, not connected').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Discoverable, not connected')).toBeNull()
+    expect(screen.getAllByText(en.catalogClaim).length).toBeGreaterThan(0)
     expect(summaryCount(view.container, 'providers')).toBe('3')
     expect(summaryCount(view.container, 'actions')).toBe('6')
 
@@ -203,8 +206,43 @@ describe('PluginInventorySettingsTab', () => {
     await waitFor(() => { expect(view.container.querySelector('[data-catalog-view="marketplace"]')).toBeTruthy() })
     expect(fetchMock).toHaveBeenCalledTimes(3)
     expect(fetchMock.mock.calls[2]?.[0]).toBe(CATALOG_PATHS.marketplace)
-    expect(screen.getAllByText('Discoverable, unverified').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Discoverable, unverified')).toBeNull()
+    expect(screen.getAllByText(en.catalogClaim).length).toBeGreaterThan(0)
     expect(view.container.querySelector('[data-entry-provenance]')?.textContent).toContain('topic')
+  })
+
+  it('never elevates catalog-only claims from source labels or a matching mounted module', async () => {
+    const source = catalog('skills', 1) as {
+      status: { code: string; label: string; detail: string }
+      entries: Array<{ status: string }>
+    }
+    source.status.code = 'READY'
+    source.status.label = 'READY'
+    source.entries[0]!.status = 'CALLABLE'
+    const snapshot = {
+      entries: [{
+        entryId: 'browser-computer-use',
+        moduleName: '@fixture/browser-computer-use',
+        enabled: true,
+        fiberPhase: 'active',
+      }],
+    } as unknown as Snapshot
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>().mockResolvedValue(response(source)))
+    const view = render(<PluginInventorySettingsTab {...props(async () => snapshot)} />)
+
+    fireEvent.change(screen.getByRole('searchbox', { name: en.search }), { target: { value: 'Browser Computer Use' } })
+    const feature = view.container.querySelector('[data-feature-claim="discoverable"]')
+    expect(feature).toBeTruthy()
+    expect(feature?.textContent).toContain(en.catalogClaim)
+    expect(feature?.textContent).not.toMatch(/ready|callable/i)
+
+    fireEvent.change(screen.getByRole('searchbox', { name: en.search }), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: en.skillsView }))
+    await waitFor(() => { expect(view.container.querySelector('[data-catalog-entry="skill-001"]')).toBeTruthy() })
+    const catalogEntry = view.container.querySelector('[data-catalog-entry="skill-001"]')
+    expect(catalogEntry?.getAttribute('data-catalog-entry-claim')).toBe('discoverable')
+    expect(catalogEntry?.textContent).toContain(en.catalogClaim)
+    expect(catalogEntry?.textContent).not.toMatch(/ready|callable/i)
   })
 
   it('bounds rendering, loads more by page, and searches the full selected catalog', async () => {
@@ -233,10 +271,12 @@ describe('PluginInventorySettingsTab', () => {
     fireEvent.click(screen.getByRole('button', { name: en.skillsView }))
 
     await waitFor(() => { expect(view.container.querySelector('[data-catalog-view="skills"]')).toBeTruthy() })
-    expect(screen.getByText('Historical evidence and runtime pending')).toBeTruthy()
+    expect(screen.queryByText('Historical evidence and runtime pending')).toBeNull()
     expect(view.container.querySelector('time[datetime="2026-08-23T05:07:19Z"]')).toBeTruthy()
     expect(screen.getByText('GIANA_WINDOWS_SKILLS_INVENTORY_20260823.json')).toBeTruthy()
-    expect(screen.getByText('Historical inventory evidence does not assert current runtime readiness.')).toBeTruthy()
+    expect(screen.getByText(
+      'Source qualification: Historical inventory evidence does not assert current runtime readiness.',
+    )).toBeTruthy()
   })
 
   it('contains a selected catalog failure and retries only that catalog', async () => {
@@ -261,7 +301,10 @@ describe('PluginInventorySettingsTab', () => {
     expect(screen.queryByText('Hmr')).toBeNull()
     fireEvent.click(system)
     await waitFor(() => { expect(view.container.querySelectorAll('[data-plugin-entry]')).toHaveLength(2) })
-    expect(view.container.querySelector('[data-plugin-entry="hmr-entry"]')).toBeTruthy()
+    const hmrEntry = view.container.querySelector('[data-plugin-entry="hmr-entry"]')
+    expect(hmrEntry).toBeTruthy()
+    expect(hmrEntry?.getAttribute('data-live-evidence')).toBe('pluginInventory.list')
+    expect(hmrEntry?.getAttribute('data-loader-status')).toBe('mounted')
     expect(view.container.querySelector('[data-plugin-entry="session-entry"]')).toBeTruthy()
     expect(view.container.querySelector('[data-plugin-entry="slack-entry"]')).toBeNull()
 
@@ -271,7 +314,7 @@ describe('PluginInventorySettingsTab', () => {
     fireEvent.click(disclosure)
     expect(view.container.querySelector('[data-module-name]')?.textContent).toBe('@deepseek-ai/cordis-plugin-hmr')
     expect(view.container.querySelector('[data-loader-entry]')?.textContent).toBe('hmr-entry')
-    expect(screen.getByText(en.active)).toBeTruthy()
+    expect(screen.getAllByText(en.active)).toHaveLength(2)
   })
 
   it('contains Remote failures inside System internals and retries', async () => {

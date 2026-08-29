@@ -17,7 +17,11 @@ import {
   isInitializeRequest,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js'
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
+import type {
+  CallToolResult,
+  ContentBlock as McpContentBlock,
+  ImageContent as McpImageContent,
+} from '@modelcontextprotocol/sdk/types.js'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { CallId } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
@@ -26,7 +30,25 @@ import type { ToolExecutionFailure, ToolExecutionResult } from '@deepseek-ai/dsh
 
 const DEFAULT_PATH = '/mcp/tool-runtime'
 const MAX_REQUEST_BYTES = 1024 * 1024
+const MAX_RESULT_IMAGES = 20
+const MAX_RESULT_IMAGE_BYTES = 20 * 1024 * 1024
 const PATH_PATTERN = /^\/(?:[A-Za-z0-9._~-]+\/)*[A-Za-z0-9._~-]+$/
+
+type ImageBlock = Extract<ContentBlock, { type: 'image' }>
+
+/** AttachmentStore members used to materialize typed image blocks. */
+interface ImageAttachmentReader {
+  readonly imageLimits: {
+    readonly maxImageBytes: number
+    readonly maxImagesPerMessage: number
+    readonly maxMessageImageBytes: number
+    readonly mediaTypes: readonly ImageBlock['attachment']['mediaType'][]
+  }
+  readImage(
+    ref: ImageBlock['attachment'],
+    signal?: AbortSignal,
+  ): Promise<{ readonly ref: ImageBlock['attachment']; readonly data: Uint8Array }>
+}
 
 /** The only addresses this service may bind. */
 export type LoopbackHost = '127.0.0.1' | '::1'
@@ -328,9 +350,11 @@ export class ToolRuntimeMcpServer extends Service {
     args: Record<string, unknown>,
     requestSignal: AbortSignal,
   ): Promise<CallToolResult> {
-    if (!this.bindingIsLive(binding)) return projectResult(unknownToolResult(name))
+    if (!this.bindingIsLive(binding)) {
+      return projectResult(binding.agent.ctx, unknownToolResult(name), requestSignal)
+    }
     const visible = this.ctx.tools.schemas(binding.agent).some(schema => schema.name === name)
-    if (!visible) return projectResult(unknownToolResult(name))
+    if (!visible) return projectResult(binding.agent.ctx, unknownToolResult(name), requestSignal)
 
     const fused = fuseSignals(requestSignal, binding.abort.signal)
     try {
@@ -341,9 +365,9 @@ export class ToolRuntimeMcpServer extends Service {
         agent: binding.agent,
         signal: fused.signal,
       }))
-      return projectResult(result)
+      return await projectResult(binding.agent.ctx, result, fused.signal)
     } catch {
-      return projectResult(bridgeFailureResult())
+      return await projectResult(binding.agent.ctx, bridgeFailureResult(), fused.signal)
     } finally {
       fused.dispose()
     }
@@ -463,17 +487,85 @@ function rpcError(message: string): Record<string, unknown> {
   return { jsonrpc: '2.0', error: { code: -32000, message }, id: null }
 }
 
-function projectResult(result: ToolExecutionResult): CallToolResult {
+async function projectResult(
+  ctx: Context,
+  result: ToolExecutionResult,
+  signal: AbortSignal,
+): Promise<CallToolResult> {
   return {
-    content: result.content.map(projectContent),
+    content: await projectContent(ctx, result.content, signal),
     structuredContent: { result },
     ...result.isError ? { isError: true } : {},
   }
 }
 
-function projectContent(block: ContentBlock): { type: 'text'; text: string } {
+function projectNonImage(block: ContentBlock): McpContentBlock {
   if (block.type === 'text') return { type: 'text', text: block.text }
   return { type: 'text', text: `[DSH ${block.type} content; inspect structuredContent.result.content]` }
+}
+
+async function projectContent(
+  ctx: Context,
+  blocks: readonly ContentBlock[],
+  signal: AbortSignal,
+): Promise<McpContentBlock[]> {
+  const images = blocks.flatMap((block, index) => block.type === 'image' ? [{ block, index }] : [])
+  if (images.length === 0) return blocks.map(projectNonImage)
+
+  const attachments = ctx.get('attachments') as ImageAttachmentReader | undefined
+  if (attachments === undefined) throw new Error('image attachment service is unavailable')
+  const maxImages = Math.min(MAX_RESULT_IMAGES, attachments.imageLimits.maxImagesPerMessage)
+  const maxImageBytes = Math.min(MAX_RESULT_IMAGE_BYTES, attachments.imageLimits.maxImageBytes)
+  const maxMessageBytes = Math.min(MAX_RESULT_IMAGE_BYTES, attachments.imageLimits.maxMessageImageBytes)
+  if (images.length > maxImages) throw new Error('tool result image count exceeds the transport limit')
+
+  let declaredBytes = 0
+  for (const { block } of images) {
+    if (!attachments.imageLimits.mediaTypes.includes(block.attachment.mediaType)) {
+      throw new Error('tool result image media type is not admitted')
+    }
+    if (block.attachment.bytes > maxImageBytes) {
+      throw new Error('tool result image exceeds the transport limit')
+    }
+    declaredBytes += block.attachment.bytes
+    if (declaredBytes > maxMessageBytes) {
+      throw new Error('tool result image batch exceeds the transport limit')
+    }
+  }
+
+  const projected = new Map<number, McpImageContent>()
+  let actualBytes = 0
+  for (const { block, index } of images) {
+    signal.throwIfAborted()
+    const stored = await attachments.readImage(block.attachment, signal)
+    signal.throwIfAborted()
+    if (stored.ref.attachmentId !== block.attachment.attachmentId
+      || stored.ref.mediaType !== block.attachment.mediaType
+      || stored.ref.bytes !== block.attachment.bytes
+      || stored.data.byteLength !== stored.ref.bytes) {
+      throw new Error('stored image does not match its authorized attachment reference')
+    }
+    if (!attachments.imageLimits.mediaTypes.includes(stored.ref.mediaType)
+      || stored.data.byteLength > maxImageBytes) {
+      throw new Error('stored image exceeds the transport limit')
+    }
+    actualBytes += stored.data.byteLength
+    if (actualBytes > maxMessageBytes) {
+      throw new Error('stored image batch exceeds the transport limit')
+    }
+    projected.set(index, {
+      type: 'image',
+      data: Buffer.from(stored.data).toString('base64'),
+      mimeType: stored.ref.mediaType,
+    })
+  }
+
+  return blocks.map((block, index) => {
+    if (block.type !== 'image') return projectNonImage(block)
+    const image = projected.get(index)
+    if (image === undefined) throw new Error('tool result image projection is incomplete')
+    return image
+  })
 }
 
 function unknownToolResult(name: string): ToolExecutionFailure {

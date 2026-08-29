@@ -17,26 +17,14 @@ export const PUBLIC_FEATURE_CATEGORIES = [
 
 export type PublicFeatureCategory = typeof PUBLIC_FEATURE_CATEGORIES[number]
 
-export type PublicFeatureState =
-  | 'DISCOVERABLE'
-  | 'INSTALLED'
-  | 'REGISTERED'
-  | 'ENABLED'
-  | 'NEEDS_SIGN_IN'
-  | 'NEEDS_RUNTIME'
-  | 'READY'
-  | 'DEGRADED'
-  | 'FAILED'
-  | 'HELD'
+/** A catalog row is a discoverable claim, not runtime evidence. */
+export type PublicFeatureClaim = 'discoverable'
 
 export interface PublicFeature {
   readonly id: number
   readonly title: string
   readonly category: PublicFeatureCategory
-  /** Declared/source state; this is not a live runtime receipt. */
-  readonly state: PublicFeatureState
-  /** Live state is populated only by an attached runtime evidence source. */
-  readonly runtimeState: PublicFeatureState
+  readonly claim: PublicFeatureClaim
   readonly detail: string
 }
 
@@ -139,87 +127,19 @@ const TITLES: Readonly<Record<PublicFeatureCategory, readonly string[]>> = {
   ],
 }
 
-const STATE_OVERRIDES: Readonly<Record<string, PublicFeatureState>> = {
-  'Universal File and Artifact Viewer': 'NEEDS_RUNTIME',
-  'OCR, MarkItDown, and Structured Extraction': 'INSTALLED',
-  'Indonesian Dictation and Speech Playback': 'ENABLED',
-  'Code Editor, File Explorer, Search, Diff, and Refactor': 'INSTALLED',
-  'Terminal, Shell, Processes, and Environment Management': 'INSTALLED',
-  'Git, Branch, Commit, Pull Request, and Code Review': 'INSTALLED',
-  'Browser Computer Use and Web QA': 'READY',
-  'Windows Desktop Computer Use and UI Automation': 'READY',
-  'Agents, Subagents, Workflows, Goals, and Scheduling': 'INSTALLED',
-  'Testing, CI/CD, Deployment, Observability, and Rollback': 'INSTALLED',
-  'Model and Provider Registry': 'REGISTERED',
-  'Local Model Discovery and Admission': 'DEGRADED',
-  'Compute Resource Broker and Capacity Planner': 'NEEDS_RUNTIME',
-  'GPU Discovery, Health, Scheduling, and Leasing': 'NEEDS_RUNTIME',
-  'Model Serving, Loading, Warming, and Unloading': 'NEEDS_RUNTIME',
-  'Route Selection, Queueing, Failover, and Cancellation': 'NEEDS_RUNTIME',
-  'Speech, Vision, Image, Video, and Embedding Runtime Routes': 'DEGRADED',
-  'Usage, Token, Cost, Balance, Trace, and Performance Analytics': 'INSTALLED',
-  'Qwen and Alibaba Open Models': 'READY',
-  'OpenAI Models and Official Sign-In/API Routes': 'NEEDS_SIGN_IN',
-  'Anthropic Models and Official Sign-In/API Routes': 'NEEDS_SIGN_IN',
-  'Credential and Secret Mediation': 'REGISTERED',
-  'Security Scan, Threat Model, Vulnerability, and Incident Response': 'INSTALLED',
-  'Signed Updates, Migration, Backup, Recovery, and Rollback': 'INSTALLED',
-}
-
-const DETAIL_OVERRIDES: Readonly<Record<string, string>> = {
-  'Universal File and Artifact Viewer': 'Inspector consolidation is implemented; format-specific current canaries remain required.',
-  'OCR, MarkItDown, and Structured Extraction': 'MarkItDown is installed; approved-build end-to-end proof is pending.',
-  'Indonesian Dictation and Speech Playback': 'Microphone UI and Indonesian STT/TTS round trip passed; DOTS remains a preferred route with an Indonesian fallback when unavailable.',
-  'Browser Computer Use and Web QA': 'Playwright MCP registered 46 tools; navigation, snapshot, screenshot, governed code, and file-upload canaries passed.',
-  'Windows Desktop Computer Use and UI Automation': 'Windows MCP registered 20 UIA, OCR, screenshot, mouse, keyboard, window, and macro tools; desktop-state and screenshot canaries passed without mutating input.',
-  'Qwen and Alibaba Open Models': 'Qwen3.8-27B on R5300 passed live text and structured agent tool-call canaries through Giana Code.',
-  'Compute Resource Broker and Capacity Planner': 'R5300-first and PRDG-fallback capacity-aware selection is not yet materialized.',
-  'GPU Discovery, Health, Scheduling, and Leasing': 'Cross-host GPU inventory and leasing require a current typed compute backend.',
-  'OpenAI Models and Official Sign-In/API Routes': 'Official account sign-in must complete outside chat before this route can become ready.',
-  'Anthropic Models and Official Sign-In/API Routes': 'Official account sign-in must complete outside chat before this route can become ready.',
-}
+const CATALOG_CLAIM_DETAIL = 'Discoverable catalog claim only. Installation, enablement, connection, callability, behavioral proof, and hold state require live runtime evidence.'
 
 let nextId = 1
 export const PUBLIC_FEATURES: readonly PublicFeature[] = PUBLIC_FEATURE_CATEGORIES.flatMap(category => (
-  TITLES[category].map((title) => {
-    const state = STATE_OVERRIDES[title] ?? 'DISCOVERABLE'
-    const detail = DETAIL_OVERRIDES[title]
-      ?? (state === 'DISCOVERABLE'
-        ? 'Catalogued for discovery. Installation, registration, and runtime readiness are not implied.'
-        : 'Source-backed component state; current runtime readiness is shown separately.')
-    return {
-      id: nextId++,
-      title,
-      category,
-      state,
-      runtimeState: 'DISCOVERABLE' as const,
-      detail: state === 'DISCOVERABLE'
-        ? detail
-        : `${detail} Declared source state: ${state}; this view has no live runtime receipt for it.`,
-    }
-  })
+  TITLES[category].map(title => ({
+    id: nextId++,
+    title,
+    category,
+    claim: 'discoverable' as const,
+    detail: CATALOG_CLAIM_DETAIL,
+  }))
 ))
 
 if (PUBLIC_FEATURES.length !== 96) {
   throw new Error(`Public feature catalog must contain exactly 96 entries; found ${PUBLIC_FEATURES.length}`)
 }
-
-export const CATALOG_SUMMARIES = {
-  skills: {
-    total: 647,
-    state: 'DEGRADED' as PublicFeatureState,
-    detail: '392 skills have historical runtime evidence; 255 still need a connector, dependency, sign-in, hardware, or runtime.',
-  },
-  connectors: {
-    total: 1409,
-    secondary: 14799,
-    state: 'DISCOVERABLE' as PublicFeatureState,
-    detail: 'Providers and actions are catalogued and loaded on demand. Connection and authentication are provider-specific.',
-  },
-  marketplace: {
-    total: 4826,
-    secondary: 5,
-    state: 'DISCOVERABLE' as PublicFeatureState,
-    detail: 'Remote items are discoverable and untrusted by default; five local components were observed by the install scan.',
-  },
-} as const

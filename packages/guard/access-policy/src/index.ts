@@ -14,7 +14,7 @@ export const name = 'tool-access-policy'
 export interface Config {
   /** `*`-wildcard patterns that are always denied before tool dispatch. */
   denyPatterns?: string[]
-  /** `*`-wildcard patterns that require the deployment approval service. */
+  /** `*`-wildcard patterns that require a one-shot human decision through the DSH approval service. */
   askPatterns?: string[]
 }
 
@@ -45,7 +45,7 @@ export function apply(ctx: Context, config: Config): void {
     if (ask.some(pattern => pattern.test(exec.name))) {
       return Promise.resolve({
         kind: 'ask',
-        reason: `Tool "${exec.name}" requires explicit approval by the deployment policy.`,
+        reason: `Tool "${exec.name}" requires one-shot human approval by the deployment policy.`,
       })
     }
     return next()

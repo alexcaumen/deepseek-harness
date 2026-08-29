@@ -124,8 +124,8 @@
         cwd: 'N:\PrincessOS\workbench\third-party\windows-computer-use-mcp-20260822'
         env:
           # Safe-by-default staging: desktop actions require explicit HITL
-          # approval and remain simulated until a separately reviewed route
-          # proves a reversible window handle.
+          # approval and remain simulated until HEQA passes and a separately
+          # reviewed route proves a reversible window handle.
           WINDOWS_COMPUTER_USE_MCP_BYPASS_HITL: '0'
           WINDOWS_COMPUTER_USE_MCP_KILL_SWITCH: '0'
           WINDOWS_COMPUTER_USE_MCP_DRY_RUN: '1'
@@ -144,7 +144,14 @@
     - id: tool-access-policy
       name: '@grinviro/dsh-tool-access-policy'
       config:
-        denyPatterns: []
+        # The vendor's approve_automation tool only flips process-local state,
+        # so the complete Windows namespace must cross DSH's external,
+        # one-shot approval boundary before any tool body can run.
+        denyPatterns:
+          - mcp__windows_desktop__automation_face
+          - mcp__windows_desktop__global_keylogger
+        askPatterns:
+          - mcp__windows_desktop__*
     - id: subagent-codex
       name: '@deepseek-ai/dsh-subagent-codex'
       config:

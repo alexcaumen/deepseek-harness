@@ -5,6 +5,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { createScope } from '@deepseek-ai/dsh-scope'
 import type { Scope } from '@deepseek-ai/dsh-scope'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
@@ -123,6 +124,51 @@ function tool(name: string, execute: ToolDefinition['execute'] = async args => a
     isConcurrencySafe: () => true,
     execute,
   }
+}
+
+type ImageAttachmentRef = Extract<ContentBlock, { type: 'image' }>['attachment']
+
+function imageRef(digit: string, bytes: number): ImageAttachmentRef {
+  return {
+    attachmentId: `sha256:${digit.repeat(64)}` as ImageAttachmentRef['attachmentId'],
+    mediaType: 'image/png',
+    bytes,
+    width: 1,
+    height: 1,
+    name: 'pixel.png',
+  }
+}
+
+function contentTool(name: string, content: ContentBlock[]): ToolDefinition {
+  return {
+    ...tool(name, async () => ({})),
+    output: { schema: {}, render: () => content },
+  }
+}
+
+function provideImageReader(
+  ctx: Context,
+  readImage: (
+    ref: ImageAttachmentRef,
+    signal?: AbortSignal,
+  ) => Promise<{ ref: ImageAttachmentRef; data: Uint8Array }>,
+  limits: Partial<{
+    maxImageBytes: number
+    maxImagesPerMessage: number
+    maxMessageImageBytes: number
+  }> = {},
+): void {
+  ctx.provide('attachments', {
+    imageLimits: {
+      maxImageBytes: limits.maxImageBytes ?? 1024,
+      maxImagesPerMessage: limits.maxImagesPerMessage ?? 4,
+      maxMessageImageBytes: limits.maxMessageImageBytes ?? 4096,
+      maxImagePixels: 1,
+      maxImageDimension: 1,
+      mediaTypes: ['image/png'],
+    },
+    readImage,
+  } as never)
 }
 
 function structuredResult(result: Awaited<ReturnType<Client['callTool']>>): ToolExecutionResult {
@@ -288,6 +334,87 @@ describe('ToolRuntimeMcpServer', () => {
       reason: 'external call approval',
     })
     expect(approvalRequest?.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('transports authorized image bytes and MIME as typed MCP content', async () => {
+    const runtime = await mount()
+    const data = Uint8Array.of(0x89, 0x50, 0x4e, 0x47)
+    const attachment = imageRef('1', data.byteLength)
+    const readImage = vi.fn(async (ref: ImageAttachmentRef, signal?: AbortSignal) => {
+      signal?.throwIfAborted()
+      return { ref, data }
+    })
+    provideImageReader(runtime.ctx, readImage)
+    const live = await runtime.agent('image-agent')
+    live.scope.ctx.tools.register(contentTool('image-result', [
+      { type: 'text', text: 'captured image' },
+      { type: 'image', attachment },
+    ]))
+    const client = await runtime.client(runtime.ctx.mcpToolRuntime.issue(live.agent))
+
+    const result = await client.callTool({ name: 'image-result', arguments: {} })
+
+    expect(result.content).toEqual([
+      { type: 'text', text: 'captured image' },
+      { type: 'image', data: Buffer.from(data).toString('base64'), mimeType: 'image/png' },
+    ])
+    expect(readImage).toHaveBeenCalledWith(attachment, expect.any(AbortSignal))
+    expect(JSON.stringify(result.content)).not.toContain(attachment.attachmentId)
+    expect(JSON.stringify(result.content)).not.toContain(attachment.name)
+    expect(structuredResult(result).content).toEqual([
+      { type: 'text', text: 'captured image' },
+      { type: 'image', attachment },
+    ])
+  })
+
+  it('fails closed before reading an image whose declared bytes exceed the fixed transport budget', async () => {
+    const runtime = await mount()
+    const bytes = 20 * 1024 * 1024 + 1
+    const attachment = imageRef('2', bytes)
+    const readImage = vi.fn(async (ref: ImageAttachmentRef) => ({ ref, data: new Uint8Array(bytes) }))
+    provideImageReader(runtime.ctx, readImage, { maxImageBytes: bytes, maxMessageImageBytes: bytes })
+    const live = await runtime.agent('oversize-image-agent')
+    live.scope.ctx.tools.register(contentTool('oversize-image', [{ type: 'image', attachment }]))
+    const client = await runtime.client(runtime.ctx.mcpToolRuntime.issue(live.agent))
+
+    const result = await client.callTool({ name: 'oversize-image', arguments: {} })
+
+    expect(readImage).not.toHaveBeenCalled()
+    expect(result.content).toEqual([{ type: 'text', text: 'Error: tool bridge request failed' }])
+    expect(structuredResult(result)).toMatchObject({
+      isError: true,
+      error: { info: { code: 'BRIDGE_FAILURE' } },
+    })
+    expect(JSON.stringify(result)).not.toContain(attachment.attachmentId)
+  })
+
+  it('fails closed without partial bytes or backend details when an image read fails', async () => {
+    const runtime = await mount()
+    const first = imageRef('3', 3)
+    const second = imageRef('4', 3)
+    const firstData = Uint8Array.of(1, 2, 3)
+    const backendDetail = String.raw`N:\private\captures\missing.png`
+    const readImage = vi.fn(async (ref: ImageAttachmentRef) => {
+      if (ref.attachmentId === second.attachmentId) throw new Error(backendDetail)
+      return { ref, data: firstData }
+    })
+    provideImageReader(runtime.ctx, readImage)
+    const live = await runtime.agent('missing-image-agent')
+    live.scope.ctx.tools.register(contentTool('missing-image', [
+      { type: 'image', attachment: first },
+      { type: 'image', attachment: second },
+    ]))
+    const client = await runtime.client(runtime.ctx.mcpToolRuntime.issue(live.agent))
+
+    const result = await client.callTool({ name: 'missing-image', arguments: {} })
+    const serialized = JSON.stringify(result)
+
+    expect(readImage).toHaveBeenCalledTimes(2)
+    expect(result.content).toEqual([{ type: 'text', text: 'Error: tool bridge request failed' }])
+    expect(serialized).not.toContain(Buffer.from(firstData).toString('base64'))
+    expect(serialized).not.toContain(backendDetail)
+    expect(serialized).not.toContain(first.attachmentId)
+    expect(serialized).not.toContain(second.attachmentId)
   })
 
   it('propagates MCP cancellation into ToolRuntime and drains the tool body', async () => {
