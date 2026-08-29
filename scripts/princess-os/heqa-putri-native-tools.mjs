@@ -38,7 +38,7 @@ async function waitForIdle(page, timeout = 300_000) {
   await page.waitForTimeout(500)
 }
 
-async function latestAssistantText(page) {
+async function latestAssistantTextBlocks(page) {
   const settled = page.locator(
     '[data-chat-flow-kind="assistant-step"] [data-assistant-status="settled"]',
   ).last()
@@ -46,7 +46,6 @@ async function latestAssistantText(page) {
   return (await settled.locator('[data-assistant-block-kind="text"]').allInnerTexts())
     .map(value => value.trim().replace(/\s+/g, ' '))
     .filter(Boolean)
-    .join('\n\n')
 }
 
 async function newestSessionLogContaining(needle) {
@@ -149,7 +148,9 @@ async function run() {
     await page.getByRole('button', { name: 'Send message' }).click()
     await waitForIdle(page)
 
-    const finalReply = await latestAssistantText(page)
+    const finalTextBlocks = await latestAssistantTextBlocks(page)
+    const finalReply = finalTextBlocks.join('\n\n')
+    const finalTokenCount = finalReply.split(expectedReply).length - 1
     const sessionLog = await newestSessionLogContaining(nonce)
     const activityCount = (sessionLog.text.match(/Giana Code tool started\./g) ?? []).length
     const goalCache = JSON.parse(await readFile(path.join(dshHome, 'storages', 'session_projcache.json'), 'utf8'))
@@ -159,7 +160,8 @@ async function run() {
       goalLifecyclePersisted: goal !== undefined,
       terminalSideEffectPersisted: marker === nonce,
       remoteToolActivityObserved: activityCount >= expectedTools.length,
-      finalReplyAcknowledgesCanary: finalReply === expectedReply,
+      exactlyOneFinalTextBlock: finalTextBlocks.length === 1,
+      finalTokenAppearsOnceAtEnd: finalTokenCount === 1 && finalReply.endsWith(expectedReply),
       noConsoleErrors: consoleErrors.length === 0,
       noPageErrors: pageErrors.length === 0,
     }
@@ -168,12 +170,14 @@ async function run() {
       toolActivityCount: activityCount,
       persistedGoal: goal,
       terminalMarkerPath: markerPath,
-      finalReply,
+      finalTextBlocks,
+      finalTokenCount,
     }
     assert(result.checks.goalLifecyclePersisted, 'GOAL_LIFECYCLE_SIDE_EFFECT_NOT_PERSISTED')
     assert(result.checks.terminalSideEffectPersisted, 'TERMINAL_SIDE_EFFECT_NOT_PERSISTED')
     assert(result.checks.remoteToolActivityObserved, 'REMOTE_TOOL_ACTIVITY_NOT_OBSERVED')
-    assert(result.checks.finalReplyAcknowledgesCanary, 'NATIVE_TOOL_CANARY_FINAL_REPLY_MISMATCH')
+    assert(result.checks.exactlyOneFinalTextBlock, 'NATIVE_TOOL_CANARY_FINAL_BLOCK_COUNT_MISMATCH')
+    assert(result.checks.finalTokenAppearsOnceAtEnd, 'NATIVE_TOOL_CANARY_FINAL_TOKEN_MISMATCH')
     assert(result.checks.noConsoleErrors, 'BROWSER_CONSOLE_ERRORS_OBSERVED')
     assert(result.checks.noPageErrors, 'BROWSER_PAGE_ERRORS_OBSERVED')
     result.verdict = 'READY_FOR_ALEX_HEQA'
