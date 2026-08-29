@@ -45,6 +45,10 @@ export function evaluateVisualReply(reply, expectedAnswer) {
   return { valid: true, failureCode: null }
 }
 
+export function joinAssistantTextBlocks(blocks) {
+  return blocks.map(normalizeVisualFact).filter(Boolean).join('\n\n')
+}
+
 function resolveVisualChallenge() {
   const configuredImagePath = process.env.GIANA_CODE_HEQA_IMAGE?.trim()
   const configuredQuestion = process.env.GIANA_CODE_HEQA_VISUAL_QUESTION?.trim()
@@ -74,7 +78,12 @@ async function selectPutri(page) {
   if (await current.count()) return
   const modelButton = page.locator('[data-composer-trailing] button').filter({ hasText: /Putri|DeepSeek|Qwen/ }).first()
   await modelButton.click()
-  await page.getByText('Putri', { exact: true }).last().click()
+  const putri = page.getByText('Putri', { exact: true }).last()
+  if (!await putri.isVisible().catch(() => false)) {
+    await page.getByText(/Qwen3\.8-27B/, { exact: true }).last().click()
+  }
+  await putri.waitFor({ state: 'visible', timeout: 30_000 })
+  await putri.click()
 }
 
 async function pasteImage(page, filePath) {
@@ -97,7 +106,27 @@ async function pasteImage(page, filePath) {
 async function latestAssistantText(page) {
   const assistant = page.locator('[data-chat-flow-kind="assistant-step"]').last()
   await assistant.waitFor({ state: 'visible', timeout: 30_000 })
-  return (await assistant.innerText()).trim()
+  const settled = assistant.locator('[data-assistant-status="settled"]')
+  await settled.waitFor({ state: 'visible', timeout: 30_000 })
+  const textBlocks = settled.locator('[data-assistant-block-kind="text"]')
+  await textBlocks.first().waitFor({ state: 'visible', timeout: 30_000 })
+  return joinAssistantTextBlocks(await textBlocks.allInnerTexts())
+}
+
+async function settledAssistantTexts(page) {
+  const settled = page.locator(
+    '[data-chat-flow-kind="assistant-step"] [data-assistant-status="settled"]',
+  )
+  const values = []
+  for (let index = 0; index < await settled.count(); index += 1) {
+    const blocks = settled.nth(index).locator('[data-assistant-block-kind="text"]')
+    values.push(joinAssistantTextBlocks(await blocks.allInnerTexts()))
+  }
+  return values
+}
+
+function occurrenceCount(value, pattern) {
+  return value.match(pattern)?.length ?? 0
 }
 
 async function run() {
@@ -128,7 +157,7 @@ async function run() {
     page.on('pageerror', error => { pageErrors.push(String(error)) })
 
     await page.goto(baseURL, { waitUntil: 'domcontentloaded', timeout: 120_000 })
-    await page.getByText('Giana Code', { exact: true }).first().waitFor({ state: 'visible', timeout: 120_000 })
+    await page.getByText('Giana Code Putri', { exact: true }).first().waitFor({ state: 'visible', timeout: 120_000 })
     await page.getByRole('button', { name: 'New session' }).filter({ hasText: 'New Session' }).click()
     await page.waitForTimeout(600)
     await selectPutri(page)
@@ -160,10 +189,15 @@ async function run() {
     }
     await page.screenshot({ path: path.join(evidenceRoot, 'giana-code-putri-image-live-pass-20260825.png'), fullPage: true })
 
-    await textarea.fill('Run a read-only UI cancellation check: use an available shell to wait 20 seconds, then report that the wait completed.')
+    const settledBeforeSteer = await settledAssistantTexts(page)
+    const interruptedBeforeSteer = await page.locator('[data-assistant-status="interrupted"]').count()
+    const userMessagesBeforeSteer = await page.locator('[data-chat-flow-kind="user"]').count()
+    const steeringMessagesBeforeSteer = await page.locator('[data-chat-flow-kind="steering"]').count()
+
+    await textarea.fill('Run a read-only continuity check: use an available shell to wait 20 seconds, then finish with the exact label ORIGINAL_WORK_COMPLETED.')
     await page.getByRole('button', { name: 'Send message' }).click()
     await page.getByRole('button', { name: 'Stop generating' }).waitFor({ state: 'visible', timeout: 30_000 })
-    await textarea.fill('Cancel the prior wait immediately. Do not continue that task. Report the current local date and finish with the label STEER_RECOVERY_OK.')
+    await textarea.fill('Steering context: preserve and finish the work already in progress; do not cancel or abandon it. After it completes, report the current local date and finish with the exact label STEER_RECOVERY_OK.')
     const steer = page.getByRole('button', { name: 'Steer current turn' })
     assert(await steer.count() === 1, 'STEER_ACTION_COUNT_INVALID')
     assert(!await steer.isDisabled(), 'STEER_DISABLED_WHILE_BUSY')
@@ -172,13 +206,28 @@ async function run() {
     await steer.click()
     await waitForIdle(page)
 
-    const steerReply = await latestAssistantText(page)
-    assert(/STEER_RECOVERY_OK/i.test(steerReply), 'STEER_RECOVERY_LABEL_MISSING')
-    assert(!/Queued for the next turn|respond once the current task finishes/i.test(steerReply), 'STEER_DEGRADED_TO_QUEUE')
+    const postSteerTexts = (await settledAssistantTexts(page)).slice(settledBeforeSteer.length)
+    const postSteerTranscript = postSteerTexts.join('\n\n')
+    const interruptedAfterSteer = await page.locator('[data-assistant-status="interrupted"]').count()
+    const userMessagesAfterSteer = await page.locator('[data-chat-flow-kind="user"]').count()
+    const steeringMessagesAfterSteer = await page.locator('[data-chat-flow-kind="steering"]').count()
+    assert(postSteerTexts.length === 2, 'STEER_SETTLED_RESPONSE_COUNT_INVALID')
+    assert(occurrenceCount(postSteerTexts[0] ?? '', /ORIGINAL_WORK_COMPLETED/gi) === 1, 'STEER_ORIGINAL_WORK_NOT_PRESERVED_EXACTLY_ONCE')
+    assert(occurrenceCount(postSteerTexts[1] ?? '', /STEER_RECOVERY_OK/gi) === 1, 'STEER_RECOVERY_LABEL_NOT_OBSERVED_EXACTLY_ONCE')
+    assert(postSteerTexts[0] !== postSteerTexts[1], 'STEER_DUPLICATED_SETTLED_RESPONSE')
+    assert(!/Queued for the next turn|respond once the current task finishes/i.test(postSteerTranscript), 'STEER_DEGRADED_TO_QUEUE')
+    assert(interruptedAfterSteer === interruptedBeforeSteer, 'STEER_INTERRUPTED_RUNNING_PROGRESS')
+    assert(userMessagesAfterSteer === userMessagesBeforeSteer + 1, 'STEER_USER_MESSAGE_COUNT_INVALID')
+    assert(steeringMessagesAfterSteer === steeringMessagesBeforeSteer + 1, 'STEER_TYPED_MESSAGE_COUNT_INVALID')
     result.checks.steer = {
       stopSeparate: true,
-      postTurnContinuationCompleted: true,
-      recoveryLabelObserved: true,
+      originalProgressCompleted: true,
+      steeringContextCompleted: true,
+      settledResponseDelta: 2,
+      labelsObservedExactlyOncePerResponse: true,
+      interruptionDelta: 0,
+      userMessageDelta: 1,
+      steeringMessageDelta: 1,
       queuedFallback: false,
     }
     await page.screenshot({ path: path.join(evidenceRoot, 'giana-code-putri-steer-live-pass-20260825.png'), fullPage: true })
@@ -202,7 +251,8 @@ async function run() {
     console.log(JSON.stringify({
       verdict: result.verdict,
       imageVerified: result.checks.image?.visualFactVerified === true,
-      steerVerified: result.checks.steer?.postTurnContinuationCompleted === true,
+      steerVerified: result.checks.steer?.originalProgressCompleted === true
+        && result.checks.steer?.steeringContextCompleted === true,
       failureCode: result.failureCode ?? null,
     }, null, 2))
   }

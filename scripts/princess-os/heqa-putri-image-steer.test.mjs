@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   evaluateVisualReply,
   isModelRejection,
+  joinAssistantTextBlocks,
 } from './heqa-putri-image-steer.mjs'
 
 test('accepts only the exact deterministic visual fact', () => {
@@ -15,6 +16,13 @@ test('accepts only the exact deterministic visual fact', () => {
     valid: false,
     failureCode: 'VISUAL_FACT_MISMATCH',
   })
+})
+
+test('joins only finalized assistant text blocks in order', () => {
+  assert.equal(
+    joinAssistantTextBlocks(['  First answer  ', '\nSecond   answer\n', '']),
+    'First answer\n\nSecond answer',
+  )
 })
 
 test('rejects the former false-positive model rejection sentence', () => {

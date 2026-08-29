@@ -53,13 +53,14 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
     switch (block.kind) {
       case 'text':
         rendered.push(
-          <MarkdownText
-            key={i}
-            text={block.text}
-            streaming={streaming}
-            codeLabels={codeLabels}
-            fileMentions={mentions}
-          />,
+          <div key={i} data-assistant-block-kind="text">
+            <MarkdownText
+              text={block.text}
+              streaming={streaming}
+              codeLabels={codeLabels}
+              fileMentions={mentions}
+            />
+          </div>,
         )
         break
       case 'reasoning':
@@ -104,7 +105,11 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
     }
   }
   return (
-    <div className={css.root} data-streaming={streaming || undefined}>
+    <div
+      className={css.root}
+      data-streaming={streaming || undefined}
+      data-assistant-status={streaming ? 'running' : interrupted ? 'interrupted' : 'settled'}
+    >
       <div className={css.body}>
         {rendered}
         {interrupted && <span className={css.stopped}>{t('message.stopped')}</span>}

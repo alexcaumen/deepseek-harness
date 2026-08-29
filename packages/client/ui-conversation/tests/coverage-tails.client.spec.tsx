@@ -35,6 +35,7 @@ describe('tails', () => {
         renderMessageImages={renderMessageImages}
       />,
     )
+    expect(view.container.querySelector('[data-assistant-status="running"]')).not.toBeNull()
     expect(view.getByText('Think')).toBeTruthy()
     expect(view.getByText('thinking hard')).toBeTruthy()
     expect(view.getByText(/未知内容块/)).toBeTruthy()
@@ -47,7 +48,19 @@ describe('tails', () => {
         renderMessageImages={renderMessageImages}
       />,
     )
+    expect(stopped.container.querySelector('[data-assistant-status="interrupted"]')).not.toBeNull()
     expect(stopped.getByText('已停止')).toBeTruthy()
+
+    const settled = render(
+      <AssistantMarkdown
+        t={t}
+        blocks={[{ kind: 'text', text: 'final answer' }]}
+        streaming={false}
+        renderMessageImages={renderMessageImages}
+      />,
+    )
+    expect(settled.container.querySelector('[data-assistant-status="settled"]')).not.toBeNull()
+    expect(settled.container.querySelector('[data-assistant-block-kind="text"]')?.textContent).toBe('final answer')
   })
 
   it('AssistantMarkdown skips the root shell when only tool-call heads remain', () => {
