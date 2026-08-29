@@ -28,7 +28,7 @@ afterEach(async () => {
 })
 
 /** Write a cordis.yml with one webserver row, then boot it through the real Loader. */
-async function loadComposition(port = 0): Promise<Context> {
+async function loadComposition(port = 0, releaseRevision?: string): Promise<Context> {
   root = await mkdtemp(join(tmpdir(), 'dsh-webserver-loader-'))
   const configPath = join(root, 'cordis.yml')
   await writeFile(configPath, [
@@ -36,6 +36,7 @@ async function loadComposition(port = 0): Promise<Context> {
     '  config:',
     "    host: '127.0.0.1'",
     `    port: ${String(port)}`,
+    ...releaseRevision === undefined ? [] : [`    releaseRevision: '${releaseRevision}'`],
     '',
   ].join('\n'))
 
@@ -62,9 +63,17 @@ async function loadComposition(port = 0): Promise<Context> {
 }
 
 /** GET (by default) one path against the running server; returns status plus a body prefix. */
-async function request(port: number, path: string, init?: RequestInit): Promise<{ status: number; body: string }> {
+async function request(
+  port: number,
+  path: string,
+  init?: RequestInit,
+): Promise<{ status: number; body: string; releaseRevision: string | null }> {
   const response = await fetch(`http://127.0.0.1:${String(port)}${path}`, init)
-  return { status: response.status, body: (await response.text()).slice(0, 80) }
+  return {
+    status: response.status,
+    body: (await response.text()).slice(0, 80),
+    releaseRevision: response.headers.get('x-dsh-release-revision'),
+  }
 }
 
 /** Open one raw upgrade request and return after the handler writes its response. */
@@ -90,7 +99,7 @@ describe('real Loader composition', () => {
   // time; first resolution after the host/client program split is slow enough
   // to trip the default 5s budget on cold caches.
   it('serves registered routes, index taps, and the fallback-seat semantics', { timeout: 60_000 }, async () => {
-    const loaded = await loadComposition()
+    const loaded = await loadComposition(0, 'e805f8963775a3b859f327ba3bda1ca710dc0078')
     const unloaded = [...loaded.loader.entries()]
       .filter(entry => entry.fiber === undefined && !entry.disabled)
       .map(entry => entry.options.name)
@@ -108,6 +117,8 @@ describe('real Loader composition', () => {
     server.register({ kind: 'prefix', path: '/api', handler: (_req, res) => { res.writeHead(200); res.end('API') } })
     server.register({ kind: 'prefix', path: '/api/deep', handler: (_req, res) => { res.writeHead(200); res.end('DEEP') } })
     expect(await request(port, '/probe')).toMatchObject({ status: 200, body: 'EXACT' })
+    expect((await request(port, '/probe')).releaseRevision)
+      .toBe('e805f8963775a3b859f327ba3bda1ca710dc0078')
     expect(await request(port, '/api/anything')).toMatchObject({ status: 200, body: 'API' })
     expect(await request(port, '/api/deep/leaf')).toMatchObject({ status: 200, body: 'DEEP' })
     expect(await request(port, '/api')).toMatchObject({ status: 200, body: 'API' })

@@ -80,12 +80,30 @@ function Test-VmListener {
   return (($output | Out-String) -match "127\.0\.0\.1:$Port")
 }
 
+function Test-VmEndToEndRoute {
+  param([string]$VmAddress)
+  $arguments = @(
+    '-o', 'ConnectionAttempts=1',
+    '-o', 'ServerAliveInterval=2',
+    '-o', 'ServerAliveCountMax=2',
+    '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5',
+    'r5300',
+    'ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5',
+    "debian@$VmAddress",
+    'curl', '-sS', '-o', '/dev/null', '-w', '%{http_code}', '-X', 'POST',
+    "http://127.0.0.1:$Port/mcp/tool-runtime"
+  )
+  $output = & $script:SshPath @arguments 2>$null
+  if ($LASTEXITCODE -ne 0) { return $false }
+  return (($output | Out-String).Trim() -eq '401')
+}
+
 $script:SshPath = Get-SshExecutable
 $vmAddress = Get-GianaOsVmAddress
 
-# Reuse an already healthy candidate listener instead of opening a second
-# nested SSH request during every launcher readiness check.
-if (Test-VmListener $vmAddress) {
+# The VM listener can outlive the outer PRDG -> R5300 tunnel. Treat the chain
+# as reusable only while both forwarding hops are still present.
+if ((Test-LocalOuterTunnel) -and (Test-VmListener $vmAddress) -and (Test-VmEndToEndRoute $vmAddress)) {
   [pscustomobject]@{
     state = 'READY'
     vmId = $VmId
@@ -136,7 +154,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $deadline = [DateTime]::UtcNow.AddSeconds(20)
 do {
-  if (Test-VmListener $vmAddress) {
+  if ((Test-LocalOuterTunnel) -and (Test-VmListener $vmAddress) -and (Test-VmEndToEndRoute $vmAddress)) {
     [pscustomobject]@{
       state = 'READY'
       vmId = $VmId

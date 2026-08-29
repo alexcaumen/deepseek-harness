@@ -61,6 +61,8 @@ export interface Config {
   host: '127.0.0.1' | '0.0.0.0'
   /** Listen port; zero requests an OS-assigned port. */
   port: number
+  /** Optional immutable release revision exposed for trusted launchers. */
+  releaseRevision?: string
 }
 
 /**
@@ -74,6 +76,7 @@ export class WebServer extends Service {
   static Config: z<Config> = z.object({
     host: z.union([z.const('127.0.0.1'), z.const('0.0.0.0')]).required(),
     port: z.natural().max(65535).required(),
+    releaseRevision: z.string().pattern(/^[0-9a-f]{7,64}$/),
   })
 
   private readonly exact = new Map<string, WebRoute>()
@@ -162,6 +165,9 @@ export class WebServer extends Service {
   /** Listen; resolves once the socket is bound (rejection = FAILED fiber). */
   async [Service.init](): Promise<void> {
     const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+      if (this.config.releaseRevision !== undefined) {
+        res.setHeader('X-DSH-Release-Revision', this.config.releaseRevision)
+      }
       /* v8 ignore next -- `?? '/'` arm: node:http always sets url on server
       requests; the field is only optional on the client-side IncomingMessage type */
       const rawPath = new URL(req.url ?? '/', 'http://x').pathname

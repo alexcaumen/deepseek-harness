@@ -6,14 +6,16 @@ import { promisify } from 'node:util'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const workspaceRequire = createRequire(new URL('../../apps/cli/package.json', import.meta.url))
+const agentRequire = createRequire(new URL('../../packages/core/agent/package.json', import.meta.url))
+const toolsRequire = createRequire(new URL('../../packages/core/tools/package.json', import.meta.url))
 const [cordisModule, agentModule, scopeModule, sessionModule, systemPromptModule, toolsModule, approvalModule] = await Promise.all([
   import(pathToFileURL(workspaceRequire.resolve('@deepseek-ai/cordis')).href),
   import(pathToFileURL(workspaceRequire.resolve('@deepseek-ai/dsh-agent')).href),
-  import(pathToFileURL(workspaceRequire.resolve('@deepseek-ai/dsh-scope')).href),
+  import(pathToFileURL(agentRequire.resolve('@deepseek-ai/dsh-scope')).href),
   import(pathToFileURL(workspaceRequire.resolve('@deepseek-ai/dsh-session')).href),
   import(pathToFileURL(workspaceRequire.resolve('@deepseek-ai/dsh-system-prompt')).href),
   import(pathToFileURL(workspaceRequire.resolve('@deepseek-ai/dsh-tools')).href),
-  import(pathToFileURL(workspaceRequire.resolve('@deepseek-ai/dsh-user-approval')).href),
+  import(pathToFileURL(toolsRequire.resolve('@deepseek-ai/dsh-user-approval')).href),
 ])
 const { Context } = cordisModule
 const AgentRegistry = agentModule.default
