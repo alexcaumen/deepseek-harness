@@ -68,7 +68,7 @@
         command: 'C:\Program Files\nodejs\node.exe'
         cwd: 'N:\PrincessOS\workbench\ui-test-workspace'
         args:
-          - 'C:\Users\grinv\.dsh-giana-code-putri-clean-20260827\profiles\web\node_modules\@playwright\mcp\cli.js'
+          - 'C:\Users\grinv\.dsh-giana-code-putri-production-20260829\profiles\web\node_modules\@playwright\mcp\cli.js'
           - --isolated
           - --headless
           - --sandbox
