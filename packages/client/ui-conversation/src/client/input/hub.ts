@@ -30,6 +30,7 @@ interface ConversationAttachmentFace {
     imageIds: readonly DraftAttachmentId[],
     mode: InputSubmitMode,
     signal?: AbortSignal,
+    displayText?: string,
   ): Promise<SubmitOutcome>
   serializeDraftImages(imageIds: readonly DraftAttachmentId[]): Promise<readonly SubmitImageAttachment[]>
   releaseDraftImage(id: DraftAttachmentId): void
@@ -77,7 +78,9 @@ export class InputHub implements SessionInputResolver {
       inputTriggers: () => this.controller(actx),
       popup: () => this.popup(actx),
       queue: queueReadFaceOf(session),
-      defaultSink: (text, imageIds, mode, signal) => this.sink(session, text, imageIds, mode, signal),
+      defaultSink: (text, imageIds, mode, signal, displayText) => (
+        this.sink(session, text, imageIds, mode, signal, displayText)
+      ),
       steerQueue: () => { void this.steerQueue(session, shell) },
       commandImages: {
         serialize: ids => this.conversation().serializeDraftImages(ids),
@@ -168,9 +171,10 @@ export class InputHub implements SessionInputResolver {
     imageIds: readonly DraftAttachmentId[],
     mode: InputSubmitMode,
     signal: AbortSignal,
+    displayText?: string,
   ): Promise<SubmitOutcome> {
     if (text === '' && imageIds.length === 0) return Promise.resolve({ kind: 'success' })
-    return this.conversation().sendSession(session, text, imageIds, mode, signal)
+    return this.conversation().sendSession(session, text, imageIds, mode, signal, displayText)
   }
 
   /**

@@ -37,12 +37,15 @@ export interface ISession {
    * @param content - text plus browser-owned temporary image uploads.
    * @param mode - 'queue' appends a turn; 'steer' is consumed at the next
    * step boundary without interrupting or cancelling the active turn.
+   * @param signal - optional cancellation for Host admission.
+   * @param displayText - optional browser-authored presentation for serialized references.
    * @returns acceptance, or the business error (also mirrored into snapshot.promptError).
    */
   prompt(
     content: PromptContentPart[],
     mode: 'queue' | 'steer',
     signal?: AbortSignal,
+    displayText?: string,
   ): Promise<RpcResult<{ accepted: true }>>
   /**
    * Resolve one durable image referenced by this session.

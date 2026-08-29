@@ -24,7 +24,13 @@ describe('response annotations', () => {
       return source.codec.serialize(ref, signal)
     })
     const inputTriggers = { serializeReference, track: vi.fn() } as unknown as InputTriggerController
-    const sink = vi.fn((_text: string) => Promise.resolve<SubmitOutcome>({ kind: 'success' }))
+    const sink = vi.fn((
+      _text: string,
+      _imageIds: readonly unknown[],
+      _mode: 'queue' | 'steer',
+      _signal: AbortSignal,
+      _displayText?: string,
+    ) => Promise.resolve<SubmitOutcome>({ kind: 'success' }))
     const shell = new SessionInputShell({
       actx: {} as ClientContext,
       inputTriggers: () => inputTriggers,
@@ -55,6 +61,7 @@ describe('response annotations', () => {
     expect(submitted).toContain('"index":2')
     expect(submitted).toContain('"sourceMessageId":"assistant-2"')
     expect(submitted).toContain('please compare both')
+    expect(sink.mock.calls[0]?.[4]).toBe('@Annotation 1 @Annotation 2 please compare both')
     expect(serializeReference).toHaveBeenCalledTimes(2)
   })
 

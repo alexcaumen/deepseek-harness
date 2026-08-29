@@ -525,7 +525,7 @@ describe('prompt and cancel errors', () => {
     // flow reads the phase on the session area's first frame to keep the
     // guidance hero from flashing back in.
     expect(session.getSnapshot().composerPhase).toBe('blank')
-    const inFlight = session.prompt([{ type: 'text', text: '要发的' }], 'queue')
+    const inFlight = session.prompt([{ type: 'text', text: 'model form' }], 'queue', undefined, '@Annotation 1 要发的')
     expect(session.getSnapshot().composerPhase).toBe('engaging')
     const result = await inFlight
     expect(result.ok).toBe(true)
@@ -534,8 +534,9 @@ describe('prompt and cancel errors', () => {
     expect(api.callsOf('session.prompt')).toMatchObject([{
       sessionId: SID,
       mode: 'queue',
-      content: [{ type: 'text', text: '要发的' }],
+      content: [{ type: 'text', text: 'model form' }],
       clientTimeZone: new Intl.DateTimeFormat().resolvedOptions().timeZone,
+      displayText: '@Annotation 1 要发的',
     }])
     // First content lands (running turn): engaging → active.
     session.handleRunning(true)

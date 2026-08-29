@@ -154,7 +154,7 @@ function TurnMaxTokensItem({ t }: {
  * compose time, so shape alone decorates).
  */
 function projectUserText(text: string, sessionLabels: readonly string[]): ReactNode {
-  const ranges: { start: number; end: number; label: string; kind: 'session' | 'plain' }[] = []
+  const ranges: { start: number; end: number; label: string; kind: 'session' | 'annotation' | 'plain' }[] = []
   for (const rawLabel of [...new Set(sessionLabels)].sort((a, b) => b.length - a.length)) {
     const label = `@${rawLabel}`
     let start = text.indexOf(label)
@@ -162,6 +162,13 @@ function projectUserText(text: string, sessionLabels: readonly string[]): ReactN
       ranges.push({ start, end: start + label.length, label, kind: 'session' })
       start = text.indexOf(label, start + label.length)
     }
+  }
+  const annotation = /(^|\s)(@Annotation\s+[1-9]\d*)\b/gu
+  let annotationMatch: RegExpExecArray | null
+  while ((annotationMatch = annotation.exec(text)) !== null) {
+    const tokenStart = annotationMatch.index + (annotationMatch[1]?.length ?? 0)
+    const label = annotationMatch[2] ?? ''
+    ranges.push({ start: tokenStart, end: tokenStart + label.length, label, kind: 'annotation' })
   }
   const re = /(^|\s)(\/[\w-]+|@"[^"\n]+"|@[^\s]+)/gu
   let m: RegExpExecArray | null
@@ -174,8 +181,8 @@ function projectUserText(text: string, sessionLabels: readonly string[]): ReactN
     if (label.length <= 1) continue
     ranges.push({ start: tokenStart, end: tokenStart + label.length, label, kind: 'plain' })
   }
-  ranges.sort((a, b) => a.start - b.start
-    || (a.kind === b.kind ? b.end - a.end : a.kind === 'session' ? -1 : 1))
+  const priority = { session: 0, annotation: 1, plain: 2 } as const
+  ranges.sort((a, b) => a.start - b.start || priority[a.kind] - priority[b.kind] || b.end - a.end)
   const parts: ReactNode[] = []
   let cursor = 0
   for (const range of ranges) {
@@ -187,16 +194,18 @@ function projectUserText(text: string, sessionLabels: readonly string[]): ReactN
       : label.startsWith('@')
         ? label.endsWith('/') ? 'folder' : 'file'
         : undefined
-    const displayLabel = referenceKind === undefined
-      ? label
-      : referenceKind === 'session'
-        ? label.slice(1)
-        : label.slice(1).replace(/^"|"$/gu, '').split(/[\\/]/u).filter(Boolean).at(-1) ?? label.slice(1)
+    const displayLabel = kind === 'annotation'
+      ? label.slice(1)
+      : referenceKind === undefined
+        ? label
+        : referenceKind === 'session'
+          ? label.slice(1)
+          : label.slice(1).replace(/^"|"$/gu, '').split(/[\\/]/u).filter(Boolean).at(-1) ?? label.slice(1)
     parts.push(
       <span
         key={tokenStart}
         className={css.refChip}
-        data-ref-chip={referenceKind ?? 'skill'}
+        data-ref-chip={kind === 'annotation' ? 'annotation' : referenceKind ?? 'skill'}
         title={label}
       >
         {referenceKind !== undefined && (

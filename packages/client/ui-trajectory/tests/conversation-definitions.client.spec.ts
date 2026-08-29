@@ -316,4 +316,23 @@ describe('Trajectory conversation Definitions', () => {
       ? request.promptChange?.kind
       : undefined)).toEqual(['initial', undefined])
   })
+
+  it('projects direct-prompt annotation text in trajectory while preserving the source event', () => {
+    const raw = '<response-annotations>[{"index":1,"text":"quoted"}]</response-annotations> compare'
+    const message = {
+      id: 'annotated-user',
+      role: 'user',
+      content: [{ type: 'text', text: raw }],
+      source: { kind: 'user', displayText: '@Annotation 1 compare' },
+    }
+    const current = snapshot(assembler([
+      at(1, 'user/message', message),
+    ]))
+
+    expect(current.eventNodes).toMatchObject([{
+      kind: 'user',
+      content: [{ type: 'text', text: '@Annotation 1 compare' }],
+    }])
+    expect(message.content).toEqual([{ type: 'text', text: raw }])
+  })
 })

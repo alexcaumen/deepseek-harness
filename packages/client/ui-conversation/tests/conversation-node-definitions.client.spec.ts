@@ -90,7 +90,7 @@ function textMessage(id: string, text: string) {
     id,
     role: 'user',
     content: [{ type: 'text', text }],
-    source: { kind: 'user' },
+    source: { kind: 'user' as const },
   }
 }
 
@@ -576,6 +576,21 @@ describe('built-in conversation node Definitions', () => {
     expect(users[0]?.data).toMatchObject({ referenceLabels: ['Research notes'] })
     expect(users[1]?.data).toMatchObject({ referenceLabels: ['Review'] })
     expect(users[2]?.data).not.toHaveProperty('referenceLabels')
+  })
+
+  it('projects direct-prompt display text without changing the model-facing event', () => {
+    const modelText = '<response-annotations>\n[{"index":1,"text":"quoted"}]\n</response-annotations>\ncompare it'
+    const message = {
+      ...textMessage('annotated-user', modelText),
+      source: { kind: 'user' as const, displayText: '@Annotation 1 compare it' },
+    }
+    const value = assembler([
+      at(1, 'user/message', message, { surfaceOp: 'append' }),
+    ])
+
+    const projected = node(snapshot(value), 'user')?.data as { content?: readonly { type: string; text?: string }[] }
+    expect(projected.content).toEqual([{ type: 'text', text: '@Annotation 1 compare it' }])
+    expect(message.content).toEqual([{ type: 'text', text: modelText }])
   })
 
   it('updates an already published direct node when its following recall arrives', () => {

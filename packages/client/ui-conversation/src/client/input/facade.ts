@@ -53,6 +53,7 @@ export interface SessionInputDeps {
     imageIds: readonly DraftAttachmentId[],
     mode: InputSubmitMode,
     signal: AbortSignal,
+    displayText?: string,
   ): Promise<SubmitOutcome>
   /** Command-plane image plumbing (the hub owns the conversation face and the copy). */
   commandImages: {
@@ -509,7 +510,11 @@ export class SessionInputShell implements SessionInput {
           cursor = part.offset + part.length
         }
         out += draft.slice(cursor)
-        this.settleSubmit(attempt, this.deps.defaultSink(out.trim(), imageIds, mode, attempt.signal), imageIds)
+        this.settleSubmit(
+          attempt,
+          this.deps.defaultSink(out.trim(), imageIds, mode, attempt.signal, draft.trim()),
+          imageIds,
+        )
       },
       (error: unknown) => {
         controller.abort()

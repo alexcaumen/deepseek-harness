@@ -135,6 +135,31 @@ describe('queue snapshot intake', () => {
     ])
   })
 
+  it('projects annotation display text in pending queue rows without mutating the source message', () => {
+    const session = makeSession()
+    const raw = '<response-annotations>[{"index":1,"text":"quoted"}]</response-annotations> compare'
+    const message = createUserMessage({
+      content: [{ type: 'text', text: raw }, { type: 'text', text: ' trailing' }],
+      source: { kind: 'user', displayText: '@Annotation 1 compare' },
+    })
+    session.handleMuxEnvelope(rid('env-annotation'), queueFrame([
+      { id: 's-annotation', body: '', placement: 'steering', message },
+    ]))
+
+    expect(session.getSnapshot().queue[0]).toMatchObject({
+      content: [
+        { type: 'text', text: '@Annotation 1 compare' },
+        { type: 'text', text: ' trailing' },
+      ],
+      preview: '@Annotation 1 compare trailing',
+      text: '@Annotation 1 compare trailing',
+    })
+    expect(message.content).toEqual([
+      { type: 'text', text: raw },
+      { type: 'text', text: ' trailing' },
+    ])
+  })
+
   it('hands off exactly one current occurrence when live steering becomes durable', async () => {
     const session = makeSession()
     await session.open()

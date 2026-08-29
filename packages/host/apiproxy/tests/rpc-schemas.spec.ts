@@ -259,9 +259,11 @@ describe('sessions domain schemas', () => {
       mode: 'queue',
       content: [{ type: 'text', text: 'hi' }],
       clientTimeZone: 'Asia/Shanghai',
+      displayText: '@Annotation 1 hi',
     })
     expect(prompt.mode).toBe('queue')
     expect(prompt.clientTimeZone).toBe('Asia/Shanghai')
+    expect(prompt.displayText).toBe('@Annotation 1 hi')
     expect(sessionPromptRequestSchema.parse({
       sessionId: 's1', mode: 'queue', content: [],
     }).clientTimeZone).toBeUndefined()

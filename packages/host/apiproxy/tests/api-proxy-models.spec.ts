@@ -169,6 +169,7 @@ describe('Web session model selection', () => {
         { type: 'text' as const, text: 'compare' },
         { type: 'image' as const, mediaType: 'image/png' as const, data: 'Ag==' },
       ],
+      displayText: '@Annotation 1 compare',
     }))
     expect(result.result.ok).toBe(true)
     expect(validateImage.mock.calls.map(([input]) => [...input.data])).toEqual([[1], [2]])
@@ -183,6 +184,10 @@ describe('Web session model selection', () => {
       { type: 'text', text: 'compare' },
       { type: 'image', attachment: { attachmentId: 'att-2', mediaType: 'image/png', bytes: 1, width: 1, height: 1 } },
     ])
+    expect((followup.mock.calls[0]?.[0] as UserMessage).source).toMatchObject({
+      kind: 'user',
+      displayText: '@Annotation 1 compare',
+    })
 
     const denied = await api.sessions.prompt(request({
       sessionId,

@@ -148,6 +148,7 @@ export class ConversationController extends Service implements IConversation {
     imageIds: readonly DraftAttachmentId[],
     mode: InputSubmitMode,
     signal?: AbortSignal,
+    displayText?: string,
   ): Promise<SubmitOutcome> {
     const attachments = this.draftImages(imageIds)
     if (attachments.length !== imageIds.length) {
@@ -155,7 +156,7 @@ export class ConversationController extends Service implements IConversation {
     }
     const uploaded = await this.serializeImages(attachments.map(attachment => attachment.file))
     const content = [...uploaded, ...(text === '' ? [] : [{ type: 'text' as const, text }])]
-    const result = await session.prompt(content, mode, signal)
+    const result = await session.prompt(content, mode, signal, displayText)
     if (!result.ok) return { kind: 'error' }
     this.releaseDraftImages(attachments)
     return { kind: 'success' }

@@ -192,6 +192,7 @@ export class Session implements SessionFace {
     content: PromptContentPart[],
     mode: 'queue' | 'steer',
     signal?: AbortSignal,
+    displayText?: string,
   ): Promise<RpcResult<{ accepted: true }>> {
     this.promptError = null
     this.lastAgentError = null
@@ -209,6 +210,7 @@ export class Session implements SessionFace {
           mode,
           content,
           clientTimeZone: resolvedClientTimeZone(),
+          ...(displayText === undefined ? {} : { displayText }),
         }, signal)).result
       } else if (this.address.mode === 'one-shot') {
         result = {

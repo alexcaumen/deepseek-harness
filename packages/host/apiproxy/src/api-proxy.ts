@@ -2359,7 +2359,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       },
 
       async prompt(request) {
-        const { sessionId, mode, content, clientTimeZone } = request.payload
+        const { sessionId, mode, content, clientTimeZone, displayText } = request.payload
         const canonicalTimeZone = clientTimeZone === undefined
           ? undefined
           : canonicalClientTimeZone(clientTimeZone)
@@ -2378,6 +2378,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
           kind: 'user',
           rpcId: request.rpcId,
           ...(canonicalTimeZone === undefined ? {} : { clientTimeZone: canonicalTimeZone }),
+          ...(displayText === undefined ? {} : { displayText }),
         }
         const hasImage = content.some(part => part.type === 'image')
         const admit = async (): Promise<RpcResponse<{ accepted: true }>> => {

@@ -2,6 +2,7 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm/types'
 import type { MuxFrame } from '@deepseek-ai/dsh-api-remotes/client'
 import type { SessionEvent } from '@deepseek-ai/dsh-session/types'
 import type { QueuedMessage } from './conversation.ts'
+import { userMessageDisplayContent } from './user-message-presentation.ts'
 
 const QUEUE_PREVIEW_CHARS = 200
 
@@ -47,14 +48,17 @@ export class SessionQueueMirror {
    * @param items - complete host queue snapshot.
    */
   replace(items: QueueItems): void {
-    this.current = items.map(item => ({
-      id: item.id,
-      messageId: item.message.id,
-      placement: item.placement,
-      content: item.message.content,
-      preview: previewOf(item.message.content),
-      text: textOf(item.message.content),
-    }))
+    this.current = items.map((item) => {
+      const content = userMessageDisplayContent(item.message.content, item.message.source)
+      return {
+        id: item.id,
+        messageId: item.message.id,
+        placement: item.placement,
+        content,
+        preview: previewOf(content),
+        text: textOf(content),
+      }
+    })
   }
 
   /**

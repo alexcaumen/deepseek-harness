@@ -53,10 +53,11 @@ declare module '@deepseek-ai/dsh-llm' {
      * The prompt's rpcId is passed through MessageSource into the `user/message` event
      * (the client uses it to reconcile the optimistically
      * echoed provisional message with the event stream). kind stays `'user'` — the model face
-     * carries no transport vocabulary; rpcId and the optional Host-validated browser zone are
-     * durable JSON fields passed back to the client with the event.
+     * carries no transport vocabulary; rpcId, the optional Host-validated browser zone, and the
+     * optional browser-authored display form are durable JSON fields passed back to the client
+     * with the event. displayText never replaces model-facing message content.
      */
-    'user-rpc': { kind: 'user'; rpcId: RpcId; clientTimeZone?: string }
+    'user-rpc': { kind: 'user'; rpcId: RpcId; clientTimeZone?: string; displayText?: string }
   }
 }
 
@@ -353,6 +354,7 @@ export interface SessionsApi {
     mode: 'queue' | 'steer'
     content: PromptContentPart[]
     clientTimeZone?: string
+    displayText?: string
   }>):
   Promise<RpcResponse<{ accepted: true; command?: { kind: 'success'; text?: string } }>>
 

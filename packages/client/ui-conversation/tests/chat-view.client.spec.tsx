@@ -629,6 +629,16 @@ describe('ChatView', () => {
     expect(branchButtons.map(button => button.getAttribute('aria-disabled'))).toEqual([null, null])
   })
 
+  it('renders a numbered response annotation as one friendly chip', () => {
+    const h = makeHarness({ nodes: [user(1, '@Annotation 12 compare this')] })
+    const view = render(<h.ChatView {...h.props} />)
+    const chips = view.container.querySelectorAll('[data-ref-chip="annotation"]')
+    expect(chips).toHaveLength(1)
+    expect(chips[0]?.textContent).toBe('Annotation 12')
+    expect(view.getByText('compare this')).toBeTruthy()
+    expect(view.queryByText('response-annotations')).toBeNull()
+  })
+
   it('withholds assistant IconActions while the turn is still running', () => {
     const h = makeHarness({
       running: true,

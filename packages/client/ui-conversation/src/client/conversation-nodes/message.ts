@@ -4,6 +4,7 @@ import type {
 } from '@deepseek-ai/dsh-client-runtime/client'
 import {
   contextForm, contextProvenance, isAppendSurfaceEvent, isReplacementSurfaceEvent,
+  userMessageDisplayContent,
 } from '@deepseek-ai/dsh-client-runtime/client'
 import type { InboxState } from './inbox.ts'
 import { chatNode } from './common.ts'
@@ -61,20 +62,21 @@ export const messageDefinition: ConversationNodeDefinition<MessageNode> = {
       }
     }
     const claimed = reader.previous<InboxState>('inbox-next-step')?.state.claimed.has(String(event.data.id)) === true
+    const content = userMessageDisplayContent(event.data.content, event.data.source)
     return claimed
       ? {
         kind: 'steering',
         messageId: event.data.id,
         seq: event.seq,
         time: event.time,
-        content: event.data.content,
+        content,
         source: event.data.source,
       }
       : {
         kind: 'user',
         seq: event.seq,
         time: event.time,
-        content: event.data.content,
+        content,
         source: event.data.source,
       }
   },
