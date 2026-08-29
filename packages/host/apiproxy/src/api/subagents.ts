@@ -100,6 +100,8 @@ export interface SubagentsApi {
         content: ContentBlock[]
         /** Optional browser zone sampled for this exact human prompt. */
         clientTimeZone?: string
+        /** Optional browser-authored presentation for serialized references. */
+        displayText?: string
       }
     >,
     signal: AbortSignal,

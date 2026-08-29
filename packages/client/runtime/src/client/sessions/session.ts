@@ -238,6 +238,7 @@ export class Session implements SessionFace {
               ? [{ type: 'text' as const, text: part.text }]
               : []),
             clientTimeZone: resolvedClientTimeZone(),
+            ...(displayText === undefined ? {} : { displayText }),
           }, signal)).result
           result = routed.ok ? { ok: true, value: { accepted: true } } : routed
         }

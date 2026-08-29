@@ -593,6 +593,23 @@ describe('built-in conversation node Definitions', () => {
     expect(message.content).toEqual([{ type: 'text', text: modelText }])
   })
 
+  it('projects legacy annotation envelopes only when their payload is structurally valid', () => {
+    const raw = '<response-annotations>\n[{"index":3,"sourceMessageId":"assistant-3","text":"quoted"}]\n</response-annotations> compare it'
+    const message = textMessage('legacy-annotated-user', raw)
+    const current = snapshot(assembler([
+      at(1, 'user/message', message, { surfaceOp: 'append' }),
+    ]))
+    const projected = node(current, 'user')?.data as { content?: readonly { type: string; text?: string }[] }
+    expect(projected.content).toEqual([{ type: 'text', text: '@Annotation 3 compare it' }])
+    expect(message.content).toEqual([{ type: 'text', text: raw }])
+
+    const malformed = textMessage('malformed-annotation', '<response-annotations>\nnot-json\n</response-annotations>')
+    const malformedNode = node(snapshot(assembler([
+      at(1, 'user/message', malformed, { surfaceOp: 'append' }),
+    ])), 'user')?.data as { content?: readonly { type: string; text?: string }[] }
+    expect(malformedNode.content).toEqual(malformed.content)
+  })
+
   it('updates an already published direct node when its following recall arrives', () => {
     const value = assembler([
       at(1, 'user/message', textMessage('citing-user', '@Research notes what changed?'), { surfaceOp: 'append' }),

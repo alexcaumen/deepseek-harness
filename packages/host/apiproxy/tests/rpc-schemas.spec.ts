@@ -300,7 +300,12 @@ describe('subagent domain schemas', () => {
       mode: 'continuable',
       content: [{ type: 'text', text: 'continue' }],
       clientTimeZone: 'Asia/Shanghai',
+      displayText: '@Annotation 1 continue',
     }).clientTimeZone).toBe('Asia/Shanghai')
+    expect(subagentPromptRequestSchema.parse({
+      parentSessionId: 'parent', childSessionId: 'child', mode: 'continuable', content: [],
+      displayText: '@Annotation 1 continue',
+    }).displayText).toBe('@Annotation 1 continue')
     expect(subagentPromptRequestSchema.parse({
       parentSessionId: 'parent',
       childSessionId: 'child',

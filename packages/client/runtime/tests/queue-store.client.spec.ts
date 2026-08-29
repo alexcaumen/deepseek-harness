@@ -152,12 +152,28 @@ describe('queue snapshot intake', () => {
         { type: 'text', text: ' trailing' },
       ],
       preview: '@Annotation 1 compare trailing',
-      text: '@Annotation 1 compare trailing',
+      text: null,
     })
     expect(message.content).toEqual([
       { type: 'text', text: raw },
       { type: 'text', text: ' trailing' },
     ])
+  })
+
+  it('projects legacy annotation envelopes while keeping them non-editable and model intact', () => {
+    const session = makeSession()
+    const raw = '<response-annotations>\n[{"index":2,"sourceMessageId":"assistant-2","text":"quoted"}]\n</response-annotations> compare'
+    const message = createUserMessage({ content: text(raw), source: { kind: 'user' } })
+    session.handleMuxEnvelope(rid('env-legacy-annotation'), queueFrame([
+      { id: 'q-legacy-annotation', body: '', message },
+    ]))
+
+    expect(session.getSnapshot().queue[0]).toMatchObject({
+      content: [{ type: 'text', text: '@Annotation 2 compare' }],
+      preview: '@Annotation 2 compare',
+      text: null,
+    })
+    expect(message.content).toEqual(text(raw))
   })
 
   it('hands off exactly one current occurrence when live steering becomes durable', async () => {

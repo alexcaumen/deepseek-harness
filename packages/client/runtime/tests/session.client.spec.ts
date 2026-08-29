@@ -453,7 +453,12 @@ describe('prompt and cancel errors', () => {
       parentAvailable: true,
     })
     await session.open()
-    const prompted = await session.prompt([{ type: 'text', text: '继续' }], 'queue')
+    const prompted = await session.prompt(
+      [{ type: 'text', text: 'serialized annotation' }],
+      'queue',
+      undefined,
+      '@Annotation 1 继续',
+    )
     const cancelled = await session.cancel()
 
     expect(prompted).toEqual({ ok: true, value: { accepted: true } })
@@ -464,8 +469,9 @@ describe('prompt and cancel errors', () => {
     expect(api.callsOf('subagent.prompt')).toEqual([
       {
         parentSessionId: PARENT, childSessionId: SID, mode: 'continuable',
-        content: [{ type: 'text', text: '继续' }],
+        content: [{ type: 'text', text: 'serialized annotation' }],
         clientTimeZone: new Intl.DateTimeFormat().resolvedOptions().timeZone,
+        displayText: '@Annotation 1 继续',
       },
     ])
     expect(api.callsOf('subagent.interrupt')).toEqual([

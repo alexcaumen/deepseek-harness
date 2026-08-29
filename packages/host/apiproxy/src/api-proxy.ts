@@ -2642,7 +2642,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
       },
 
       async prompt(request, signal) {
-        const { parentSessionId, childSessionId, content, clientTimeZone } = request.payload
+        const { parentSessionId, childSessionId, content, clientTimeZone, displayText } = request.payload
         const canonicalTimeZone = clientTimeZone === undefined
           ? undefined
           : canonicalClientTimeZone(clientTimeZone)
@@ -2671,6 +2671,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
               kind: 'user',
               rpcId: request.rpcId,
               ...(canonicalTimeZone === undefined ? {} : { clientTimeZone: canonicalTimeZone }),
+              ...(displayText === undefined ? {} : { displayText }),
             },
             signal,
           })

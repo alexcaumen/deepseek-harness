@@ -51,7 +51,7 @@ function bench(options: {
     _childId: SessionId,
     _content: unknown,
     _delivery: {
-      source: { kind: string; rpcId: RpcId; clientTimeZone?: string }
+      source: { kind: string; rpcId: RpcId; clientTimeZone?: string; displayText?: string }
       signal: AbortSignal
     },
   ) => options.followupError === undefined
@@ -266,6 +266,7 @@ describe('subagent gateway', () => {
     const signal = new AbortController().signal
     const response = await api.subagents.prompt(request({
       parentSessionId: PARENT, childSessionId: CHILD, mode: 'continuable', content,
+      displayText: '@Annotation 1 continue',
     }), signal)
     expect(response.result).toMatchObject({
       ok: true, value: { messageId: 'message-1' },
@@ -274,7 +275,7 @@ describe('subagent gateway', () => {
       parent,
       CHILD,
       content,
-      { source: { kind: 'user', rpcId: RpcId('subagent-rpc') }, signal },
+      { source: { kind: 'user', rpcId: RpcId('subagent-rpc'), displayText: '@Annotation 1 continue' }, signal },
     )
   })
 

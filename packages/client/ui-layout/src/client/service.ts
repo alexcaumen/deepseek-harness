@@ -36,11 +36,16 @@ export interface ILayout {
   toggleDetails(): void
   /** Close the details panel. */
   closeDetails(): void
-  /** Apply an application-owned pane policy. */
+  /**
+   * Apply an application-owned pane policy.
+   * @param policy - complete pane policy to activate.
+   */
   setPolicy(policy: LayoutPolicy): void
-  /** Open/toggle/close the optional application bottom surface. */
+  /** Open the optional application bottom surface. */
   openBottom(): void
+  /** Toggle the optional application bottom surface. */
   toggleBottom(): void
+  /** Close the optional application bottom surface. */
   closeBottom(): void
 }
 
