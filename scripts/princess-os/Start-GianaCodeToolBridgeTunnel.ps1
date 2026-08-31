@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
   [int]$VmId = 900,
-  [int]$Port = 18644
+  [int]$Port = 18644,
+  [ValidatePattern('^[A-Za-z0-9.-]+$')]
+  [string]$PinnedVmHostAlias = '192.168.1.58'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -73,6 +75,7 @@ function Test-VmListener {
     '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5',
     'r5300',
     'ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5',
+    '-o', "HostKeyAlias=$PinnedVmHostAlias", '-o', 'StrictHostKeyChecking=yes',
     "debian@$VmAddress", 'ss', '-H', '-ltn'
   )
   $output = & $script:SshPath @arguments 2>$null
@@ -89,6 +92,7 @@ function Test-VmEndToEndRoute {
     '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5',
     'r5300',
     'ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5',
+    '-o', "HostKeyAlias=$PinnedVmHostAlias", '-o', 'StrictHostKeyChecking=yes',
     "debian@$VmAddress",
     'curl', '-sS', '-o', '/dev/null', '-w', '%{http_code}', '-X', 'POST',
     "http://127.0.0.1:$Port/mcp/tool-runtime"
@@ -132,6 +136,8 @@ $innerCommand = @(
   'nohup', 'flock', '-n', "/tmp/giana-code-tool-bridge-vm$VmId-port$Port.lock",
   'ssh', '-N', '-T',
   '-o', 'BatchMode=yes',
+  '-o', "HostKeyAlias=$PinnedVmHostAlias",
+  '-o', 'StrictHostKeyChecking=yes',
   '-o', 'ExitOnForwardFailure=yes',
   '-o', 'ServerAliveInterval=15',
   '-o', 'ServerAliveCountMax=3',
