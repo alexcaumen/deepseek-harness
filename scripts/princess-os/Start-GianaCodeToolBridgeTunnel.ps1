@@ -66,6 +66,30 @@ function Test-LocalOuterTunnel {
   return $false
 }
 
+function Remove-StaleOuterListener {
+  $listeners = Invoke-SshCapture @(
+    '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5',
+    'r5300', "ss -H -ltnp 'sport = :$Port'"
+  )
+  foreach ($line in $listeners) {
+    $match = [regex]::Match(
+      $line,
+      "^LISTEN\s+\d+\s+\d+\s+127\.0\.0\.1:$Port\s+\S+\s+users:\(\(\`"sshd-session\`",pid=(\d+),"
+    )
+    if (-not $match.Success) { continue }
+    $listenerPid = [int]$match.Groups[1].Value
+    Invoke-SshCapture @(
+      '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5',
+      'r5300', "kill -- $listenerPid"
+    ) | Out-Null
+    Start-Sleep -Milliseconds 250
+    return
+  }
+  if ($listeners.Count -gt 0) {
+    throw "Port $Port on R5300 is owned by an unexpected listener"
+  }
+}
+
 function Test-VmListener {
   param([string]$VmAddress)
   $arguments = @(
@@ -118,6 +142,7 @@ if ((Test-LocalOuterTunnel) -and (Test-VmListener $vmAddress) -and (Test-VmEndTo
 }
 
 if (-not (Test-LocalOuterTunnel)) {
+  Remove-StaleOuterListener
   $arguments = @(
     '-N', '-T',
     '-o', 'BatchMode=yes',
