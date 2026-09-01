@@ -18,6 +18,9 @@ export { apply, inject } from './apply.ts'
 export { ConversationController } from './service.ts'
 export type { IConversation } from './service.ts'
 export type { DraftAttachmentId } from './input/contract.ts'
+export {
+  IDLE_DICTATION_STATE, reduceDictation, resolveIndonesianTranscriptionUrl,
+} from './skeleton/dictation.ts'
 
 export type {
   CallId, ChatStoreState, SelectionTarget, ViewTab,

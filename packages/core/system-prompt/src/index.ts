@@ -184,7 +184,7 @@ function compareToolNames(a: ToolSchema, b: ToolSchema): number {
 
 /** Plugin config: the deployment-authored fragment of the system prompt (see {@link Config.persona} for its contract). */
 export interface Config {
-  /** Include the fixed Giana Code identity before the deployment persona (default true). */
+  /** Include the fixed Giana Code Putri identity before the deployment persona (default true). */
   includeHarnessIdentity?: boolean
   /** Include dynamic runtime-context snapshots in model history (default true). */
   includeRuntimeContext?: boolean
@@ -358,7 +358,7 @@ export class SystemPrompt extends Service {
       this.section({
         name: 'harness:identity',
         order: -100,
-        text: 'You are an AI agent working through Giana Code.',
+        text: 'You are an AI agent working through Giana Code Putri. Refer to the product surface by this name; implementation package names and repository provenance are technical details, not alternate product names.',
       })
     }
     this.section({

@@ -5,7 +5,7 @@ import { ResponseSelectionActions } from './ResponseSelectionActions.tsx'
 
 /** Streaming, settled, and interrupted Assistant states share one keyed renderer instance. */
 export const AssistantNodeView = memo(function AssistantNodeView({
-  node, useTurnData, openFile, renderMessageImages, fileMentions, inputActions, t,
+  node, useTurnData, useInput, openFile, renderMessageImages, fileMentions, inputActions, t,
 }: ChatNodeViewProps<'assistant-step'>) {
   const data = node.data
   const turn = node.location.kind === 'turn' || node.location.kind === 'step'
@@ -32,10 +32,16 @@ export const AssistantNodeView = memo(function AssistantNodeView({
     />
   )
   const messageId = data.finalNode?.messageId
+  const occurrences = useInput(state => state.occurrences)
   return messageId === undefined
     ? content
     : (
-      <ResponseSelectionActions messageId={messageId} inputActions={inputActions} t={t}>
+      <ResponseSelectionActions
+        messageId={messageId}
+        occurrences={occurrences}
+        inputActions={inputActions}
+        t={t}
+      >
         {content}
       </ResponseSelectionActions>
     )

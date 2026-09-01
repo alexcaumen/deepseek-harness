@@ -136,8 +136,12 @@ describe('web-app runtime glue', () => {
       'open:http://127.0.0.1:4567',
     ])
     const assembly = await ctx.systemPrompt.assemble()
-    expect(assembly.sections.find(entry => entry.name === 'harness:source')?.text).toContain('DeepSeek Harness implementation checkout')
+    const sourceSection = assembly.sections.find(entry => entry.name === 'harness:source')
+    expect(sourceSection?.text).toContain('Giana Code Putri implementation checkout')
+    expect(sourceSection?.text).not.toMatch(/\b(?:DeepSeek Harness|DSH)\b/i)
     const section = assembly.sections.find(entry => entry.name === 'app:web-surface')
+    expect(section?.text).toContain('Giana Code Putri workbench')
+    expect(section?.text).not.toMatch(/DeepSeek Harness|Harness Web GUI|DSH itself/i)
     expect(section?.text).toContain('http://127.0.0.1:4567')
     // The single update contract: the receiver is always on; no-refresh
     // reloads additionally need the rebuild watcher.

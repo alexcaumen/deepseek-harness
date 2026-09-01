@@ -29,6 +29,7 @@ describe('response selection actions', () => {
     const view = render(
       <ResponseSelectionActions
         messageId={'assistant-message-1' as MessageId}
+        occurrences={[]}
         inputActions={inputActions}
         t={t}
       >
@@ -52,7 +53,53 @@ describe('response selection actions', () => {
     expect(addResponseAnnotation).toHaveBeenCalledWith({
       messageId: 'assistant-message-1',
       text: 'selected passage',
+      startOffset: 6,
+      endOffset: 22,
     })
     expect(window.getSelection()?.rangeCount).toBe(0)
+  })
+
+  it('marks an active annotation at its source and exposes its text on hover', () => {
+    const original = Object.getOwnPropertyDescriptor(Range.prototype, 'getClientRects')
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [{ left: 10, top: 20, right: 90, bottom: 40, width: 80, height: 20 }],
+    })
+    try {
+      const inputActions = {
+        setDraft: vi.fn(), addResponseAnnotation: vi.fn(() => true), addImages: vi.fn(),
+        removeImage: vi.fn(), pruneImages: vi.fn(), submit: vi.fn(),
+      } satisfies InputActions
+      const view = render(
+        <ResponseSelectionActions
+          messageId={'assistant-message-1' as MessageId}
+          occurrences={[{
+            occurrenceId: 7,
+            source: 'response-annotation',
+            ref: JSON.stringify({
+              index: 1, messageId: 'assistant-message-1', text: 'selected passage',
+              startOffset: 6, endOffset: 22,
+            }),
+            offset: 0,
+            length: 13,
+            label: 'Annotation 1',
+            clipboardText: 'Annotation 1',
+          }]}
+          inputActions={inputActions}
+          t={(key, values) => key === 'annotation.sourceMarker'
+            ? `Annotation ${String(values?.index)} source: ${String(values?.text)}`
+            : key}
+        >
+          <p>alpha selected passage omega</p>
+        </ResponseSelectionActions>,
+      )
+      const marker = view.getByRole('button', { name: 'Annotation 1 source: selected passage' })
+      expect(marker.getAttribute('title')).toBe('selected passage')
+      expect(marker.getAttribute('data-response-annotation-marker')).toBe('1')
+      expect(view.container.querySelectorAll('[aria-hidden="true"]')).toHaveLength(1)
+    } finally {
+      if (original === undefined) delete (Range.prototype as { getClientRects?: unknown }).getClientRects
+      else Object.defineProperty(Range.prototype, 'getClientRects', original)
+    }
   })
 })

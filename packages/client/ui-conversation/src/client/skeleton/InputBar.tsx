@@ -22,9 +22,13 @@ import type {} from '@deepseek-ai/dsh-goal/client'
 // api-remotes import already places it in every client program.
 import type { Translate } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ComposerBarProps } from '../contract/slots.ts'
+import type { InputSubmitMode } from '../contract/composer-submission.ts'
 import { deriveDecorations } from '../input/decorations.ts'
 import type { DraftDecorations } from '../input/decorations.ts'
 import type { EditRange } from '../input/contract.ts'
+import {
+  parseResponseAnnotationPayload, RESPONSE_ANNOTATION_SOURCE,
+} from '../input/response-annotation.ts'
 import { attachmentErrorText, imageSizeText } from '../image-labels.ts'
 import { ReferenceIcon } from '../reference/ReferenceIcon.tsx'
 import { ContextMeter } from './ContextMeter.tsx'
@@ -40,6 +44,9 @@ const INERT_DECORATIONS: DraftDecorations = { token: null, chips: [], textRefs: 
 
 const DICTATION_WAVEFORM_BARS = 72
 const DICTATION_WAVEFORM_FLOOR = 0.08
+/** Target time for one sample to traverse the full visible waveform. */
+export const DICTATION_WAVEFORM_TRAVEL_MS = 7_000
+const DICTATION_WAVEFORM_STEP_MS = DICTATION_WAVEFORM_TRAVEL_MS / DICTATION_WAVEFORM_BARS
 
 function fallbackWaveformAmplitude(frame: number): number {
   const carrier = (Math.sin(frame * 0.47) + 1) * 0.14
@@ -150,6 +157,7 @@ export function InputBar({
   // restarts the hold-then-fade cycle instead of reusing the faded one.
   const [toast, setToast] = useState<{ seq: number; text: string } | null>(null)
   const [dictation, dispatchDictation] = useReducer(reduceDictation, IDLE_DICTATION_STATE)
+  const [submitModeOverride, setSubmitModeOverride] = useState<InputSubmitMode | null>(null)
   const recorderRef = useRef<MediaRecorder | null>(null)
   const recordingStreamRef = useRef<MediaStream | null>(null)
   const waveformRef = useRef<HTMLSpanElement | null>(null)
@@ -172,6 +180,18 @@ export function InputBar({
     setToast({ seq: toastSeq.current, text })
   }, [])
   const dismissToast = useCallback(() => { setToast(null) }, [])
+  useEffect(() => { setSubmitModeOverride(null) }, [sessionId])
+  useEffect(() => {
+    if (!running || subagent !== null) setSubmitModeOverride(null)
+  }, [running, subagent])
+  const submitModeFor = useCallback((gesture: 'enter' | 'accelerated'): InputSubmitMode => {
+    if (!running || subagent !== null || submitModeOverride === null) {
+      return resolveSubmitMode(running, gesture, subagent === null)
+    }
+    if (gesture === 'enter') return submitModeOverride
+    return submitModeOverride === 'queue' ? 'steer' : 'queue'
+  }, [resolveSubmitMode, running, subagent, submitModeOverride])
+  const primaryMode = submitModeFor('enter')
   // The deployment's image-intake limits (absent while no attachment service
   // is composed — the pre-check below then defers entirely to the host).
   const imageLimits = useProjection('imageLimits')
@@ -284,29 +304,30 @@ export function InputBar({
     const samples = Array<number>(DICTATION_WAVEFORM_BARS).fill(DICTATION_WAVEFORM_FLOOR)
     const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
     let frame = 0
-    let lastReducedMotionPaint = Number.NEGATIVE_INFINITY
+    let lastPaint = Number.NEGATIVE_INFINITY
     const advance = (timestamp: number): void => {
       const audio = waveformAudioRef.current
-      const amplitude = audio === null
-        ? fallbackWaveformAmplitude(frame)
-        : analyserWaveformAmplitude(audio.analyser, audio.values)
       const element = waveformRef.current
       if (element !== null) {
         element.dataset.waveformSource = audio === null ? 'fallback' : 'microphone'
         element.dataset.waveformMotion = reducedMotion ? 'reduced' : 'live'
+        element.dataset.waveformTravelMs = String(DICTATION_WAVEFORM_TRAVEL_MS)
       }
-      if (reducedMotion) {
-        if (timestamp - lastReducedMotionPaint >= 250) {
+      const cadence = reducedMotion ? 250 : DICTATION_WAVEFORM_STEP_MS
+      if (timestamp - lastPaint >= cadence) {
+        const amplitude = audio === null
+          ? fallbackWaveformAmplitude(frame)
+          : analyserWaveformAmplitude(audio.analyser, audio.values)
+        if (reducedMotion) {
           samples.fill(amplitude)
-          paintWaveform(element, samples)
-          lastReducedMotionPaint = timestamp
+        } else {
+          samples.shift()
+          samples.push(amplitude)
         }
-      } else {
-        samples.shift()
-        samples.push(amplitude)
         paintWaveform(element, samples)
+        lastPaint = timestamp
+        frame += 1
       }
-      frame += 1
       waveformFrameRef.current = requestAnimationFrame(advance)
     }
     waveformFrameRef.current = requestAnimationFrame(advance)
@@ -467,9 +488,9 @@ export function InputBar({
   const stopDictationAndSend = useCallback((): void => {
     if (dictation.phase !== 'recording') return
     dictationAutoSubmitRef.current = true
-    dictationSubmitModeRef.current = resolveSubmitMode(running, 'enter', subagent === null)
+    dictationSubmitModeRef.current = submitModeFor('enter')
     stopDictation()
-  }, [dictation.phase, resolveSubmitMode, running, stopDictation, subagent])
+  }, [dictation.phase, stopDictation, submitModeFor])
 
   const toggleDictation = useCallback((): void => {
     if (dictation.phase === 'recording') stopDictation()
@@ -771,11 +792,7 @@ export function InputBar({
       keyboard.steerQueue()
       return
     }
-    const mode = resolveSubmitMode(
-      running,
-      accelerated ? 'accelerated' : 'enter',
-      subagent === null,
-    )
+    const mode = submitModeFor(accelerated ? 'accelerated' : 'enter')
     keyboard.submit(mode)
     if (dictation.phase === 'review'
       && (keyboard.snapshot.phase === 'adjudicating' || keyboard.snapshot.phase === 'submitting')) {
@@ -909,7 +926,6 @@ export function InputBar({
   // beside an independent Stop so pointer users can queue or steer a follow-up
   // without cancelling the active turn.
   const interruptible = running && (subagent === null || continuable)
-  const primaryMode = resolveSubmitMode(running, 'enter', subagent === null)
   const primaryLabel = dictation.phase === 'recording'
     ? t('input.dictation.stopAndSend')
     : running
@@ -938,6 +954,21 @@ export function InputBar({
   const accessSelect: ReactNode = command === undefined
     ? null
     : <PermissionSelect key={sessionId} value={permissions} locked={locked} command={command} t={t} />
+
+  const responseAnnotations = input?.occurrences.flatMap((occurrence) => {
+    if (occurrence.source !== RESPONSE_ANNOTATION_SOURCE) return []
+    try {
+      return [{ occurrenceId: occurrence.occurrenceId, ...parseResponseAnnotationPayload(occurrence.ref) }]
+    } catch {
+      return []
+    }
+  }) ?? []
+  const navigateToAnnotation = (index: number): void => {
+    const marker = document.querySelector<HTMLElement>(`[data-response-annotation-marker="${index}"]`)
+    if (marker === null) return
+    marker.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    marker.focus({ preventScroll: true })
+  }
 
   // Mirror-layer decorations: a visible backdrop with transparent textarea
   // text. Claim tokens and references retain the draft's own glyph metrics,
@@ -1095,6 +1126,28 @@ export function InputBar({
             size: imageSizeText(imageLimits.maxImageBytes),
           },
         })}
+        {responseAnnotations.length > 0 && (
+          <div
+            className={css.annotationRail}
+            role="list"
+            aria-label={t('annotation.rail', { count: responseAnnotations.length })}
+          >
+            {responseAnnotations.map(annotation => (
+              <span key={annotation.occurrenceId} role="listitem">
+                <button
+                  type="button"
+                  className={css.annotationBubble}
+                  aria-label={t('annotation.item', { index: annotation.index, text: annotation.text })}
+                  title={annotation.text}
+                  onMouseDown={(event) => { event.preventDefault() }}
+                  onClick={() => { navigateToAnnotation(annotation.index) }}
+                >
+                  {annotation.index}
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         {/* One scrollport, two text layers. The hidden mirror renders draft+'\n' and stretches the
             stack to the draft's FULL height (counting rows by '\n' cannot see soft wraps); the
             absolutely-positioned backdrop and textarea ride that height, and .scroll — capped at 14
@@ -1199,6 +1252,24 @@ export function InputBar({
             <div className={css.modes}>
               {accessSelect}
               {renderSlot('conversation.input.plan', { locked })}
+              {running && subagent === null && (
+                <div className={css.deliveryModes} role="group" aria-label={t('input.delivery.label')}>
+                  {(['queue', 'steer'] as const).map(mode => (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={css.deliveryMode}
+                      data-selected={primaryMode === mode}
+                      aria-pressed={primaryMode === mode}
+                      disabled={locked || machineBusy}
+                      onMouseDown={keepFocus}
+                      onClick={() => { setSubmitModeOverride(mode) }}
+                    >
+                      {t(mode === 'queue' ? 'input.delivery.quickQueue' : 'input.delivery.steer')}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             {leftItems}
           </div>

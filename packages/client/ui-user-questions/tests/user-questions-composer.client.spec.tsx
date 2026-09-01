@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import type {
   ConversationSnapshot, SessionId, SessionListState, WorkspaceListState,
@@ -14,13 +14,74 @@ import { en, zh } from '../src/client/locales.ts'
 import { en as commonEn } from '@deepseek-ai/dsh-client-locale/src/locales/en.ts'
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.unstubAllGlobals()
+  FakeMediaRecorder.instances.length = 0
+})
 
 const SID = 's1' as SessionId
 
 /** Seat stub over a dictionary pair mirroring the real lookup chain: package dictionary, then common vocabulary, then the key. */
 const seatOver = (dict: Record<string, string>, common: Record<string, string>): QuestionComposerProps['t'] =>
-  (key => dict[key] ?? common[key] ?? key)
+  ((key, params) => Object.entries(params ?? {}).reduce(
+    (text, [name, value]) => text.replaceAll(`{${name}}`, String(value)),
+    dict[key] ?? common[key] ?? key,
+  ))
+
+/** Deferred operation used to hold permission and transcription phases visibly in tests. */
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
+/** Install one test-owned mediaDevices facade and restore the native descriptor afterwards. */
+function installMediaDevices(getUserMedia: () => Promise<MediaStream>): void {
+  const original = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices')
+  Object.defineProperty(navigator, 'mediaDevices', {
+    configurable: true,
+    value: { getUserMedia },
+  })
+  onTestFinished(() => {
+    if (original === undefined) delete (navigator as { mediaDevices?: MediaDevices }).mediaDevices
+    else Object.defineProperty(navigator, 'mediaDevices', original)
+  })
+}
+
+/** MediaRecorder fixture that emits one audio chunk synchronously when stopped. */
+class FakeMediaRecorder {
+  static readonly instances: FakeMediaRecorder[] = []
+  static isTypeSupported = vi.fn(() => true)
+  readonly mimeType = 'audio/webm;codecs=opus'
+  state: RecordingState = 'inactive'
+  ondataavailable: ((event: BlobEvent) => void) | null = null
+  onerror: ((event: Event) => void) | null = null
+  onstop: (() => void) | null = null
+  constructor(readonly stream: MediaStream, readonly options?: MediaRecorderOptions) {
+    FakeMediaRecorder.instances.push(this)
+  }
+  start(): void { this.state = 'recording' }
+  stop(): void {
+    this.state = 'inactive'
+    this.ondataavailable?.({ data: new Blob(['audio']) } as BlobEvent)
+    this.onstop?.()
+  }
+}
+
+/** Recorder fixture whose already-queued stop callback runs after an error. */
+class ErrorThenStopMediaRecorder extends FakeMediaRecorder {
+  override stop(): void {
+    this.state = 'inactive'
+    const queuedStop = this.onstop
+    this.onerror?.({ error: new DOMException('capture lost', 'UnknownError') } as unknown as Event)
+    queuedStop?.()
+  }
+}
 
 /** Framework standard-kit stubs: the composer consumes only the locale seat;
  *  the composed props type mandates delivery of the rest (framework hooks are
@@ -72,6 +133,181 @@ function answeredEnvelope(rpcId: string, answers: object[]) {
 }
 
 describe('QuestionComposer', () => {
+  it('dictates a custom answer through permission, recording, transcription, and success', async () => {
+    const permission = deferred<MediaStream>()
+    const transcription = deferred<Response>()
+    const stopTrack = vi.fn()
+    installMediaDevices(() => permission.promise)
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      callback(0)
+      return 1
+    })
+    vi.stubGlobal('__GIANA_WINDOWS_RUNTIME__', {
+      routes: { 'speech.transcribe.id-ID': 'http://127.0.0.1:18444/speech/transcribe' },
+    })
+    const fetchMock = vi.fn(() => transcription.promise)
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { carrier } = wait()
+    render(<QuestionComposer matched={carrier} interactions={[carrier]} {...kit} />)
+    const answer = screen.getByPlaceholderText<HTMLTextAreaElement>('输入你的答案')
+    fireEvent.change(answer, { target: { value: '已有要求' } })
+    fireEvent.click(screen.getByRole('button', { name: zh['custom.dictation.start'] }))
+    expect(screen.getByText(zh['custom.dictation.requestingPermission'])).toBeTruthy()
+
+    permission.resolve({ getTracks: () => [{ stop: stopTrack }] } as unknown as MediaStream)
+    const stop = await screen.findByRole('button', { name: zh['custom.dictation.stop'] })
+    expect(stop.getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByText(`${zh['custom.dictation.recording']} 00:00`)).toBeTruthy()
+
+    fireEvent.click(stop)
+    expect(await screen.findByText(zh['custom.dictation.transcribing'])).toBeTruthy()
+    expect(stopTrack).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledOnce()
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('http://127.0.0.1:18444/speech/transcribe')
+    expect(init.method).toBe('POST')
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+    const form = init.body as FormData
+    expect(form.get('language')).toBe('auto')
+    expect(form.get('audio')).toBeInstanceOf(Blob)
+
+    transcription.resolve({
+      ok: true,
+      json: () => Promise.resolve({ text: 'jawaban lewat suara' }),
+    } as Response)
+    expect(await screen.findByText(zh['custom.dictation.success'])).toBeTruthy()
+    expect(answer.value).toBe('已有要求 jawaban lewat suara')
+    expect(document.activeElement).toBe(answer)
+  })
+
+  it('retries microphone permission and a failed transcription without losing the audio', async () => {
+    const stopTrack = vi.fn()
+    const getUserMedia = vi.fn()
+      .mockRejectedValueOnce(new DOMException('denied', 'NotAllowedError'))
+      .mockResolvedValueOnce({ getTracks: () => [{ stop: stopTrack }] })
+    installMediaDevices(getUserMedia)
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      callback(0)
+      return 1
+    })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ text: 'coba lagi' }),
+      })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { carrier } = wait()
+    render(<QuestionComposer matched={carrier} interactions={[carrier]} {...kit} />)
+    fireEvent.click(screen.getByRole('button', { name: zh['custom.dictation.start'] }))
+    expect((await screen.findByRole('alert')).textContent).toContain('听写失败：NotAllowedError: denied')
+
+    fireEvent.click(screen.getByRole('button', { name: zh['custom.dictation.retry'] }))
+    const stop = await screen.findByRole('button', { name: zh['custom.dictation.stop'] })
+    fireEvent.click(stop)
+    expect((await screen.findByRole('alert')).textContent).toContain('听写失败：HTTP 503')
+
+    fireEvent.click(screen.getByRole('button', { name: zh['custom.dictation.retry'] }))
+    expect(await screen.findByText(zh['custom.dictation.success'])).toBeTruthy()
+    expect(screen.getByPlaceholderText<HTMLTextAreaElement>('输入你的答案').value).toBe('coba lagi')
+    expect(getUserMedia).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(stopTrack).toHaveBeenCalledOnce()
+  })
+
+  it('cancels a pending permission request and releases a late microphone stream', async () => {
+    const permission = deferred<MediaStream>()
+    const stopTrack = vi.fn()
+    installMediaDevices(() => permission.promise)
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { carrier } = wait()
+    render(<QuestionComposer matched={carrier} interactions={[carrier]} {...kit} />)
+    const answer = screen.getByPlaceholderText('输入你的答案')
+    fireEvent.click(screen.getByRole('button', { name: zh['custom.dictation.start'] }))
+    expect(screen.getByText(zh['custom.dictation.requestingPermission'])).toBeTruthy()
+    fireEvent.keyDown(answer, { key: 'Escape' })
+    expect(screen.queryByText(zh['custom.dictation.requestingPermission'])).toBeNull()
+
+    permission.resolve({ getTracks: () => [{ stop: stopTrack }] } as unknown as MediaStream)
+    await vi.waitFor(() => { expect(stopTrack).toHaveBeenCalledOnce() })
+    expect(FakeMediaRecorder.instances).toHaveLength(0)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('ignores an onstop callback already queued behind a recorder error', async () => {
+    const stopTrack = vi.fn()
+    installMediaDevices(() => Promise.resolve({
+      getTracks: () => [{ stop: stopTrack }],
+    } as unknown as MediaStream))
+    vi.stubGlobal('MediaRecorder', ErrorThenStopMediaRecorder)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { carrier } = wait()
+    render(<QuestionComposer matched={carrier} interactions={[carrier]} {...kit} />)
+    fireEvent.click(screen.getByRole('button', { name: zh['custom.dictation.start'] }))
+    const stop = await screen.findByRole('button', { name: zh['custom.dictation.stop'] })
+    fireEvent.click(stop)
+
+    expect((await screen.findByRole('alert')).textContent).toContain('听写失败：capture lost')
+    expect(stopTrack).toHaveBeenCalledOnce()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('stops an active recording when navigation replaces the answer field', async () => {
+    const stopTrack = vi.fn()
+    installMediaDevices(() => Promise.resolve({
+      getTracks: () => [{ stop: stopTrack }],
+    } as unknown as MediaStream))
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { carrier } = wait()
+    render(<QuestionComposer matched={carrier} interactions={[carrier]} {...kit} />)
+    fireEvent.click(screen.getByRole('button', { name: zh['custom.dictation.start'] }))
+    await screen.findByRole('button', { name: zh['custom.dictation.stop'] })
+    fireEvent.click(screen.getByRole('radio', { name: /工程落地型/ }))
+
+    expect(screen.getByText('2 / 3')).toBeTruthy()
+    expect(stopTrack).toHaveBeenCalledOnce()
+    expect(FakeMediaRecorder.instances[0]?.state).toBe('inactive')
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('aborts an in-flight transcription when the question composer unmounts', async () => {
+    const stopTrack = vi.fn()
+    installMediaDevices(() => Promise.resolve({
+      getTracks: () => [{ stop: stopTrack }],
+    } as unknown as MediaStream))
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+    let requestSignal: AbortSignal | undefined
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      requestSignal = init?.signal ?? undefined
+      return new Promise<Response>(() => {})
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { carrier } = wait()
+    const view = render(<QuestionComposer matched={carrier} interactions={[carrier]} {...kit} />)
+    fireEvent.click(screen.getByRole('button', { name: zh['custom.dictation.start'] }))
+    const stop = await screen.findByRole('button', { name: zh['custom.dictation.stop'] })
+    fireEvent.click(stop)
+    await vi.waitFor(() => { expect(fetchMock).toHaveBeenCalledOnce() })
+    expect(requestSignal?.aborted).toBe(false)
+
+    view.unmount()
+    expect(requestSignal?.aborted).toBe(true)
+    expect(stopTrack).toHaveBeenCalledOnce()
+  })
+
   it('collects single, custom, and multi-select answers before one batch submit', () => {
     const { carrier, respond } = wait()
     render(<QuestionComposer matched={carrier} interactions={[carrier]} {...kit} />)

@@ -66,7 +66,7 @@ describe('ComputeRoutingRow', () => {
     expect(screen.getByRole('button', { name: 'Automatic' }).getAttribute('aria-pressed')).toBe('true')
   })
 
-  it('persists an explicit selection through PUT', async () => {
+  it('restores Automatic instead of persisting an unavailable forced R5300 route', async () => {
     const fetchMock = vi.fn()
       .mockImplementationOnce(() => response(automatic))
       .mockImplementationOnce(() => response({
@@ -75,16 +75,41 @@ describe('ComputeRoutingRow', () => {
         probeOrder: ['r5300'],
         selectedRoute: { id: 'r5300', state: 'unavailable', device: 'unknown' },
       }))
+      .mockImplementationOnce(() => response(automatic))
     vi.stubGlobal('fetch', fetchMock)
     mount()
     await screen.findByText('Using PRDG · cuda · ready')
     fireEvent.click(screen.getByRole('button', { name: 'R5300' }))
-    expect(await screen.findByText('Using R5300 · unknown · unavailable')).toBeDefined()
-    expect(fetchMock).toHaveBeenLastCalledWith(LOCAL_COMPUTE_CONFIG_URL, {
+    expect((await screen.findByRole('alert')).textContent).toBe('R5300 is unavailable; Automatic routing was restored.')
+    expect(screen.getByRole('button', { name: 'Automatic' }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByRole('button', { name: 'R5300' }).hasAttribute('disabled')).toBe(true)
+    expect(fetchMock).toHaveBeenNthCalledWith(2, LOCAL_COMPUTE_CONFIG_URL, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: 'r5300' }),
     })
+    expect(fetchMock).toHaveBeenNthCalledWith(3, LOCAL_COMPUTE_CONFIG_URL, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode: 'automatic' }),
+    })
+  })
+
+  it('keeps an explicit R5300 route when the service confirms readiness', async () => {
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => response(automatic))
+      .mockImplementationOnce(() => response({
+        ...automatic,
+        mode: 'r5300',
+        probeOrder: ['r5300'],
+        selectedRoute: { id: 'r5300', state: 'ready', device: 'cuda' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    mount()
+    await screen.findByText('Using PRDG · cuda · ready')
+    fireEvent.click(screen.getByRole('button', { name: 'R5300' }))
+    expect(await screen.findByText('Using R5300 · cuda · ready')).toBeDefined()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('surfaces service failures without claiming readiness', async () => {

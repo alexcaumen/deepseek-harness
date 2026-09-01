@@ -1,5 +1,40 @@
 .root {
-  display: contents;
+  position: relative;
+}
+
+.content {
+  position: relative;
+  z-index: 1;
+}
+
+.highlight {
+  position: absolute;
+  z-index: 0;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 18%, transparent);
+  pointer-events: none;
+}
+
+.marker {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 20px;
+  transform: translate(5px, -8px);
+  border: 0;
+  border-radius: 10px 10px 10px 3px;
+  background: var(--dsw-alias-state-business-primary);
+  color: #fff;
+  font: 600 12px/1 var(--dsw-font-family);
+  cursor: pointer;
+}
+
+.marker:hover,
+.marker:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary) 20%, transparent);
+  outline: none;
 }
 
 .toolbar {

@@ -326,12 +326,18 @@
    two layers MUST keep identical type, padding and wrapping — a mismatch
    makes the box the wrong height for the text the user is typing. */
 .field {
-  display: grid;
   min-width: 0;
-  --dsh-answer-field-padding: 0;
+  --dsh-answer-field-padding: 0 30px 0 0;
 }
 
-.field > * {
+.fieldStack {
+  position: relative;
+  display: grid;
+  min-width: 0;
+}
+
+.fieldStack > .fieldMirror,
+.fieldStack > .fieldInput {
   grid-area: 1 / 1;
   min-width: 0;
   padding: var(--dsh-answer-field-padding);
@@ -375,6 +381,76 @@
   color: var(--dsw-alias-label-caption);
 }
 
+.dictationButton {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dsw-alias-label-tertiary);
+  cursor: pointer;
+}
+
+.dictationButton:hover:not(:disabled),
+.dictationButtonRecording {
+  background: var(--dsw-alias-interactive-bg-hover);
+  color: var(--dsw-alias-state-business-primary);
+}
+
+.dictationButton:disabled {
+  color: var(--dsw-alias-label-dimmed);
+  cursor: default;
+}
+
+.dictationStatus {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 0 0;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.dictationStatus[data-question-dictation-status='error'] {
+  color: var(--dsw-alias-state-error-primary);
+}
+
+.dictationIndicator {
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.dictationStatusText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.dictationRetry {
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dictationRetry:hover {
+  text-decoration: underline;
+}
+
 /* Inline variant: the custom row's copy column, borrowing the row's chrome. */
 .customInline {
   flex: 1;
@@ -391,7 +467,16 @@
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 10px;
   background: var(--dsw-alias-bg-module-platform);
-  --dsh-answer-field-padding: 8px 12px;
+  --dsh-answer-field-padding: 8px 40px 8px 12px;
+}
+
+.customBlock .dictationButton {
+  top: 8px;
+  right: 8px;
+}
+
+.customBlock .dictationStatus {
+  padding: 0 12px 8px;
 }
 
 .customBlock:focus-within {

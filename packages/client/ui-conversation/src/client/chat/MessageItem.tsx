@@ -195,7 +195,7 @@ function projectUserText(text: string, sessionLabels: readonly string[]): ReactN
         ? label.endsWith('/') ? 'folder' : 'file'
         : undefined
     const displayLabel = kind === 'annotation'
-      ? label.slice(1)
+      ? label.match(/[1-9]\d*$/u)?.[0] ?? label.slice(1)
       : referenceKind === undefined
         ? label
         : referenceKind === 'session'
@@ -206,6 +206,7 @@ function projectUserText(text: string, sessionLabels: readonly string[]): ReactN
         key={tokenStart}
         className={css.refChip}
         data-ref-chip={kind === 'annotation' ? 'annotation' : referenceKind ?? 'skill'}
+        aria-label={kind === 'annotation' ? label.slice(1) : undefined}
         title={label}
       >
         {referenceKind !== undefined && (

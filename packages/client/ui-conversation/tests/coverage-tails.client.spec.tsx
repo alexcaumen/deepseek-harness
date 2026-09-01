@@ -22,7 +22,7 @@ describe('tails', () => {
     expect(() => { nodeApply(new Context()) }).not.toThrow()
   })
 
-  it('AssistantMarkdown renders reasoning as a Think row and unknown blocks as JSON fallback', () => {
+  it('AssistantMarkdown renders reasoning as a Thinking disclosure and unknown blocks as JSON fallback', () => {
     const view = render(
       <AssistantMarkdown
         t={t}
@@ -36,8 +36,8 @@ describe('tails', () => {
       />,
     )
     expect(view.container.querySelector('[data-assistant-status="running"]')).not.toBeNull()
-    expect(view.getByText('Think')).toBeTruthy()
-    expect(view.getByText('thinking hard')).toBeTruthy()
+    expect(view.getByRole('button', { name: /Thinking/ }).getAttribute('aria-expanded')).toBe('false')
+    expect(view.queryByText(/thinking hard\s+second line/)).toBeNull()
     expect(view.getByText(/未知内容块/)).toBeTruthy()
     const stopped = render(
       <AssistantMarkdown

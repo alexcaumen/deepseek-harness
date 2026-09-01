@@ -104,6 +104,10 @@ export class SessionInputShell implements SessionInput {
     const text = annotation.text.trim()
     if (text.length === 0) return false
     if (this.snapshot.phase !== 'plain' && this.snapshot.phase !== 'claimed') return false
+    const hasValidAnchor = Number.isSafeInteger(annotation.startOffset)
+      && Number.isSafeInteger(annotation.endOffset)
+      && Number(annotation.startOffset) >= 0
+      && Number(annotation.endOffset) > Number(annotation.startOffset)
     const index = this.snapshot.occurrences.reduce((maximum, occurrence) => {
       if (occurrence.source !== RESPONSE_ANNOTATION_SOURCE) return maximum
       return Math.max(maximum, responseAnnotationIndex(occurrence.ref) ?? 0)
@@ -116,6 +120,10 @@ export class SessionInputShell implements SessionInput {
       index,
       messageId: annotation.messageId,
       text,
+      ...hasValidAnchor ? {
+        startOffset: annotation.startOffset,
+        endOffset: annotation.endOffset,
+      } : {},
     }), {
       start: end,
       end,

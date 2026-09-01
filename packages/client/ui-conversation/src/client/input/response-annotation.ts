@@ -10,9 +10,12 @@ export interface ResponseAnnotationPayload {
   readonly index: number
   readonly messageId: MessageId
   readonly text: string
+  readonly startOffset?: number
+  readonly endOffset?: number
 }
 
-function parsePayload(ref: string): ResponseAnnotationPayload {
+/** Parse one persisted response-annotation reference. */
+export function parseResponseAnnotationPayload(ref: string): ResponseAnnotationPayload {
   const value: unknown = JSON.parse(ref)
   if (typeof value !== 'object' || value === null) throw new Error('Response annotation payload is invalid')
   const record = value as Record<string, unknown>
@@ -21,10 +24,18 @@ function parsePayload(ref: string): ResponseAnnotationPayload {
     || typeof record['text'] !== 'string' || record['text'].trim().length === 0) {
     throw new Error('Response annotation payload is invalid')
   }
+  const startOffset = record['startOffset']
+  const endOffset = record['endOffset']
+  const hasAnchor = startOffset !== undefined || endOffset !== undefined
+  if (hasAnchor && (!Number.isSafeInteger(startOffset) || !Number.isSafeInteger(endOffset)
+    || Number(startOffset) < 0 || Number(endOffset) <= Number(startOffset))) {
+    throw new Error('Response annotation payload is invalid')
+  }
   return {
     index: Number(record['index']),
     messageId: record['messageId'] as MessageId,
     text: record['text'],
+    ...hasAnchor ? { startOffset: Number(startOffset), endOffset: Number(endOffset) } : {},
   }
 }
 
@@ -41,7 +52,7 @@ export function responseAnnotationReference(payload: ResponseAnnotationPayload):
 /** Recover an annotation index for numbering and tests. */
 export function responseAnnotationIndex(ref: string): number | undefined {
   try {
-    return parsePayload(ref).index
+    return parseResponseAnnotationPayload(ref).index
   } catch {
     return undefined
   }
@@ -56,16 +67,20 @@ export function responseAnnotationSource(): InputTriggerSource {
     candidates: () => Promise.resolve([]),
     onPick: () => undefined,
     codec: {
-      clipboardText: ref => `Annotation ${parsePayload(ref).index}`,
-      serialize: async (ref) => {
-        const payload = parsePayload(ref)
+      clipboardText: ref => `Annotation ${parseResponseAnnotationPayload(ref).index}`,
+      serialize: ref => Promise.resolve().then(() => {
+        const payload = parseResponseAnnotationPayload(ref)
         const body = JSON.stringify([{
           index: payload.index,
           sourceMessageId: payload.messageId,
           text: payload.text,
+          ...payload.startOffset === undefined ? {} : {
+            sourceStart: payload.startOffset,
+            sourceEnd: payload.endOffset,
+          },
         }])
         return `<response-annotations>\n${body}\n</response-annotations>`
-      },
+      }),
     },
   }
 }

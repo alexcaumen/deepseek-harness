@@ -686,10 +686,15 @@ describe('automatic-language dictation', () => {
     expect(bars[0]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.080')
     const newestSample = bars[71]?.style.getPropertyValue('--dictation-amplitude')
     expect(newestSample).toBe('1.000')
+    expect(waveform.dataset.waveformTravelMs).toBe('7000')
 
     act(() => { frames.step(32) })
+    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe(newestSample)
+    expect(audio.analyser.getByteTimeDomainData).toHaveBeenCalledOnce()
+    act(() => { frames.step(120) })
     expect(bars[70]?.style.getPropertyValue('--dictation-amplitude')).toBe(newestSample)
     expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.080')
+    expect(audio.analyser.getByteTimeDomainData).toHaveBeenCalledTimes(2)
 
     fireEvent.click(microphone)
     expect(frames.cancel).toHaveBeenCalled()
@@ -968,6 +973,50 @@ describe('Enter semantics', () => {
 })
 
 describe('running and lock semantics', () => {
+  it('offers explicit Quick queue and Steer modes without stopping the active turn', () => {
+    const result = bench({ running: true, draft: 'follow up' })
+    const selector = result.view.getByRole('group', { name: '运行中消息处理方式' })
+    const queue = result.view.getByRole('button', { name: '快速排队' })
+    const steer = result.view.getByRole('button', { name: '插话' })
+    expect(selector.contains(queue)).toBe(true)
+    expect(queue.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.mouseDown(steer)
+    fireEvent.click(steer)
+    expect(steer.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(result.button)
+    expect(result.sink).toHaveBeenCalledWith('follow up', [], 'steer', expect.any(AbortSignal))
+    expect(result.stop).not.toHaveBeenCalled()
+  })
+
+  it('renders compact annotation navigation with full hover text', () => {
+    const result = bench()
+    act(() => {
+      expect(result.shell.actions.addResponseAnnotation({
+        messageId: 'assistant-1' as never,
+        text: 'selected source passage',
+        startOffset: 3,
+        endOffset: 26,
+      })).toBe(true)
+    })
+    const marker = document.createElement('button')
+    marker.dataset.responseAnnotationMarker = '1'
+    const scrollIntoView = vi.fn()
+    const focus = vi.fn()
+    marker.scrollIntoView = scrollIntoView
+    marker.focus = focus
+    document.body.append(marker)
+    try {
+      const annotation = result.view.getByRole('button', { name: '批注 1：selected source passage' })
+      expect(annotation.textContent).toBe('1')
+      expect(annotation.getAttribute('title')).toBe('selected source passage')
+      fireEvent.click(annotation)
+      expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' })
+      expect(focus).toHaveBeenCalledWith({ preventScroll: true })
+    } finally {
+      marker.remove()
+    }
+  })
+
   it('running keeps Send available and applies the busy-state Queue policy on click', () => {
     const { textarea, button, interruptButton, stop, sink } = bench({ running: true, draft: '排队消息' })
     expect(textarea.disabled).toBe(false)

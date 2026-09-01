@@ -783,8 +783,8 @@ describe('boot', () => {
 })
 
 describe('addHarnessSourceSection', () => {
-  const SOURCE_ROOT = `${sep}opt${sep}harness-src`
-  const EXPECTED = `The DeepSeek Harness implementation checkout is at ${SOURCE_ROOT}. The checkout location and current working directory are separate values and may differ; never infer the working directory from this path. Use pwd to determine the current working directory. Use this checkout only to inspect or extend DSH itself.`
+  const SOURCE_ROOT = `${sep}opt${sep}product-src`
+  const EXPECTED = `The Giana Code Putri implementation checkout is at ${SOURCE_ROOT}. The checkout location and current working directory are separate values and may differ; never infer the working directory from this path. Use pwd to determine the current working directory. Use this checkout only to inspect or extend the product itself.`
 
   it('distinguishes the source path from the current workdir between identity and persona', async () => {
     const ctx = new Context()
@@ -795,15 +795,16 @@ describe('addHarnessSourceSection', () => {
       const systemPrompt = ctx.get('systemPrompt')!
       const rendered = renderPrompt(await systemPrompt.assemble())
       expect(rendered).toContain(EXPECTED)
-      // Harness-owned opener (-100) → source (-99) → persona (0). The >= 0 guards
+      // Product opener (-100) → source (-99) → persona (0). The >= 0 guards
       // keep a drifted opener/persona string from a false pass through `-1 < n`.
-      const identityAt = rendered.indexOf('You are an AI agent powered by DeepSeek Harness.')
+      const identityAt = rendered.indexOf('You are an AI agent working through Giana Code Putri.')
       const sourceAt = rendered.indexOf(EXPECTED)
       const personaAt = rendered.indexOf('You are a coding agent.')
       expect(identityAt).toBeGreaterThanOrEqual(0)
       expect(personaAt).toBeGreaterThanOrEqual(0)
       expect(identityAt).toBeLessThan(sourceAt)
       expect(sourceAt).toBeLessThan(personaAt)
+      expect(rendered).not.toMatch(/\b(?:DeepSeek Harness|DSH|harness)\b/i)
     } finally {
       await ctx.fiber.dispose()
     }

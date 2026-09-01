@@ -1,6 +1,7 @@
-# Agent Note：Web 思考尾部滚动 —— 折叠态 reasoning 跟随实时输出
+# Agent Note: Web 思考尾部滚动 —— 折叠态 reasoning 跟随实时输出
 
 Status: implemented
+Archived: 2026-09-02
 
 [English](2026-08-02-web-thinking-tail-scroll.md) | 中文
 

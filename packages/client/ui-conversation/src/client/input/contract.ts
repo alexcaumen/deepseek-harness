@@ -22,6 +22,10 @@ export type DraftAttachmentId = Branded<'DraftAttachmentId'>
 export interface ResponseAnnotationDraft {
   readonly messageId: MessageId
   readonly text: string
+  /** Rendered-text start offset within the owning assistant response; supplied with endOffset. */
+  readonly startOffset?: number
+  /** Rendered-text end offset within the owning assistant response; supplied with startOffset. */
+  readonly endOffset?: number
 }
 
 /**

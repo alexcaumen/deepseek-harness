@@ -41,6 +41,8 @@ describe('response annotations', () => {
     expect(shell.actions.addResponseAnnotation({
       messageId: 'assistant-1' as MessageId,
       text: 'first selected passage',
+      startOffset: 4,
+      endOffset: 26,
     })).toBe(true)
     expect(shell.actions.addResponseAnnotation({
       messageId: 'assistant-2' as MessageId,
@@ -58,6 +60,8 @@ describe('response annotations', () => {
     expect(submitted).toContain('"index":1')
     expect(submitted).toContain('"sourceMessageId":"assistant-1"')
     expect(submitted).toContain('"text":"first selected passage"')
+    expect(submitted).toContain('"sourceStart":4')
+    expect(submitted).toContain('"sourceEnd":26')
     expect(submitted).toContain('"index":2')
     expect(submitted).toContain('"sourceMessageId":"assistant-2"')
     expect(submitted).toContain('please compare both')
@@ -69,5 +73,40 @@ describe('response annotations', () => {
     const source = responseAnnotationSource()
     await expect(source.codec?.serialize('{"index":0}', new AbortController().signal))
       .rejects.toThrow('Response annotation payload is invalid')
+  })
+
+  it('keeps legacy behavior when an incomplete source anchor is supplied', async () => {
+    const source = responseAnnotationSource()
+    const serializeReference = vi.fn((_name: string, ref: string, signal: AbortSignal) => {
+      if (source.codec === undefined) throw new Error('response annotation codec missing')
+      return source.codec.serialize(ref, signal)
+    })
+    const inputTriggers = { serializeReference, track: vi.fn() } as unknown as InputTriggerController
+    const sink = vi.fn((
+      _text: string,
+      _imageIds: readonly unknown[],
+      _mode: 'queue' | 'steer',
+      _signal: AbortSignal,
+      _displayText?: string,
+    ) => Promise.resolve<SubmitOutcome>({ kind: 'success' }))
+    const shell = new SessionInputShell({
+      actx: {} as ClientContext,
+      inputTriggers: () => inputTriggers,
+      defaultSink: sink,
+      commandImages,
+    })
+
+    expect(shell.actions.addResponseAnnotation({
+      messageId: 'assistant-legacy' as MessageId,
+      text: 'legacy passage',
+      startOffset: 2,
+    })).toBe(true)
+    shell.submit()
+
+    await vi.waitFor(() => { expect(sink).toHaveBeenCalledOnce() })
+    const submitted = sink.mock.calls[0]?.[0]
+    expect(submitted).toContain('"text":"legacy passage"')
+    expect(submitted).not.toContain('sourceStart')
+    expect(submitted).not.toContain('sourceEnd')
   })
 })

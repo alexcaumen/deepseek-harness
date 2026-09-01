@@ -323,6 +323,7 @@ export function SearchResultItem({ result, currentId, onOpen, t }: {
       type="button"
       className={clsx(css.searchResultRow, selected && css.selected)}
       role="treeitem"
+      data-session-id={result.id}
       aria-selected={selected}
       onClick={() => { onOpen(result.id) }}
     >
@@ -401,6 +402,7 @@ export function SessionNodeItem({ node, currentId, now, onOpen, onRename, onFork
         drag?.marker === 'before' && css.dropBefore, drag?.marker === 'after' && css.dropAfter,
       )}
       role="treeitem"
+      data-session-id={node.id}
       aria-selected={selected}
       onClick={() => { onOpen(node.id) }}
       draggable={drag !== undefined}

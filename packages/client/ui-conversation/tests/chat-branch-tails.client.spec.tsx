@@ -1038,7 +1038,7 @@ describe('useCalendarDay boundary refresh', () => {
 })
 
 describe('small branch tails', () => {
-  it('AssistantMarkdown single-line reasoning summary skips the newline cut', () => {
+  it('AssistantMarkdown keeps single-line reasoning behind its disclosure', () => {
     const view = render(
       <AssistantMarkdown
         t={t}
@@ -1047,6 +1047,9 @@ describe('small branch tails', () => {
         renderMessageImages={renderMessageImages}
       />,
     )
+    const disclosure = view.getByRole('button', { name: /Thinking/ })
+    expect(view.queryByText('one-liner')).toBeNull()
+    fireEvent.click(disclosure)
     expect(view.getByText('one-liner')).toBeTruthy()
   })
 

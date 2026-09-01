@@ -1,10 +1,16 @@
-import { useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react'
+import {
+  useCallback, useEffect, useMemo, useReducer, useRef, useState,
+  type ChangeEvent, type KeyboardEvent,
+} from 'react'
 import clsx from 'clsx'
 import {
   Button, IconCheckOutline14, IconChevronDownOutline14, IconChevronLeftOutline14,
   IconChevronRightOutline14, IconChevronUpOutline14, IconCloseOutline16,
-  IconEditOutline16, MarkdownText,
+  IconEditOutline16, IconMicrophoneOutline16, IconStopFill16, MarkdownText,
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import {
+  IDLE_DICTATION_STATE, reduceDictation, resolveIndonesianTranscriptionUrl,
+} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import {
   PendingQuestion, planReviewOf,
   type QuestionAnswer, type QuestionComposerProps,
@@ -41,8 +47,7 @@ export function parseRecommendedLabel(label: string): { label: string; recommend
 /** Return whether a text-field key event belongs to an active IME composition. */
 function isComposing(event: KeyboardEvent<HTMLTextAreaElement>): boolean {
   // keyCode 229 is the legacy IME-composition signal engines emit without isComposing.
-  // oxlint-disable-next-line typescript/no-deprecated
-  return event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229
+  return event.nativeEvent.isComposing || Reflect.get(event.nativeEvent, 'keyCode') === 229
 }
 
 /** The free-text answer field shared by both question shapes. */
@@ -63,6 +68,16 @@ interface AnswerFieldProps {
   onChange: (event: ChangeEvent<HTMLTextAreaElement>) => void
   /** Called with each key press, before the browser's own handling. */
   onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void
+  /** Add one completed transcript to the answer draft. */
+  onTranscript: (transcript: string) => void
+  /** Question-namespace translator used by the dictation status surface. */
+  t: QuestionComposerProps['t']
+}
+
+/** Format a recording duration for the live status without locale-dependent punctuation. */
+function dictationDuration(seconds: number): string {
+  const minutes = Math.floor(seconds / 60).toString().padStart(2, '0')
+  return `${minutes}:${(seconds % 60).toString().padStart(2, '0')}`
 }
 
 /**
@@ -82,20 +97,255 @@ interface AnswerFieldProps {
  * @returns The mirrored auto-growing field.
  */
 function AnswerField(props: AnswerFieldProps) {
+  const [dictation, dispatchDictation] = useReducer(reduceDictation, IDLE_DICTATION_STATE)
+  const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  const recorderRef = useRef<MediaRecorder | null>(null)
+  const streamRef = useRef<MediaStream | null>(null)
+  const recordedAudioRef = useRef<Blob | null>(null)
+  const operationRef = useRef(0)
+  const transcriptionAbortRef = useRef<AbortController | null>(null)
+
+  const releaseRecording = useCallback((): void => {
+    streamRef.current?.getTracks().forEach((track) => { track.stop() })
+    streamRef.current = null
+    recorderRef.current = null
+  }, [])
+
+  const cancelDictation = useCallback((reset = true): void => {
+    operationRef.current += 1
+    transcriptionAbortRef.current?.abort()
+    transcriptionAbortRef.current = null
+    const recorder = recorderRef.current
+    if (recorder !== null) {
+      recorder.ondataavailable = null
+      recorder.onerror = null
+      recorder.onstop = null
+      if (recorder.state !== 'inactive') recorder.stop()
+    }
+    releaseRecording()
+    recordedAudioRef.current = null
+    if (reset) dispatchDictation({ type: 'reset' })
+  }, [releaseRecording])
+
+  useEffect(() => () => { cancelDictation(false) }, [cancelDictation])
+  useEffect(() => {
+    if (props.disabled && (dictation.phase === 'requesting-permission'
+      || dictation.phase === 'recording' || dictation.phase === 'transcribing')) {
+      cancelDictation()
+    }
+  }, [cancelDictation, dictation.phase, props.disabled])
+  useEffect(() => {
+    if (dictation.phase !== 'recording') return
+    const tick = (): void => { dispatchDictation({ type: 'tick', at: Date.now() }) }
+    const timer = globalThis.setInterval(tick, 250)
+    return () => { globalThis.clearInterval(timer) }
+  }, [dictation.phase])
+
+  const transcribeDictation = useCallback(async (audio: Blob, operation: number): Promise<void> => {
+    const controller = new AbortController()
+    transcriptionAbortRef.current = controller
+    try {
+      const form = new FormData()
+      form.append('audio', audio, 'dictation.webm')
+      form.append('language', 'auto')
+      const response = await fetch(resolveIndonesianTranscriptionUrl(), {
+        method: 'POST', body: form, signal: controller.signal,
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const result = await response.json() as { text?: unknown }
+      const transcript = typeof result.text === 'string' ? result.text.trim() : ''
+      if (transcript === '') throw new Error('No speech was recognized')
+      if (operationRef.current !== operation) return
+      recordedAudioRef.current = null
+      props.onTranscript(transcript)
+      dispatchDictation({ type: 'transcribed', transcript })
+      requestAnimationFrame(() => {
+        if (operationRef.current === operation) inputRef.current?.focus()
+      })
+    } catch (cause) {
+      if (controller.signal.aborted || operationRef.current !== operation) return
+      const message = cause instanceof Error ? cause.message : String(cause)
+      dispatchDictation({
+        type: 'transcription-failed',
+        message: props.t('custom.dictation.failed', { message }),
+      })
+    } finally {
+      if (transcriptionAbortRef.current === controller) transcriptionAbortRef.current = null
+    }
+  }, [props])
+
+  const requestDictation = useCallback(async (): Promise<void> => {
+    if (props.disabled) return
+    const operation = operationRef.current + 1
+    operationRef.current = operation
+    recordedAudioRef.current = null
+    dispatchDictation({ type: 'request-permission' })
+    try {
+      const mediaDevices = (navigator as { mediaDevices?: MediaDevices }).mediaDevices
+      if (mediaDevices?.getUserMedia === undefined) throw new Error('Microphone capture is unavailable')
+      const Recorder = (globalThis as { MediaRecorder?: typeof MediaRecorder }).MediaRecorder
+      if (Recorder === undefined) throw new Error('Audio recording is unavailable')
+      const stream = await mediaDevices.getUserMedia({ audio: true })
+      if (operationRef.current !== operation) {
+        stream.getTracks().forEach((track) => { track.stop() })
+        return
+      }
+      streamRef.current = stream
+      const preferred = Recorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : undefined
+      const recorder = new Recorder(stream, preferred === undefined ? undefined : { mimeType: preferred })
+      const chunks: BlobPart[] = []
+      let recorderFailed = false
+      recorderRef.current = recorder
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunks.push(event.data)
+      }
+      recorder.onerror = (event) => {
+        if (operationRef.current !== operation) return
+        recorderFailed = true
+        const detail = event as Event & { readonly error?: DOMException }
+        const message = detail.error?.message ?? 'Media recorder error'
+        // Invalidate before stopping tracks: some implementations enqueue
+        // `stop` beside `error`, and that stale callback must not transcribe.
+        cancelDictation(false)
+        dispatchDictation({
+          type: 'transcription-failed',
+          message: props.t('custom.dictation.failed', { message }),
+        })
+      }
+      recorder.onstop = () => {
+        if (operationRef.current !== operation || recorderFailed) return
+        const audio = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' })
+        recordedAudioRef.current = audio
+        releaseRecording()
+        void transcribeDictation(audio, operation)
+      }
+      recorder.start(250)
+      dispatchDictation({ type: 'permission-granted', at: Date.now() })
+    } catch (cause) {
+      if (operationRef.current !== operation) return
+      releaseRecording()
+      const message = cause instanceof Error ? cause.message : String(cause)
+      dispatchDictation({
+        type: 'permission-failed',
+        message: props.t('custom.dictation.failed', { message }),
+      })
+    }
+  }, [cancelDictation, props, releaseRecording, transcribeDictation])
+
+  const stopDictation = useCallback((): void => {
+    const recorder = recorderRef.current
+    if (dictation.phase !== 'recording' || recorder === null || recorder.state !== 'recording') return
+    dispatchDictation({ type: 'stop-recording' })
+    recorder.stop()
+  }, [dictation.phase])
+
+  const toggleDictation = (): void => {
+    if (dictation.phase === 'recording') stopDictation()
+    else if (dictation.phase !== 'requesting-permission' && dictation.phase !== 'transcribing') {
+      void requestDictation()
+    }
+  }
+
+  const retryDictation = (): void => {
+    if (dictation.phase !== 'error' || props.disabled) return
+    if (dictation.retry === 'transcription' && recordedAudioRef.current !== null) {
+      const operation = operationRef.current + 1
+      operationRef.current = operation
+      dispatchDictation({ type: 'retry-transcription' })
+      void transcribeDictation(recordedAudioRef.current, operation)
+      return
+    }
+    void requestDictation()
+  }
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'm') {
+      event.preventDefault()
+      toggleDictation()
+      return
+    }
+    if (event.key === 'Escape' && (dictation.phase === 'requesting-permission'
+      || dictation.phase === 'recording' || dictation.phase === 'transcribing')) {
+      event.preventDefault()
+      cancelDictation()
+      return
+    }
+    props.onKeyDown(event)
+  }
+
+  const statusText = dictation.phase === 'requesting-permission'
+    ? props.t('custom.dictation.requestingPermission')
+    : dictation.phase === 'recording'
+      ? `${props.t('custom.dictation.recording')} ${dictationDuration(dictation.elapsedSeconds)}`
+      : dictation.phase === 'transcribing'
+        ? props.t('custom.dictation.transcribing')
+        : dictation.phase === 'review'
+          ? props.t('custom.dictation.success')
+          : dictation.phase === 'error' ? dictation.message : null
+  const controlLabel = dictation.phase === 'recording'
+    ? props.t('custom.dictation.stop')
+    : dictation.phase === 'requesting-permission'
+      ? props.t('custom.dictation.requestingPermission')
+      : dictation.phase === 'transcribing'
+        ? props.t('custom.dictation.transcribing')
+        : props.t('custom.dictation.start')
+
   return (
     <div className={clsx(css.field, props.variant === 'inline' ? css.customInline : css.customBlock)}>
-      <div aria-hidden className={css.fieldMirror}>{`${props.value}\n`}</div>
-      <textarea
-        autoFocus={props.autoFocus}
-        className={css.fieldInput}
-        value={props.value}
-        disabled={props.disabled}
-        rows={1}
-        placeholder={props.placeholder}
-        onFocus={props.onFocus}
-        onChange={props.onChange}
-        onKeyDown={props.onKeyDown}
-      />
+      <div className={css.fieldStack}>
+        <div aria-hidden className={css.fieldMirror}>{`${props.value}\n`}</div>
+        <textarea
+          ref={inputRef}
+          autoFocus={props.autoFocus}
+          className={css.fieldInput}
+          value={props.value}
+          disabled={props.disabled}
+          rows={1}
+          placeholder={props.placeholder}
+          onFocus={props.onFocus}
+          onChange={props.onChange}
+          onKeyDown={handleKeyDown}
+        />
+        <button
+          type="button"
+          className={clsx(css.dictationButton, dictation.phase === 'recording' && css.dictationButtonRecording)}
+          aria-label={controlLabel}
+          aria-keyshortcuts="Control+Shift+M Meta+Shift+M"
+          aria-pressed={dictation.phase === 'recording'}
+          title={controlLabel}
+          data-question-dictation={dictation.phase}
+          disabled={props.disabled || dictation.phase === 'requesting-permission'
+            || dictation.phase === 'transcribing'}
+          onMouseDown={(event) => {
+            event.preventDefault()
+            inputRef.current?.focus({ preventScroll: true })
+          }}
+          onClick={toggleDictation}
+        >
+          {dictation.phase === 'recording'
+            ? <IconStopFill16 size={14} />
+            : <IconMicrophoneOutline16 size={16} />}
+        </button>
+      </div>
+      {statusText !== null && (
+        <div
+          className={css.dictationStatus}
+          data-question-dictation-status={dictation.phase}
+          role={dictation.phase === 'error' ? 'alert' : 'status'}
+          aria-live={dictation.phase === 'recording' ? 'off' : 'polite'}
+          aria-atomic="true"
+        >
+          <span className={css.dictationIndicator} aria-hidden />
+          <span className={css.dictationStatusText}>{statusText}</span>
+          {dictation.phase === 'error' && (
+            <button type="button" className={css.dictationRetry} onClick={retryDictation}>
+              {props.t('custom.dictation.retry')}
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -232,6 +482,18 @@ function QuestionFlow({ pending, t }: { pending: PendingQuestion } & Pick<Questi
     }))
   }
 
+  const appendTranscript = (transcript: string): void => {
+    updateDraft((current) => {
+      const separator = current.custom === '' || /\s$/u.test(current.custom) ? '' : ' '
+      return {
+        ...current,
+        selected: question.multiSelect === true ? current.selected : [],
+        custom: `${current.custom}${separator}${transcript}`,
+        skipped: false,
+      }
+    })
+  }
+
   const continueFromCustom = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
     if (event.key !== 'Enter' || event.shiftKey || isComposing(event)) return
     event.preventDefault()
@@ -350,25 +612,31 @@ function QuestionFlow({ pending, t }: { pending: PendingQuestion } & Pick<Questi
                           </span>
                         )}
                       <AnswerField
+                        key={`${question.id}:${String(index)}`}
                         variant="inline"
                         value={draft.custom}
                         disabled={busy !== null}
                         placeholder={t('custom.placeholder')}
+                        t={t}
                         onChange={draftCustom}
                         onKeyDown={continueFromCustom}
+                        onTranscript={appendTranscript}
                       />
                     </div>
                   )
                   : (
                     <AnswerField
+                      key={`${question.id}:${String(index)}`}
                       autoFocus={!focusedQuestions.current.has(index)}
                       variant="block"
                       value={draft.custom}
                       disabled={busy !== null}
                       placeholder={t('custom.placeholder')}
+                      t={t}
                       onFocus={() => { focusedQuestions.current.add(index) }}
                       onChange={draftCustom}
                       onKeyDown={continueFromCustom}
+                      onTranscript={appendTranscript}
                     />
                   )}
               </div>

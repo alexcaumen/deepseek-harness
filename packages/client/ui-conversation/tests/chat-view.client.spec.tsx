@@ -268,7 +268,10 @@ function makeHarness(init?: Partial<ConversationSnapshot>) {
     useSessions: emptySessions(),
     useWorkspaces: emptyWorkspaces(),
     useProjection: (() => undefined),
-    useInput: (() => { throw new Error('unused') }),
+    useInput: bindSnapshotSelector(createSnapshotStore({
+      draft: '', imageIds: [], draftRev: 0, phase: 'plain' as const,
+      occurrences: [], queue: [],
+    })),
     inputActions: {
       setDraft: () => {},
       addResponseAnnotation: () => true,
@@ -634,7 +637,8 @@ describe('ChatView', () => {
     const view = render(<h.ChatView {...h.props} />)
     const chips = view.container.querySelectorAll('[data-ref-chip="annotation"]')
     expect(chips).toHaveLength(1)
-    expect(chips[0]?.textContent).toBe('Annotation 12')
+    expect(chips[0]?.textContent).toBe('12')
+    expect(chips[0]?.getAttribute('aria-label')).toBe('Annotation 12')
     expect(view.getByText('compare this')).toBeTruthy()
     expect(view.queryByText('response-annotations')).toBeNull()
   })

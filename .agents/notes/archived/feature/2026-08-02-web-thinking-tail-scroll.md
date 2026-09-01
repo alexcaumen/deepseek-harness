@@ -1,6 +1,7 @@
 # Agent Note: Web thinking tail scroll — collapsed reasoning follows live output
 
 Status: implemented
+Archived: 2026-09-02
 
 English | [中文](2026-08-02-web-thinking-tail-scroll.zh.md)
 

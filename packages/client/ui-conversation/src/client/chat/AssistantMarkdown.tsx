@@ -1,5 +1,5 @@
 // AssistantMarkdown: renders assistant blocks in order — markdown text body,
-// reasoning as the figma Think summary row (expand = indented gray text),
+// reasoning as a collapsed Thinking disclosure (expand = indented gray text),
 // other-block JSON fallback. Tool-call heads are NOT rendered here: the chat
 // view groups them into tool rows through its keyed toolview slot (figma
 // step-summary flow). Shared by finalized nodes and the streaming partial;
@@ -7,7 +7,7 @@
 // Finalized content (text) nodes append IconActions once their turn ends
 // (`time` is omitted for mid-turn narration and while the turn still runs);
 // their branch action is enabled only when the node is also the completed
-// turn's transcript tail. Think / tool-head-only nodes stay chrome-free.
+// turn's transcript tail. Thinking / tool-head-only nodes stay chrome-free.
 
 import { Fragment, memo, useMemo } from 'react'
 import type { ReactNode } from 'react'
@@ -31,7 +31,7 @@ export interface AssistantMarkdownProps {
   t: ChatViewSlotProps['t']
 }
 
-/** Reasoning block as the Think variant summary row (figma 39:28304). */
+/** Reasoning blocks stay separate from final prose behind their own disclosure. */
 export const AssistantMarkdown = memo(function AssistantMarkdown({
   blocks, streaming, interrupted, renderMessageImages, mentions, t,
 }: AssistantMarkdownProps) {

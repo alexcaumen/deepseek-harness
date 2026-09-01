@@ -65,10 +65,15 @@ async function readResponse(response: Response): Promise<ComputeRoutingResponse>
   return await response.json() as ComputeRoutingResponse
 }
 
+function routeReady(route: ComputeRouteSelection): boolean {
+  return route.state.toLowerCase() === 'ready'
+}
+
 export function ComputeRoutingRow({ t }: ComputeRoutingRowProps) {
   const [status, setStatus] = useState<ComputeRoutingResponse | null>(null)
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<{ readonly message: string; readonly direct: boolean } | null>(null)
+  const [unavailable, setUnavailable] = useState<ReadonlySet<ComputeRoutingMode>>(() => new Set())
   const endpoint = resolveComputeConfigUrl()
 
   const refresh = useCallback(async () => {
@@ -76,8 +81,9 @@ export function ComputeRoutingRow({ t }: ComputeRoutingRowProps) {
     setError(null)
     try {
       setStatus(await readResponse(await fetch(endpoint)))
+      setUnavailable(new Set())
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      setError({ message: cause instanceof Error ? cause.message : String(cause), direct: false })
     } finally {
       setBusy(false)
     }
@@ -89,13 +95,50 @@ export function ComputeRoutingRow({ t }: ComputeRoutingRowProps) {
     setBusy(true)
     setError(null)
     try {
-      setStatus(await readResponse(await fetch(endpoint, {
+      const selected = await readResponse(await fetch(endpoint, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode }),
-      })))
+      }))
+      if (mode !== 'r5300' || routeReady(selected.selectedRoute)) {
+        setStatus(selected)
+        return
+      }
+      const restored = await readResponse(await fetch(endpoint, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'automatic' }),
+      }))
+      setStatus(restored)
+      setUnavailable(current => new Set([...current, 'r5300']))
+      setError({
+        message: t('settings.compute.routeUnavailable', { route: t('settings.compute.r5300') }),
+        direct: true,
+      })
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause))
+      const message = cause instanceof Error ? cause.message : String(cause)
+      if (mode === 'r5300') {
+        setUnavailable(current => new Set([...current, 'r5300']))
+        try {
+          setStatus(await readResponse(await fetch(endpoint, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: 'automatic' }),
+          })))
+          setError({
+            message: t('settings.compute.routeUnavailableDetail', {
+              route: t('settings.compute.r5300'), message,
+            }),
+            direct: true,
+          })
+          return
+        } catch (rollbackFailure) {
+          // The original forced-route failure is the actionable cause; the
+          // refresh action remains available to recover service state.
+          void rollbackFailure
+        }
+      }
+      setError({ message, direct: false })
     } finally {
       setBusy(false)
     }
@@ -122,7 +165,7 @@ export function ComputeRoutingRow({ t }: ComputeRoutingRowProps) {
           data-state={status?.selectedRoute.state ?? 'loading'}
           role={error === null ? 'status' : 'alert'}
         >
-          {error === null ? statusCopy : t('settings.compute.failed', { message: error })}
+          {error === null ? statusCopy : error.direct ? error.message : t('settings.compute.failed', { message: error.message })}
         </div>
       </div>
       <div className={css.controls}>
@@ -134,7 +177,7 @@ export function ComputeRoutingRow({ t }: ComputeRoutingRowProps) {
               className={css.segment}
               data-selected={status?.mode === option.id}
               aria-pressed={status?.mode === option.id}
-              disabled={busy}
+              disabled={busy || unavailable.has(option.id)}
               onClick={() => { void select(option.id) }}
             >
               {t(option.label)}

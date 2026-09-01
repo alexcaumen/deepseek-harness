@@ -108,6 +108,35 @@
   padding: 10px 12px 0;
 }
 
+.annotationRail {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 24px;
+  padding: 0 16px;
+  overflow-x: auto;
+}
+
+.annotationBubble {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 22px;
+  border: 0;
+  border-radius: 11px 11px 11px 4px;
+  background: var(--dsw-alias-state-business-primary);
+  color: #fff;
+  font: 600 12px/1 var(--dsw-font-family);
+  cursor: pointer;
+}
+
+.annotationBubble:hover,
+.annotationBubble:focus-visible {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary) 20%, transparent);
+  outline: none;
+}
+
 /* Floating overlay anchor (menu / popupSelect shell): entries position
    themselves against the card (bottom: 100% + gap); closed entries render null. */
 .overlayAnchor {
@@ -302,6 +331,41 @@
   gap: 12px;
 }
 
+.deliveryModes {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--dsw-specific-selector);
+}
+
+.deliveryMode {
+  height: 24px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: 500 12px/1 var(--dsw-font-family);
+  cursor: pointer;
+}
+
+.deliveryMode[data-selected='true'] {
+  background: var(--dsw-specific-input-major);
+  color: var(--dsw-alias-label-primary);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 12%);
+}
+
+.deliveryMode:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: 1px;
+}
+
+.deliveryMode:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
 .trailing {
   flex: none;
   /* Wrap keeps the left mode chips and the right controls apart when the card
@@ -406,7 +470,7 @@
   opacity: 0.88;
   transform: scaleY(var(--dictation-amplitude, 0.08));
   transform-origin: center;
-  transition: transform 45ms linear;
+  transition: transform 95ms linear;
 }
 
 @media (prefers-reduced-motion: reduce) {

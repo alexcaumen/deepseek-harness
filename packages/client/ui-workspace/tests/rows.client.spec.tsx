@@ -86,6 +86,7 @@ describe('workspace browser rows', () => {
     render(<SearchResultItem result={result} currentId={result.id} onOpen={onOpen} t={t} />)
     const row = screen.getByRole('treeitem')
     expect(row.getAttribute('aria-selected')).toBe('true')
+    expect(row.getAttribute('data-session-id')).toBe(result.id)
     expect(screen.getByText('Workspace context')).toBeTruthy()
     expect(screen.getByText('matching message excerpt')).toBeTruthy()
     expect(row.querySelector('[data-state="ongoing"]')).toBeTruthy()
@@ -141,6 +142,7 @@ describe('workspace browser rows', () => {
 
     const row = screen.getByRole('treeitem')
     expect(row.getAttribute('aria-selected')).toBe('true')
+    expect(row.getAttribute('data-session-id')).toBe(node.id)
     expect(row.hasAttribute('aria-expanded')).toBe(false)
     expect(screen.queryByRole('button', { name: /展开|收起/ })).toBeNull()
     fireEvent.click(row)

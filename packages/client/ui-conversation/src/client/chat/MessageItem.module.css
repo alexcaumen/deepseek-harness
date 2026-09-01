@@ -286,6 +286,20 @@
   vertical-align: baseline;
 }
 
+.refChip[data-ref-chip='annotation'] {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 20px;
+  margin-inline: 3px;
+  border-radius: 10px 10px 10px 3px;
+  background: var(--dsw-alias-state-business-primary);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+
 .refIcon {
   flex: none;
 }
