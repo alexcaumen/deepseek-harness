@@ -85,7 +85,7 @@ function Remove-StaleOuterListener {
     Start-Sleep -Milliseconds 250
     return
   }
-  if ($listeners.Count -gt 0) {
+  if (@($listeners).Count -gt 0) {
     throw "Port $Port on R5300 is owned by an unexpected listener"
   }
 }
