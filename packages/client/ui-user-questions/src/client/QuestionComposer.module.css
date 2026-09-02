@@ -461,6 +461,7 @@
    edges align with the title's 24px inset; two lines are reserved before the
    answer starts growing. */
 .customBlock {
+  display: grid;
   min-height: 64px;
   flex-shrink: 0;
   margin: 0 12px;

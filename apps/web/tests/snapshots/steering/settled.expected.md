@@ -16,10 +16,11 @@
   - img
   - img
   - text: Context injection @deepseek-ai/dsh-system-prompt
-- button "Think The user wants me to use the ask_user_question tool to ask them a specific question with the given parameters. Let me do exactly that.":
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: Think The user wants me to use the ask_user_question tool to ask them a specific question with the given parameters. Let me do exactly that.
+  - text: Thinking
 - button "Ask question 1/1 answered":
   - img
   - img
@@ -27,10 +28,11 @@
 - text: "Interjection: include the word BANANA in your final reply. {{clock}}"
 - button "Copy":
   - img
-- button "Think The user selected \"Yes\" and wants me to include the word \"BANANA\" in my final reply. Let me acknowledge their answer.":
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: Think The user selected "Yes" and wants me to include the word "BANANA" in my final reply. Let me acknowledge their answer.
+  - text: Thinking
 - paragraph: Great, let's move forward. BANANA!
 - button "Copy":
   - img

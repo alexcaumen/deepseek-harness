@@ -16,10 +16,11 @@
   - img
   - img
   - text: Context injection @deepseek-ai/dsh-system-prompt
-- button "Think The user wants me to ask them a checkpoint question first, then continue with whatever they interject. Let me do exactly that.":
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: Think The user wants me to ask them a checkpoint question first, then continue with whatever they interject. Let me do exactly that.
+  - text: Thinking
 - text: Running
 - button "Ask question waiting":
   - img
@@ -43,6 +44,8 @@
     - radio "Yes": 1 Yes
     - radio "No": 2 No
     - textbox "Type your answer"
+    - button "Start automatic-language dictation":
+      - img
   - button "Previous question" [disabled]:
     - img
   - text: 1 / 1

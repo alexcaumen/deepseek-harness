@@ -44,6 +44,8 @@ GianaOS Putri ACP 启动器对探测和启动路径使用一个固定的 SSH 主
 
 此源代码变更不会重启或替换现有应用。打包候选版本的人工体验 QA、针对只读一致副本的会话兼容性、受控提升、回滚证明和生产冒烟测试仍然是同一个不可变候选版本的发布门槛。
 
+已构建浏览器的回放预期包含折叠的 Thinking 状态、问题听写和忙碌消息选择器。无选项答案使用拉伸网格，使 textarea 在存在听写包装层时仍填满预留框。fresh-round-trip 场景执行本机 shell：Windows 将录制的 Bash fixture 的临时副本适配为 PowerShell，保留命令，并使用独立的 Windows 可访问性快照。它不安装 Bash 别名、不隐藏工具错误，也不更改共享录制。该 fixture 仍只在 POSIX 上录制。
+
 ## Supersession and related decisions
 
 本决策完全取代历史 [Web 推理尾部滚动](../../archived/feature/2026-08-02-web-thinking-tail-scroll.md) 中记录的最新行移动预览与横向跟尾机制。旧说明的动机仍然有效：折叠行必须真实显示推理是否活动，而不强迫用户打开完整推理主体。替代方案明确放弃文本移动所表达的吞吐信号，改用运行中或已完成状态。

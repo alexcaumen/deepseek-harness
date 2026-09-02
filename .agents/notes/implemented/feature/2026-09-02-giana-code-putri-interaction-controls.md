@@ -44,6 +44,8 @@ Focused component and contract suites cover product awareness, offset and legacy
 
 The existing application is not restarted or replaced by this source change. Packaged-candidate Human Experience QA, session compatibility against a read-consistent copy, controlled promotion, rollback proof, and production smoke remain release gates for the exact immutable candidate.
 
+Built-browser replay expectations include the collapsed Thinking status, question dictation, and busy-message selector. The optionless answer uses a stretching grid so the textarea fills its reserved frame despite the dictation wrapper. The fresh-round-trip scenario executes the native shell: Windows adapts a temporary copy of the recorded Bash fixture to PowerShell while preserving the command and using a separate Windows accessibility snapshot. It does not install a Bash alias, suppress tool errors, or alter the shared recording. Recording that fixture remains POSIX-only.
+
 ## Supersession and related decisions
 
 This decision fully supersedes the moving latest-line preview and horizontal tail-follow mechanism recorded in the historical [Web thinking tail scroll](../../archived/feature/2026-08-02-web-thinking-tail-scroll.md). The old note's motivation remains relevant: a collapsed row must truthfully show whether reasoning is active without forcing the full reasoning body open. The replacement deliberately gives up the text-motion throughput signal and uses running or completed status instead.

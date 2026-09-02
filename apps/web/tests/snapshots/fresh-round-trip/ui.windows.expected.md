@@ -1,6 +1,6 @@
 - banner:
   - navigation "Session hierarchy":
-    - button "Use the bash tool to" [disabled]
+    - button "Use the pwsh tool to" [disabled]
   - img
   - text: Standard mode
   - button "Session log":
@@ -9,7 +9,7 @@
   - tablist:
     - tab "Chat" [selected]
     - tab "Trajectory"
-- text: "Use the bash tool to run exactly: echo WEB_E2E_OK. Then reply with the single word DONE and stop. {{clock}}"
+- text: "Use the pwsh tool to run exactly: echo WEB_E2E_OK. Then reply with the single word DONE and stop. {{clock}}"
 - button "Copy":
   - img
 - button "Context injection @deepseek-ai/dsh-system-prompt":
@@ -21,10 +21,10 @@
   - img
   - img
   - text: Thinking
-- button "Bash Echo the test string":
+- button "Pwsh Echo the test string":
   - img
   - img
-  - text: Bash Echo the test string
+  - text: Pwsh Echo the test string
 - status: Thinking Completed
 - button "Thinking":
   - img

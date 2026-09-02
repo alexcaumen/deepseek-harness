@@ -39,6 +39,9 @@
 - button "Commands":
   - img
 - 'button "Access mode, current: Workspace Write"': Workspace Write
+- group "Message handling while the agent is running":
+  - button "Quick queue" [pressed]
+  - button "Steer"
 - button "Select model, current DeepSeek-V4-Flash":
   - text: DeepSeek-V4-Flash
   - img

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import type { Browser, Page } from 'playwright'
 import { chromium } from 'playwright'
-import { afterAll, beforeAll, describe, expect, it, onTestFailed } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, onTestFailed } from 'vitest'
 import { parseSessionLog } from '@deepseek-ai/dsh-llm-replay'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import {
@@ -174,14 +174,15 @@ describe('web e2e: mid-turn steering lands durably and visibly', () => {
   })
 })
 
-describe('web e2e: composer shortcut steers directly', () => {
+describe('web e2e: composer shortcut and selector steer directly', () => {
   let scaffold: WebScaffold
   let browser: Browser
   let page: Page
   let tripwire: ReturnType<typeof watchConsole>
   const sessionEvents: SessionEvent[] = []
 
-  beforeAll(async () => {
+  beforeEach(async () => {
+    sessionEvents.length = 0
     scaffold = await launchWebScaffold({ replayFixture: FIXTURE, paceMs: REPLAY_PACE_MS })
     scaffold.ctx.on('session/event', (_session, event) => { sessionEvents.push(event) })
     browser = await chromium.launch()
@@ -192,12 +193,12 @@ describe('web e2e: composer shortcut steers directly', () => {
     await connectFreshWorkspace(page, scaffold.workspaceCwd)
   }, 120_000)
 
-  afterAll(async () => {
+  afterEach(async () => {
     await browser?.close()
     await scaffold?.close()
   })
 
-  it.skipIf(MODE === 'record')('uses Cmd+Enter without creating a Queue row', async () => {
+  it.skipIf(MODE === 'record').each(['Cmd+Enter', 'Steer selector'] as const)('uses %s without creating a Queue row', async (entryPoint) => {
     onTestFailed(() => saveFailureShot(page, 'web-e2e-composer-steering'))
     expect(fixtureUserPrompts(await readFile(FIXTURE, 'utf8'))).toEqual([PROMPT, STEER])
     const input = page.locator('textarea').first()
@@ -208,7 +209,18 @@ describe('web e2e: composer shortcut steers directly', () => {
     await page.getByRole('button', { name: 'Stop generating' }).waitFor({ timeout: 10_000 })
 
     await input.fill(STEER)
-    await input.press('Meta+Enter')
+    if (entryPoint === 'Steer selector') {
+      const modes = page.getByRole('group', { name: 'Message handling while the agent is running' })
+      const quickQueue = modes.getByRole('button', { name: 'Quick queue', exact: true })
+      const steer = modes.getByRole('button', { name: 'Steer', exact: true })
+      expect(await quickQueue.getAttribute('aria-pressed')).toBe('true')
+      await steer.click()
+      expect(await steer.getAttribute('aria-pressed')).toBe('true')
+      expect(await quickQueue.getAttribute('aria-pressed')).toBe('false')
+      await page.getByRole('button', { name: 'Steer current turn', exact: true }).click()
+    } else {
+      await input.press('Meta+Enter')
+    }
     await expect.poll(() => input.inputValue(), { timeout: 5_000 }).toBe('')
     expect(await page.locator('[data-queue-dock]').count()).toBe(0)
 
@@ -356,7 +368,8 @@ describe('web e2e: empty-draft Cmd+Enter steers the whole queue', () => {
     // The reasoning row streams independently of the steering handoff. Wait
     // for the block to settle so the mid snapshot does not race its transient
     // visually-hidden Running label while the question keeps the turn open.
-    await page.locator('[data-variant="think"][data-state="ok"]').first().waitFor({ timeout: 10_000 })
+    await page.getByRole('status').filter({ hasText: /^Thinking Completed$/u }).first()
+      .waitFor({ state: 'attached', timeout: 10_000 })
     // The question takeover is the stable business state for this fixture;
     // waiting for the reasoning block alone can catch the brief interval
     // before the takeover mounts and make the replay consume only call 0.

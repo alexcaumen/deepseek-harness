@@ -103,6 +103,9 @@ describe('web e2e: resident question composer round trip', () => {
     const composer = page.locator('[data-question-key]')
     await composer.waitFor({ timeout: MODE === 'record' ? 120_000 : 30_000 })
     await expect.poll(() => composer.getByText('Which color do you prefer?').count(), { timeout: 10_000 }).toBeGreaterThan(0)
+    const dictation = composer.getByRole('button', { name: 'Start automatic-language dictation', exact: true })
+    expect(await dictation.isEnabled()).toBe(true)
+    expect(await dictation.getAttribute('aria-pressed')).toBe('false')
 
     const selectedRow = page.locator('[role="treeitem"][aria-selected="true"]')
     await expect.poll(() => selectedRow.locator('[data-state="warning"]').count(), { timeout: 10_000 }).toBe(1)
@@ -246,28 +249,35 @@ describe('web e2e: resident question composer round trip', () => {
     })
 
     const composer = page.locator('[data-question-key]')
-    await composer.waitFor({ timeout: 30_000 })
-    const field = composer.getByRole('textbox')
-    // The empty field reserves its two lines AND the textarea fills that frame:
-    // a reserved box the control does not fill leaves a strip that looks like
-    // the field but takes no click.
-    expect(await field.evaluate((el) => {
-      const frame = el.parentElement as HTMLElement
-      const style = getComputedStyle(frame)
-      const inner = frame.getBoundingClientRect().height
-        - parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth)
-      return {
-        reserved: Math.round(frame.getBoundingClientRect().height),
-        fills: Math.abs(el.getBoundingClientRect().height - inner) < 0.5,
-      }
-    })).toEqual({ reserved: 64, fills: true })
-    // The same cap the inline shape stops at — the assertion a border-box cap fails.
-    expect(await capMetrics(field)).toEqual({ textLines: CAP_LINES, scrolls: true })
-
-    // Settle the wait so teardown is not racing a pending question.
-    await composer.getByRole('button', { name: 'Skip this question' }).click()
-    expect(await asked).toEqual({ answers: [{ id: 'free', selected: [] }] })
-    await expect.poll(() => page.locator('[data-question-key]').count(), { timeout: 10_000 }).toBe(0)
+    try {
+      await composer.waitFor({ timeout: 30_000 })
+      const field = composer.getByRole('textbox')
+      expect(await composer.getByRole('button', { name: 'Start automatic-language dictation', exact: true })
+        .isEnabled()).toBe(true)
+      // The empty field reserves its two lines AND the textarea fills that frame:
+      // a reserved box the control does not fill leaves a strip that looks like
+      // the field but takes no click.
+      const metrics = await field.evaluate((el) => {
+        // The textarea and dictation button now share a stack inside the outer frame.
+        const frame = el.parentElement!.parentElement as HTMLElement
+        const style = getComputedStyle(frame)
+        return {
+          reserved: Math.round(frame.getBoundingClientRect().height),
+          innerHeight: frame.getBoundingClientRect().height
+            - parseFloat(style.borderTopWidth) - parseFloat(style.borderBottomWidth),
+          fieldHeight: el.getBoundingClientRect().height,
+        }
+      })
+      expect(metrics.reserved).toBe(64)
+      expect(Math.abs(metrics.fieldHeight - metrics.innerHeight), JSON.stringify(metrics)).toBeLessThan(0.5)
+      // The same cap the inline shape stops at — the assertion a border-box cap fails.
+      expect(await capMetrics(field)).toEqual({ textLines: CAP_LINES, scrolls: true })
+    } finally {
+      // Settle the question even when a layout assertion fails.
+      await composer.getByRole('button', { name: 'Skip this question' }).click()
+      expect(await asked).toEqual({ answers: [{ id: 'free', selected: [] }] })
+      await expect.poll(() => page.locator('[data-question-key]').count(), { timeout: 10_000 }).toBe(0)
+    }
   }, 60_000)
 
   it.skipIf(MODE === 'record')('keeps the fixture inventory closed', async () => {

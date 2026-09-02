@@ -92,10 +92,19 @@ describe('web e2e: queue row actions', () => {
     await input.press('Enter')
     await expect.poll(() => existsSync(readyFile), { timeout: 15_000 }).toBe(true)
 
+    const modes = page.getByRole('group', { name: 'Message handling while the agent is running' })
+    const quickQueue = modes.getByRole('button', { name: 'Quick queue', exact: true })
+    const steer = modes.getByRole('button', { name: 'Steer', exact: true })
+    await steer.click()
+    expect(await steer.getAttribute('aria-pressed')).toBe('true')
+    await quickQueue.click()
+    expect(await quickQueue.getAttribute('aria-pressed')).toBe('true')
+    expect(await steer.getAttribute('aria-pressed')).toBe('false')
     for (const text of [REMOVE, EDIT]) {
       await input.fill(text)
-      await input.press('Enter')
+      await page.getByRole('button', { name: 'Queue message', exact: true }).click()
     }
+    expect(await page.locator('[data-pending-steering]').count()).toBe(0)
     const queueHeader = page.getByRole('button', { name: '2 queued messages' })
     await expect.poll(() => queueHeader.getAttribute('aria-expanded'), { timeout: 10_000 })
       .toBe('false')
