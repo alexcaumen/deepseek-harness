@@ -165,6 +165,12 @@ export interface Config {
    * sandbox and approval defaults is used.
    */
   defaultPreset?: string
+  /**
+   * Named presets whose durable selection should follow a changed deployment
+   * definition when an existing session is loaded. Empty by default: most
+   * deployments preserve historical knob values exactly.
+   */
+  reconcileExistingPresets?: string[]
 }
 
 /**
@@ -191,11 +197,13 @@ export class PermissionPresetService extends Service {
       },
     }),
     defaultPreset: z.string(),
+    reconcileExistingPresets: z.array(z.string()).default([]),
   })
 
   static inject = ['shell', 'approval', 'sessions']
 
   private readonly presets: Record<string, PresetSpec>
+  private readonly reconcileExistingPresets: ReadonlySet<string>
   private defaultSettings: () => PermissionSettings
 
   constructor(ctx: Context, config: Config) {
@@ -205,6 +213,8 @@ export class PermissionPresetService extends Service {
     if (CUSTOM_PRESET in this.presets) {
       throw new Error(`permission: "${CUSTOM_PRESET}" is reserved for the derived not-a-preset state and cannot name a table entry`)
     }
+    this.reconcileExistingPresets = new Set(config.reconcileExistingPresets ?? [])
+    for (const name of this.reconcileExistingPresets) this.resolve(name)
     if (ctx.shell.sandboxMode === undefined) {
       throw new Error('permission: the mounted bash executor does not confine (no sandboxMode) — presets bundle a sandbox mode, so composing this plugin over an unconfined executor is a misconfiguration')
     }
@@ -235,9 +245,11 @@ export class PermissionPresetService extends Service {
 
     ctx.on('session/created', (session) => {
       this.pinInitialPermission(session)
+      this.reconcileExistingPreset(session)
     })
     for (const session of ctx.sessions.list()) {
       this.pinInitialPermission(session)
+      this.reconcileExistingPreset(session)
     }
 
     // The permissions projection unit: fold the three whole-value knob
@@ -443,6 +455,13 @@ export class PermissionPresetService extends Service {
     if (approval === undefined) {
       setApprovalPolicy(session, this.ctx.approval.config.policy ?? 'ask')
     }
+  }
+
+  /** Re-assert an explicitly selected preset whose configured bundle changed. */
+  private reconcileExistingPreset(session: Session): void {
+    const selected = effectivePermissionPreset(session.events)
+    if (selected === undefined || !this.reconcileExistingPresets.has(selected)) return
+    this.apply(session, selected, (policy) => { setApprovalPolicy(session, policy) })
   }
 }
 

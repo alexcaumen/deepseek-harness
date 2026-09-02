@@ -39,6 +39,12 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
   // per render would rebuild MarkdownText's component table every chunk.
   const codeLabels = useMemo(() => ({ copyLabel: t('copy'), copiedLabel: t('copied') }), [t])
   const last = blocks.length - 1
+  // Some OpenAI-compatible providers return their pre-tool execution narrative
+  // as ordinary text instead of a reasoning block. Once a tool call proves that
+  // the text belongs to an execution step, keep it inspectable behind Thinking.
+  // A closing assistant message has no tool call, so its final answer is never
+  // reclassified or hidden by this compatibility boundary.
+  const firstToolCall = blocks.findIndex(block => block.kind === 'tool-call')
   // Tool-call heads render as tool rows in the chat view's grouping pass, so
   // a node that is only those heads (or empty) would paint an empty root
   // between tool groups — skip the shell unless something visible remains.
@@ -52,16 +58,20 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
     if (block === undefined) continue
     switch (block.kind) {
       case 'text':
-        rendered.push(
-          <div key={i} data-assistant-block-kind="text">
-            <MarkdownText
-              text={block.text}
-              streaming={streaming}
-              codeLabels={codeLabels}
-              fileMentions={mentions}
-            />
-          </div>,
-        )
+        if (firstToolCall >= 0 && i < firstToolCall) {
+          rendered.push(<ReasoningRow key={i} text={block.text} running={false} t={t} />)
+        } else {
+          rendered.push(
+            <div key={i} data-assistant-block-kind="text">
+              <MarkdownText
+                text={block.text}
+                streaming={streaming}
+                codeLabels={codeLabels}
+                fileMentions={mentions}
+              />
+            </div>,
+          )
+        }
         break
       case 'reasoning':
         rendered.push(<ReasoningRow key={i} text={block.text} running={streaming && i === last} t={t} />)

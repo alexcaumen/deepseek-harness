@@ -280,6 +280,61 @@ describe('new-session default', () => {
     expect(unmatched.events.at(-1)?.type).toBe('session/end-seed')
   })
 
+  it('reconciles only an explicitly configured legacy preset and is idempotent', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const existing = ctx.sessions.create(SessionId('legacy-full-access'))
+    existing.append('permission/preset', { preset: 'danger-full-access' })
+    existing.append('sandbox/mode', { mode: 'danger-full-access' })
+    existing.append('approval/policy', { policy: 'never' })
+    ctx.provide('shell', {
+      sandboxMode: 'danger-full-access',
+      resolve() { throw new Error('permission tests do not execute bash') },
+      run() { throw new Error('permission tests do not execute bash') },
+      start() { throw new Error('permission tests do not execute bash') },
+    })
+    ctx.provide('approval', { config: { policy: 'ask' } })
+    await ctx.plugin(PermissionPresetService, {
+      presets: {
+        'danger-full-access': { sandbox: 'danger-full-access', approval: 'ask' },
+      },
+      reconcileExistingPresets: ['danger-full-access'],
+    })
+
+    expect(ctx.permissionPresets.current(existing.events)).toBe('danger-full-access')
+    expect(existing.events.slice(-2).map(event => [event.type, event.data])).toEqual([
+      ['permission/preset', { preset: 'danger-full-access' }],
+      ['approval/policy', { policy: 'ask' }],
+    ])
+    const count = existing.events.length
+    ctx.permissionPresets.set(existing, 'danger-full-access')
+    expect(existing.events).toHaveLength(count)
+  })
+
+  it('preserves stale preset definitions unless reconciliation is explicitly enabled', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const existing = ctx.sessions.create(SessionId('legacy-unmigrated'))
+    existing.append('permission/preset', { preset: 'danger-full-access' })
+    existing.append('sandbox/mode', { mode: 'danger-full-access' })
+    existing.append('approval/policy', { policy: 'never' })
+    ctx.provide('shell', {
+      sandboxMode: 'danger-full-access',
+      resolve() { throw new Error('permission tests do not execute bash') },
+      run() { throw new Error('permission tests do not execute bash') },
+      start() { throw new Error('permission tests do not execute bash') },
+    })
+    ctx.provide('approval', { config: { policy: 'ask' } })
+    await ctx.plugin(PermissionPresetService, {
+      presets: {
+        'danger-full-access': { sandbox: 'danger-full-access', approval: 'ask' },
+      },
+    })
+
+    expect(ctx.permissionPresets.current(existing.events)).toBe(CUSTOM_PRESET)
+    expect(existing.events).toHaveLength(3)
+  })
+
   it('materializes ask when a legacy seed and approval stand-in omit the policy', async () => {
     const ctx = await mountedStore({ approvalDefault: undefined })
     const partial = freshSession('approval-fallback-source')

@@ -37,6 +37,8 @@ describe('Giana Code Putri runtime binding', () => {
     const gianaOs = entries.find(entry => entry.id === 'llm-gianaos-acp')?.config
     const princessOs = entries.find(entry => entry.id === 'llm-princess-os')?.config
     const playwright = entries.find(entry => entry.id === 'mcp-playwright')?.config
+    const approval = entries.find(entry => entry.id === 'approval')?.config
+    const permission = entries.find(entry => entry.id === 'permission')?.config
     const launchScript = evaluatedString(gianaOs?.launchScript, env)
     const playwrightArgs = playwright?.args
 
@@ -51,5 +53,10 @@ describe('Giana Code Putri runtime binding', () => {
     expect(outputDirectoryIndex).toBeGreaterThan(0)
     expect(resolve(evaluatedString((playwrightArgs as unknown[])[outputDirectoryIndex], env)))
       .toBe(join(REPO_ROOT, '.artifacts', 'playwright-mcp', 'output'))
+    expect(approval?.policy).toBe('ask')
+    expect(permission?.presets).toMatchObject({
+      'danger-full-access': { sandbox: 'danger-full-access', approval: 'ask' },
+    })
+    expect(permission?.reconcileExistingPresets).toEqual(['danger-full-access'])
   })
 })

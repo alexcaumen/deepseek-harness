@@ -76,6 +76,7 @@ describe('reference submission', () => {
       _imageIds: readonly DraftAttachmentId[],
       _mode: 'queue' | 'steer',
       _signal: AbortSignal,
+      _displayText?: string,
     ) => Promise<SubmitOutcome>>()
       .mockResolvedValueOnce({ kind: 'error', text: 'snapshot unavailable' })
       .mockResolvedValueOnce({ kind: 'success' })
@@ -100,7 +101,7 @@ describe('reference submission', () => {
     await vi.waitFor(() => {
       expect(shell.snapshot.phase).toBe('plain')
     })
-    expect(sink).toHaveBeenNthCalledWith(1, mention, [], 'queue', expect.any(AbortSignal))
+    expect(sink).toHaveBeenNthCalledWith(1, mention, [], 'queue', expect.any(AbortSignal), '@Research')
     expect(shell.snapshot).toMatchObject({
       draft: '@Research ',
       occurrences: [{ source: 'reference', ref: mention, label: 'Research', offset: 0, length: 9 }],
@@ -114,7 +115,7 @@ describe('reference submission', () => {
     await vi.waitFor(() => {
       expect(shell.snapshot.draft).toBe('')
     })
-    expect(sink).toHaveBeenNthCalledWith(2, mention, [], 'queue', expect.any(AbortSignal))
+    expect(sink).toHaveBeenNthCalledWith(2, mention, [], 'queue', expect.any(AbortSignal), '@Research')
     expect(shell.snapshot.occurrences).toEqual([])
     expect(serializeReference).toHaveBeenCalledTimes(2)
   })

@@ -99,4 +99,38 @@ describe('ReasoningRow', () => {
     expect(view.getByText('The final answer stays visible.')).toBeTruthy()
     expect(view.container.querySelectorAll('[data-assistant-block-kind="text"]')).toHaveLength(1)
   })
+
+  it('collapses provider narration before a tool call without hiding the final answer', () => {
+    const execution = render(
+      <AssistantMarkdown
+        t={t}
+        blocks={[
+          { kind: 'text', text: 'I will inspect the current directory first.' },
+          { kind: 'tool-call', callId: 'call-1', name: 'pwsh', argsRaw: '{}' },
+        ]}
+        streaming={false}
+        renderMessageImages={renderMessageImages}
+      />,
+    )
+
+    const disclosure = execution.getByRole('button', { name: /Thinking/ })
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false')
+    expect(execution.queryByText('I will inspect the current directory first.')).toBeNull()
+    expect(execution.container.querySelectorAll('[data-assistant-block-kind="text"]')).toHaveLength(0)
+
+    fireEvent.click(disclosure)
+    expect(execution.getByText('I will inspect the current directory first.')).toBeTruthy()
+    execution.unmount()
+
+    const finalAnswer = render(
+      <AssistantMarkdown
+        t={t}
+        blocks={[{ kind: 'text', text: 'The final answer remains visible.' }]}
+        streaming={false}
+        renderMessageImages={renderMessageImages}
+      />,
+    )
+    expect(finalAnswer.queryByRole('button', { name: /Thinking/ })).toBeNull()
+    expect(finalAnswer.getByText('The final answer remains visible.')).toBeTruthy()
+  })
 })

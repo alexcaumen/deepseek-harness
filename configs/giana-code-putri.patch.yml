@@ -40,6 +40,27 @@
 # The desktop app serves prebuilt client bundles. The upstream HMR row polls
 # every client bundle on the N: worktree every 500 ms and is only useful while
 # pnpm's watch build is running, so keep it out of the stable desktop runtime.
+- id: approval
+  config:
+    # Full filesystem access must not silently disable the one-shot consent
+    # boundary used by Windows computer-use and other explicitly guarded tools.
+    policy: ask
+
+- id: permission
+  config:
+    reconcileExistingPresets:
+      - danger-full-access
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: ask
+
 - id: client-hmr
   disabled: true
 
