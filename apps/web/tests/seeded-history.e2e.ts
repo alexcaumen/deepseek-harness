@@ -10,11 +10,11 @@
 // fixture under the same record discipline as every other: DSH_SNAPSHOT=record drives the turn
 // live through the composer (real read tool against seeded workspace files)
 // and harvests seed.jsonl; replay/refresh seed it cold and only render.
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
-import type { Browser, Page } from 'playwright'
+import type { Browser, Page, Route } from 'playwright'
 import { chromium } from 'playwright'
-import { afterAll, beforeAll, describe, expect, it, onTestFailed, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, onTestFailed } from 'vitest'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, Message } from '@deepseek-ai/dsh-llm'
 import { deriveEventMessage, SessionId } from '@deepseek-ai/dsh-session'
@@ -34,7 +34,6 @@ const UI_EXPECTED = fileURLToPath(new URL('./snapshots/seeded-history/ui.expecte
 // Command-row goldens over the same conversation after direct host commands.
 const COMMAND_ROW_EXPECTED = fileURLToPath(new URL('./snapshots/seeded-history/command-row.expected.md', import.meta.url))
 const FEEDBACK_ROW_EXPECTED = fileURLToPath(new URL('./snapshots/seeded-history/feedback-row.expected.md', import.meta.url))
-const FILE_OPEN_FAILURE_EXPECTED = fileURLToPath(new URL('./snapshots/seeded-history/file-open-failure.expected.md', import.meta.url))
 const MODE = webSnapshotMode()
 const SEED_ID = 'seeded-history-web-e2e'
 
@@ -185,14 +184,11 @@ describe('web e2e: seeded history renders through cold resume', () => {
 
   beforeAll(async () => {
     scaffold = await launchWebScaffold({})
-    // The workspace-aware flow runs sessions in <workspaceCwd>/workspace
-    // (the composer's default draft name); the read-tool targets must live in
-    // that session cwd. Pre-creating the directory is safe because the picker
-    // adopts an existing directory by path.
-    const sessionCwd = join(scaffold.workspaceCwd, 'workspace')
-    await mkdir(sessionCwd, { recursive: true })
-    await writeFile(join(sessionCwd, 'a.txt'), 'alpha\n')
-    await writeFile(join(sessionCwd, 'b.txt'), 'beta\n')
+    // seedSession deliberately binds cold fixtures to scaffold.workspaceCwd;
+    // keep the recorded relative read targets in that exact session cwd so
+    // the assembled sidebar interceptor can load the file it opens.
+    await writeFile(join(scaffold.workspaceCwd, 'a.txt'), 'alpha\n')
+    await writeFile(join(scaffold.workspaceCwd, 'b.txt'), 'beta\n')
     if (MODE !== 'record') {
       const raw = await readFile(SEED, 'utf8')
       expect(fixtureUserPrompts(raw), 'seed fixture must carry exactly the drive prompt').toEqual([PROMPT])
@@ -389,63 +385,69 @@ describe('web e2e: seeded history renders through cold resume', () => {
     await expect.poll(() => disclosure.getAttribute('aria-expanded')).toBe('false')
   })
 
-  it.skipIf(MODE === 'record')('file-path tool rows rebuilt from the cold log stay details-inert', async () => {
+  it.skipIf(MODE === 'record')('file-path tool rows rebuilt from the cold log open in the sidebar and stay details-inert', async () => {
     onTestFailed(() => saveFailureShot(page, 'web-e2e-seeded-toolrow'))
-    // Interaction over cold-resumed history: read summaries are host-open
-    // file links (not expand-in-place / not details). Runs after the golden
-    // capture; still zero model calls.
-    const fileLink = page.locator('[data-variant="read"] button').first()
+    // The assembled product's better-sidebar wraps the common openPath seam:
+    // read summaries open in the in-app editor, never the Host OS. Runs after
+    // the golden capture and still issues zero model calls.
+    const fileLink = page.locator('[data-variant="read"]').first()
+      .getByRole('button', { name: 'a.txt', exact: true })
     await fileLink.waitFor({ timeout: 10_000 })
     const frame = page.locator('[style*="grid-template-columns"]').first()
     expect(await frame.getAttribute('data-details-collapsed')).toBe('true')
-    const openPath = vi.spyOn(scaffold.ctx.apiProxy.host, 'openPath')
-      .mockImplementation(async (request, _signal) => ({
-        rpcId: request.rpcId,
-        result: { ok: true, value: { opened: true as const } },
-      }))
+    const hostOpened: unknown[] = []
+    const handleOpen = async (route: Route) => {
+      const request = route.request().postDataJSON() as { rpcId: string; payload: unknown }
+      hostOpened.push(request.payload)
+      await route.fulfill({
+        json: {
+          type: 'server-response', rpcId: request.rpcId,
+          result: { ok: true, value: { opened: true } },
+        },
+      })
+    }
+    await page.route('**/api/host.openPath', handleOpen)
     try {
       await fileLink.click()
+      await expect.poll(() => page.locator('[title="a.txt"]').count(), { timeout: 5_000 }).toBe(1)
+      await expect.poll(() => page.getByText('alpha', { exact: true }).count(), { timeout: 5_000 }).toBeGreaterThan(0)
+      expect(hostOpened).toEqual([])
       await expect.poll(() => frame.getAttribute('data-details-collapsed'), { timeout: 5_000 }).toBe('true')
     } finally {
-      openPath.mockRestore()
+      await page.unroute('**/api/host.openPath', handleOpen)
     }
     // Path label survives from the recorded args (a.txt).
     await expect.poll(() => page.getByText('a.txt', { exact: false }).count(), { timeout: 5_000 }).toBeGreaterThan(0)
   })
 
-  it.skipIf(MODE === 'record')('a Host open refusal keeps the reason and retries the same path', async () => {
+  it.skipIf(MODE === 'record')('reopening an intercepted file reuses its sidebar tab without a Host call', async () => {
     onTestFailed(() => saveFailureShot(page, 'web-e2e-seeded-file-open-failure'))
-    const fileLink = page.locator('[data-variant="read"] button').first()
+    const fileLink = page.locator('[data-variant="read"]').first()
+      .getByRole('button', { name: 'a.txt', exact: true })
     await fileLink.waitFor({ timeout: 10_000 })
-    const openPath = vi.spyOn(scaffold.ctx.apiProxy.host, 'openPath')
-      .mockImplementation(async (request, _signal) => ({
-        rpcId: request.rpcId,
-        result: {
-          ok: false as const,
-          error: { code: 'internal', message: 'xdg-open is not available', details: {} },
+    const hostOpened: unknown[] = []
+    const handleOpen = async (route: Route) => {
+      const request = route.request().postDataJSON() as { rpcId: string; payload: unknown }
+      hostOpened.push(request.payload)
+      await route.fulfill({
+        json: {
+          type: 'server-response', rpcId: request.rpcId,
+          result: {
+            ok: false,
+            error: { code: 'internal', message: 'xdg-open is not available', details: {} },
+          },
         },
-      }))
+      })
+    }
+    await page.route('**/api/host.openPath', handleOpen)
     try {
       await fileLink.click()
-      const dialog = page.getByRole('dialog', { name: 'Couldn’t open file' })
-      await dialog.waitFor({ timeout: 5_000 })
-      const snapshot = await captureStableAria(page, '[role="dialog"]', scaffold.workspaceCwd)
-      await compareOrRefreshGolden(FILE_OPEN_FAILURE_EXPECTED, snapshot, MODE)
-      await expect.poll(() => dialog.innerText(), { timeout: 5_000 })
-        .toContain('path open failed: xdg-open is not available')
-      await page.getByRole('button', { name: 'Retry' }).click()
-      await expect.poll(() => openPath.mock.calls.length, { timeout: 5_000 }).toBe(2)
-      expect(openPath.mock.calls[0]![0].payload).toEqual(openPath.mock.calls[1]![0].payload)
-      await page.getByRole('button', { name: 'Cancel' }).click()
-      await expect.poll(() => page.getByRole('dialog', { name: 'Couldn’t open file' }).count(), {
-        timeout: 5_000,
-      }).toBe(0)
+      await expect.poll(() => page.locator('[title="a.txt"]').count(), { timeout: 5_000 }).toBe(1)
+      await expect.poll(() => page.getByText('alpha', { exact: true }).count(), { timeout: 5_000 }).toBeGreaterThan(0)
+      expect(hostOpened).toEqual([])
+      expect(await page.getByRole('dialog', { name: 'Couldn’t open file' }).count()).toBe(0)
     } finally {
-      // Shared page: a leftover mask blocks later cases even when this one fails.
-      if (await page.getByRole('dialog', { name: 'Couldn’t open file' }).count() > 0) {
-        await page.keyboard.press('Escape')
-      }
-      openPath.mockRestore()
+      await page.unroute('**/api/host.openPath', handleOpen)
     }
   })
 

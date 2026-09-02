@@ -108,14 +108,15 @@ const INSTALL_ANCHOR = join(REPO_ROOT, 'apps/cli/package.json')
 /** The deployment's own agent-preset root, shipped beside the app's config. */
 const SHIPPED_PRESET_DIR = join(REPO_ROOT, 'apps/cli/config/agent-presets')
 
-// Keep the shipped default for ordinary runs, but let an isolated candidate
-// test avoid a live sibling runtime that owns the default loopback port.
+// Every scaffold owns an isolated tool-runtime listener. An OS-assigned port
+// lets one scenario keep multiple Hosts alive without colliding with a sibling
+// test or an installed desktop runtime.
 const TOOL_RUNTIME_PORT = (() => {
   const value = process.env.DSH_TEST_TOOL_RUNTIME_PORT
-  if (value === undefined || value === '') return 18643
+  if (value === undefined || value === '') return 0
   const port = Number(value)
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error(`DSH_TEST_TOOL_RUNTIME_PORT must be an integer port; got ${JSON.stringify(value)}`)
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+    throw new Error(`DSH_TEST_TOOL_RUNTIME_PORT must be an integer port from 0 to 65535; got ${JSON.stringify(value)}`)
   }
   return port
 })()

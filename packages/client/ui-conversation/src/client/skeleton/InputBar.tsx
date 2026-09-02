@@ -275,8 +275,13 @@ export function InputBar({
 
   const startWaveform = useCallback((stream: MediaStream): void => {
     releaseWaveform()
-    const AudioContextConstructor = globalThis.AudioContext
-      ?? (globalThis as typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    const nativeAudioContext: unknown = Reflect.get(globalThis, 'AudioContext')
+    const legacyAudioContext: unknown = Reflect.get(globalThis, 'webkitAudioContext')
+    const AudioContextConstructor = typeof nativeAudioContext === 'function'
+      ? nativeAudioContext as typeof AudioContext
+      : typeof legacyAudioContext === 'function'
+        ? legacyAudioContext as typeof AudioContext
+        : undefined
     if (AudioContextConstructor !== undefined) {
       let context: AudioContext | null = null
       let source: MediaStreamAudioSourceNode | null = null
@@ -302,7 +307,9 @@ export function InputBar({
     }
 
     const samples = Array<number>(DICTATION_WAVEFORM_BARS).fill(DICTATION_WAVEFORM_FLOOR)
-    const reducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+    const matchMediaCandidate = Reflect.get(globalThis, 'matchMedia') as unknown
+    const reducedMotion = typeof matchMediaCandidate === 'function'
+      && (matchMediaCandidate as (query: string) => MediaQueryList)('(prefers-reduced-motion: reduce)').matches
     let frame = 0
     let lastPaint = Number.NEGATIVE_INFINITY
     const advance = (timestamp: number): void => {
@@ -597,9 +604,8 @@ export function InputBar({
   // collapsed selection, but honoring direction keeps a future range-preserving
   // path from revealing its anchor instead of its focus.
   const revealSelectionFocus = (el: HTMLTextAreaElement): void => {
-    // selectionStart/End are number|null in lib.dom; the type-aware lint program narrows them.
     const caret = el.selectionDirection === 'backward' ? el.selectionStart : el.selectionEnd
-    revealCaret(caret ?? el.value.length)
+    revealCaret(caret)
   }
 
   // Unlock (mount / session switch) returns focus to the box, and owns the
@@ -666,10 +672,9 @@ export function InputBar({
     return () => { el.removeEventListener('wheel', onWheel) }
   }, [])
 
-  // selectionStart/End are number|null in lib.dom; the type-aware lint program narrows them.
   const selectionOf = (el: HTMLTextAreaElement) => ({
-    start: el.selectionStart ?? 0,
-    end: el.selectionEnd ?? el.selectionStart ?? 0,
+    start: el.selectionStart,
+    end: el.selectionEnd,
   })
 
   // The machine's occurrence math needs the edit's real range, and a controlled
@@ -724,8 +729,9 @@ export function InputBar({
     // Shift+Enter is the native newline UNCONDITIONALLY — decided before the
     // IME guard so a composition-closing Shift+Enter still breaks the line.
     if (e.key === 'Enter' && e.shiftKey) return
-    // keyCode 229 is the legacy IME-composition signal engines emit without isComposing.
-    const composing = composingRef.current || e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229
+    // Some engines expose the legacy 229 IME signal without setting isComposing.
+    const legacyKeyCode = (e.nativeEvent as unknown as { keyCode?: number }).keyCode
+    const composing = composingRef.current || e.nativeEvent.isComposing || legacyKeyCode === 229
     if (!composing && !machineBusy && !locked
       && (e.key === 'Backspace' || e.key === 'Delete')) {
       const selection = selectionOf(e.currentTarget)
@@ -809,8 +815,7 @@ export function InputBar({
     pendingEditRef.current = null
     safariNativeShrinkRef.current = safari && next.length < draft.length
     keyboard.setDraft(next, editRangeOf(pending, draft.length, next.length))
-    // selectionStart is number|null in lib.dom; the type-aware lint program narrows it.
-    keyboard.track(next, e.target.selectionStart ?? next.length)
+    keyboard.track(next, e.target.selectionStart)
   }
 
   const onCopyOrCut = (e: React.ClipboardEvent<HTMLTextAreaElement>, cut: boolean): void => {

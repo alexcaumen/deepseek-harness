@@ -13,6 +13,7 @@
     - button "Agent 预设":
       - img
       - text: Agent 预设
+    - button "侧边卡片"
   - button "打开配置文件"
   - button "关闭":
     - img
@@ -43,3 +44,10 @@
   - button "排队发送":
     - text: 排队发送
     - img
+  - text: 语音计算路由 自动优先检查 R5300，再回退到本机 PRDG。听写使用 Faster Whisper；DOTS 仅用于语音合成。
+  - status: 正在读取计算状态…
+  - group "语音计算路由":
+    - button "自动" [disabled]
+    - button "R5300" [disabled]
+    - button "PRDG" [disabled]
+  - button "检查中…" [disabled]

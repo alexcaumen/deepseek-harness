@@ -13,6 +13,7 @@
     - button "Agent presets":
       - img
       - text: Agent presets
+    - button "Side card"
   - button "Open configuration file"
   - button "Close":
     - img
@@ -43,3 +44,10 @@
   - button "Queue":
     - text: Queue
     - img
+  - text: Compute routing Automatic checks R5300 first, then falls back to this PRDG. Dictation uses Faster Whisper; DOTS remains text-to-speech only.
+  - status: Reading compute status…
+  - group "Compute routing":
+    - button "Automatic" [disabled]
+    - button "R5300" [disabled]
+    - button "PRDG" [disabled]
+  - button "Checking…" [disabled]
