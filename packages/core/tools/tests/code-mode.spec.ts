@@ -146,6 +146,9 @@ describe('mode-aware wire contribution', () => {
     const names = assembly.sections.map(section => section.name)
     const rule = assembly.sections.find(section => section.name === 'tools:code-only')
     expect(rule?.text).toContain(`\`${RUN_CODE_NAME}\` is the only tool you can call directly`)
+    expect(rule?.text).toContain('Use only the exact property names declared by that SDK')
+    expect(rule?.text).toContain('never invent or add provider/server prefixes')
+    expect(rule?.text).toContain('If a tool is absent from the declarations, do not call it')
     // The rule is worthless after the guidance it qualifies.
     expect(names.indexOf('tools:code-only')).toBeLessThan(names.indexOf('tool:echo'))
     expect(names.indexOf('tools:code-only')).toBeLessThan(names.indexOf('tools:sdk'))

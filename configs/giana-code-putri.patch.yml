@@ -11,8 +11,8 @@
         routeRevision: giana-code-acp-native-v1
         launchCommand: 'C:\Program Files\nodejs\node.exe'
         launchArguments: []
-        launchScript: 'N:\worktrees\deepseek-harness\giana-code-putri-20260827\scripts\princess-os\Start-GianaOsPutriAcp.mjs'
-        localWorkspace: 'N:\worktrees\deepseek-harness\giana-code-putri-20260827'
+        launchScript: !!js process.env.DSH_SOURCE_ROOT + '/scripts/princess-os/Start-GianaOsPutriAcp.mjs'
+        localWorkspace: !!js process.env.DSH_SOURCE_ROOT
         remoteWorkspace: /srv/gianaos-data/objects/putri
         remoteToolRuntimeUrl: http://127.0.0.1:18644/mcp/tool-runtime
         permission: allow
@@ -28,7 +28,7 @@
         systemInstruction: Giana Code is only the workbench projection. Princess OS owns this private agent identity, session, memory, tools, and approvals. Do not claim to be one of the Giana Girls and do not write to any GianaOS profile or canonical database.
         pythonCommand: 'N:\PrincessOS\runtime\Scripts\python.exe'
         hermesSource: 'N:\GianaOS\gianaos-agent'
-        workspace: 'N:\worktrees\deepseek-harness\giana-code-putri-20260827'
+        workspace: !!js process.env.DSH_SOURCE_ROOT
         credentialEnv: DEEPSEEK_API_KEY
         permission: allow
         agents:
@@ -68,7 +68,7 @@
         command: 'C:\Program Files\nodejs\node.exe'
         cwd: 'N:\PrincessOS\workbench\ui-test-workspace'
         args:
-          - 'C:\Users\grinv\.dsh-giana-code-putri-production-20260829\profiles\web\node_modules\@playwright\mcp\cli.js'
+          - !!js process.env.DSH_HOME + '/profiles/web/node_modules/@playwright/mcp/cli.js'
           - --isolated
           - --headless
           - --sandbox
@@ -79,7 +79,7 @@
           - --image-responses
           - allow
           - --output-dir
-          - 'N:\worktrees\deepseek-harness\giana-code-putri-20260827\.artifacts\playwright-mcp\output'
+          - !!js process.env.DSH_SOURCE_ROOT + '/.artifacts/playwright-mcp/output'
           - --output-max-size
           - '104857600'
           - --block-service-workers
