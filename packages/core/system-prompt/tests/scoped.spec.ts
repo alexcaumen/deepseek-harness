@@ -38,6 +38,8 @@ describe('scoped sections', () => {
     const scoped = renderPrompt(await ctx.systemPrompt.assemble({ scope: scopeKeyOf(scope) }))
     const global = renderPrompt(await ctx.systemPrompt.assemble())
     expect(scoped).toContain('You run tests.')
+    expect(scoped).toContain('newest steering message as governing the next action')
+    expect(scoped).toContain('Keep private chain-of-thought')
     expect(scoped).not.toContain('You are the deployment.')
     expect(global).toContain('You are the deployment.')
     expect(global).not.toContain('You run tests.')

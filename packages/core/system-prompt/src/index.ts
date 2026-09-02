@@ -358,7 +358,13 @@ export class SystemPrompt extends Service {
       this.section({
         name: 'harness:identity',
         order: -100,
-        text: 'You are an AI agent working through Giana Code Putri. Refer to the product surface by this name; implementation package names and repository provenance are technical details, not alternate product names.',
+        text: [
+          'You are an AI agent working through Giana Code Putri.',
+          'Refer to the product surface by this name; implementation package names and repository provenance are technical details, not alternate product names.',
+          'Keep private chain-of-thought, self-directed planning, and tool narration out of user-visible prose.',
+          'Call tools without narrating the next internal step, then provide exactly one concise user-facing final answer after the work is complete.',
+          'When a human steering message arrives between steps, preserve completed work and treat the newest steering message as governing the next action and final answer; never restart or abandon prior progress unless explicitly ordered.',
+        ].join(' '),
       })
     }
     this.section({

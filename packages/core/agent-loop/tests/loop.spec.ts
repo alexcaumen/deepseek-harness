@@ -9,7 +9,7 @@ import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { MockAdapter, maxTokensResponse, textResponse, toolCallResponse } from './mock-adapter.ts'
 
-const PRODUCT_IDENTITY = 'You are an AI agent working through Giana Code Putri. Refer to the product surface by this name; implementation package names and repository provenance are technical details, not alternate product names.'
+const PRODUCT_IDENTITY = 'You are an AI agent working through Giana Code Putri. Refer to the product surface by this name; implementation package names and repository provenance are technical details, not alternate product names. Keep private chain-of-thought, self-directed planning, and tool narration out of user-visible prose. Call tools without narrating the next internal step, then provide exactly one concise user-facing final answer after the work is complete. When a human steering message arrives between steps, preserve completed work and treat the newest steering message as governing the next action and final answer; never restart or abandon prior progress unless explicitly ordered.'
 
 function driverDone(agent: Agent): Promise<void> {
   return (agent as Agent & { done: Promise<void> }).done
@@ -562,7 +562,8 @@ describe('agent loop', () => {
       parameters: {},
       async execute() {
         // steer while the turn is running (during tool execution)
-        agent.steer(createUserMessage({ content: [{ type: 'text', text: 'change of plans' }], source: { kind: 'user' } }))
+        agent.steer(createUserMessage({ content: [{ type: 'text', text: 'older steering' }], source: { kind: 'user' } }))
+        agent.steer(createUserMessage({ content: [{ type: 'text', text: 'newest steering' }], source: { kind: 'user' } }))
         return [{ type: 'text', text: 'tool done' }]
       },
     }))
@@ -571,7 +572,7 @@ describe('agent loop', () => {
     await waitForIdle(ctx, agent)
 
     const steering = agent.session.events.find(e =>
-      e.type === 'user/message' && JSON.stringify(e.data.content).includes('change of plans'))
+      e.type === 'user/message' && JSON.stringify(e.data.content).includes('newest steering'))
     expect(steering).toBeDefined()
     // The entered batch is appended after the second step opens and before its
     // request derives history.
@@ -583,7 +584,10 @@ describe('agent loop', () => {
     // the second model request saw the steering content
     const secondRequest = adapter.requests[1]
     const flat = JSON.stringify(secondRequest!.messages)
-    expect(flat).toContain('change of plans')
+    expect(flat).toContain('tool done')
+    expect(flat).toContain('older steering')
+    expect(flat).toContain('newest steering')
+    expect(flat.indexOf('older steering')).toBeLessThan(flat.indexOf('newest steering'))
   })
 
   it('starts idle steering synchronously and enters later steering at the next step', async () => {
