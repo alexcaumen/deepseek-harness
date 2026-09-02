@@ -37,6 +37,7 @@ describe('Giana Code Putri runtime binding', () => {
     const gianaOs = entries.find(entry => entry.id === 'llm-gianaos-acp')?.config
     const princessOs = entries.find(entry => entry.id === 'llm-princess-os')?.config
     const playwright = entries.find(entry => entry.id === 'mcp-playwright')?.config
+    const systemPrompt = entries.find(entry => entry.id === 'system-prompt')?.config
     const approval = entries.find(entry => entry.id === 'approval')?.config
     const permission = entries.find(entry => entry.id === 'permission')?.config
     const launchScript = evaluatedString(gianaOs?.launchScript, env)
@@ -58,5 +59,8 @@ describe('Giana Code Putri runtime binding', () => {
       'danger-full-access': { sandbox: 'danger-full-access', approval: 'ask' },
     })
     expect(permission?.reconcileExistingPresets).toEqual(['danger-full-access'])
+    expect(systemPrompt?.persona).toContain('working inside Giana Code Putri')
+    expect(systemPrompt?.persona).toContain('Keep private chain-of-thought')
+    expect(systemPrompt?.persona).toContain('one concise user-facing final answer')
   })
 })
