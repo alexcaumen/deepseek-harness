@@ -62,5 +62,7 @@ describe('Giana Code Putri runtime binding', () => {
     expect(systemPrompt?.persona).toContain('working inside Giana Code Putri')
     expect(systemPrompt?.persona).toContain('Keep private chain-of-thought')
     expect(systemPrompt?.persona).toContain('one concise user-facing final answer')
+    expect(systemPrompt?.persona).toContain('newest steering message as governing the next action')
+    expect(systemPrompt?.persona).toContain('never restart or abandon prior progress unless explicitly ordered')
   })
 })
