@@ -13,6 +13,8 @@ For each exact live Giana Code agent/session, the adapter:
    transcript; and
 5. revokes the capability when the local agent or adapter is disposed.
 
+The adapter accepts only its configured Putri provider/model pair. A prompt dispatch failure removes that exact cached transport before asynchronous disposal, and the next turn restores the durable remote session through a new ACP connection. Turns already waiting on the retired transport re-enter session selection instead of sending another prompt to the closed connection.
+
 Only a non-secret remote ACP session pointer is stored in the local append-only
 session log. GianaOS remains the authority for identity, Soul, memory parity,
 MOA, approvals, provider credentials, and canonical persistence.

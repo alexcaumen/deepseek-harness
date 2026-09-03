@@ -427,6 +427,12 @@ class GianaOsAcpAdapter extends LlmAdapter {
   }
 
   override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
+    if (provider !== this.config.providerId) {
+      return Promise.reject(new LlmError(
+        `Putri ACP is bound to provider "${this.config.providerId}", not "${provider}"`,
+        'WRONG_GIANAOS_ADAPTER',
+      ))
+    }
     if (model !== this.config.modelId) {
       return Promise.reject(new LlmError(`${this.config.providerName} has no participant named "${model}"`, 'UNKNOWN_GIANAOS_PARTICIPANT'))
     }
@@ -442,6 +448,15 @@ class GianaOsAcpAdapter extends LlmAdapter {
   }
 
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+    if (options.provider !== this.config.providerId) {
+      throw new LlmError(
+        `Putri ACP is bound to provider "${this.config.providerId}", not "${options.provider}"`,
+        'WRONG_GIANAOS_ADAPTER',
+      )
+    }
+    if (options.model !== this.config.modelId) {
+      throw new LlmError(`${this.config.providerName} has no participant named "${options.model}"`, 'UNKNOWN_GIANAOS_PARTICIPANT')
+    }
     if (options.purpose === 'session-title') {
       const title = localSessionTitle(options, this.config.modelName)
       yield { type: 'block-start', index: 0, blockType: 'text' }
@@ -450,9 +465,6 @@ class GianaOsAcpAdapter extends LlmAdapter {
       yield { type: 'usage', usage: { inputTokens: 0, outputTokens: 0 } }
       yield { type: 'finish', reason: { kind: 'stop' } }
       return
-    }
-    if (options.model !== this.config.modelId) {
-      throw new LlmError(`${this.config.providerName} has no participant named "${options.model}"`, 'UNKNOWN_GIANAOS_PARTICIPANT')
     }
     if (options.sessionId === undefined) {
       throw new LlmError('Putri requires an exact live Giana Code session', 'MISSING_GIANA_CODE_SESSION')
@@ -465,25 +477,16 @@ class GianaOsAcpAdapter extends LlmAdapter {
     }
 
     const key = String(options.sessionId)
-    let session = this.sessions.get(key)
-    if (session !== undefined && (session.disposed || session.agent !== agent || session.localSession !== localSession)) {
-      await disposeAcpSession(session)
-      this.sessions.delete(key)
-      session = undefined
-    }
-    if (session === undefined) {
-      session = await this.startSession(agent, localSession)
-      this.sessions.set(key, session)
-    }
-
     const prompt = await latestUserPromptContent(options.messages, this.ctx.get('attachments'), options.signal)
     if (prompt.length === 0) throw new LlmError('Putri received no direct human message', 'MISSING_HUMAN_MESSAGE')
 
-    const releaseRemoteTurn = await session.turnBarrier.enter(options.signal)
+    const entered = await this.enterSession(key, agent, localSession, options.signal)
+    const session = entered.session
+    const releaseRemoteTurn = entered.release
     const turn: AcpTurnBuffer = { events: new AcpTurnEventQueue(), seenToolCalls: new Set() }
     session.currentTurn = turn
     const abort = (): void => {
-      void session?.connection.cancel({ sessionId: session.remoteSessionId }).catch(() => {})
+      void session.connection.cancel({ sessionId: session.remoteSessionId }).catch(() => {})
     }
     options.signal?.addEventListener('abort', abort, { once: true })
     if (options.signal?.aborted === true) abort()
@@ -494,11 +497,20 @@ class GianaOsAcpAdapter extends LlmAdapter {
         prompt,
       })
     } catch (error: unknown) {
+      turn.events.close()
+      options.signal?.removeEventListener('abort', abort)
+      if (session.currentTurn === turn) delete session.currentTurn
+      const disposal = this.retireSession(key, session)
       releaseRemoteTurn()
-      throw error
+      await disposal
+      throw this.promptFailure(error, options.signal)
     }
     const promptOutcome = remotePrompt.then(result => ({ ok: true as const, stopReason: result.stopReason }),
-      (error: unknown) => ({ ok: false as const, error })).finally(() => {
+      (error: unknown) => ({
+        ok: false as const,
+        error,
+        disposal: this.retireSession(key, session),
+      })).finally(() => {
       turn.events.close()
       releaseRemoteTurn()
     })
@@ -514,21 +526,14 @@ class GianaOsAcpAdapter extends LlmAdapter {
         // makes the replacement prompt look like a concurrent request, so the
         // canonical runtime queues every later message. Retire only the transport;
         // startSession reloads the same durable remote session on the next turn.
-        await disposeAcpSession(session)
-        if (this.sessions.get(key) === session) this.sessions.delete(key)
+        await this.retireSession(key, session)
       }
     }
 
     const outcome = await promptOutcome
     if (!outcome.ok) {
-      await disposeAcpSession(session)
-      this.sessions.delete(key)
-      const error = outcome.error
-      throw new LlmError(
-        error instanceof Error ? `Putri ACP failed: ${error.message}` : 'Putri ACP failed',
-        options.signal?.aborted === true ? 'ABORTED' : 'GIANAOS_ACP_ERROR',
-        error instanceof Error ? { cause: error } : undefined,
-      )
+      await outcome.disposal
+      throw this.promptFailure(outcome.error, options.signal)
     }
 
     yield { type: 'usage', usage: { inputTokens: 0, outputTokens: 0 } }
@@ -553,6 +558,49 @@ class GianaOsAcpAdapter extends LlmAdapter {
     const sessions = [...this.sessions.values()]
     this.sessions.clear()
     await Promise.allSettled(sessions.map(disposeAcpSession))
+  }
+
+  private async enterSession(
+    key: string,
+    agent: Agent,
+    localSession: Session,
+    signal?: AbortSignal,
+  ): Promise<{ session: AcpSession; release: () => void }> {
+    while (true) {
+      let session = this.sessions.get(key)
+      if (session !== undefined && (session.disposed || session.agent !== agent || session.localSession !== localSession)) {
+        await this.retireSession(key, session)
+        continue
+      }
+      if (session === undefined) {
+        const started = await this.startSession(agent, localSession)
+        const incumbent = this.sessions.get(key)
+        if (incumbent === undefined) {
+          this.sessions.set(key, started)
+          session = started
+        } else {
+          await disposeAcpSession(started)
+          session = incumbent
+        }
+      }
+
+      const release = await session.turnBarrier.enter(signal)
+      if (!session.disposed && this.sessions.get(key) === session) return { session, release }
+      release()
+    }
+  }
+
+  private retireSession(key: string, session: AcpSession): Promise<void> {
+    if (this.sessions.get(key) === session) this.sessions.delete(key)
+    return disposeAcpSession(session)
+  }
+
+  private promptFailure(error: unknown, signal?: AbortSignal): LlmError {
+    return new LlmError(
+      error instanceof Error ? `Putri ACP failed: ${error.message}` : 'Putri ACP failed',
+      signal?.aborted === true ? 'ABORTED' : 'GIANAOS_ACP_ERROR',
+      error instanceof Error ? { cause: error } : undefined,
+    )
   }
 
   private async startSession(agent: Agent, localSession: Session): Promise<AcpSession> {
