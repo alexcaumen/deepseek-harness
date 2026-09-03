@@ -5,8 +5,9 @@ import type { InputActions, InputState } from '../input/contract.ts'
 import {
   parseResponseAnnotationPayload, RESPONSE_ANNOTATION_SOURCE,
   type ResponseAnnotationPayload,
-} from '../input/response-annotation.ts'
+} from '../response-annotation.ts'
 import type { ChatViewSlotProps } from '../contract/slots.ts'
+import { responseAnnotationRange } from './response-annotation-location.ts'
 import css from './ResponseSelectionActions.module.css'
 
 interface SelectionState {
@@ -33,40 +34,6 @@ function renderedOffset(host: HTMLElement, container: Node, offset: number): num
   range.selectNodeContents(host)
   range.setEnd(container, offset)
   return range.toString().length
-}
-
-function rangeAt(host: HTMLElement, startOffset: number, endOffset: number): Range | null {
-  const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT)
-  let cursor = 0
-  let start: { node: Text; offset: number } | undefined
-  let end: { node: Text; offset: number } | undefined
-  for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-    const text = node as Text
-    const next = cursor + text.data.length
-    if (start === undefined && startOffset >= cursor && startOffset <= next) {
-      start = { node: text, offset: startOffset - cursor }
-    }
-    if (endOffset >= cursor && endOffset <= next) {
-      end = { node: text, offset: endOffset - cursor }
-      break
-    }
-    cursor = next
-  }
-  if (start === undefined || end === undefined) return null
-  const range = document.createRange()
-  range.setStart(start.node, start.offset)
-  range.setEnd(end.node, end.offset)
-  return range
-}
-
-function annotationRange(host: HTMLElement, annotation: AnnotationMarker): Range | null {
-  if (annotation.startOffset !== undefined && annotation.endOffset !== undefined) {
-    const anchored = rangeAt(host, annotation.startOffset, annotation.endOffset)
-    if (anchored !== null && anchored.toString().trim() === annotation.text.trim()) return anchored
-  }
-  const fullText = host.textContent
-  const start = fullText.indexOf(annotation.text)
-  return start < 0 ? null : rangeAt(host, start, start + annotation.text.length)
 }
 
 export interface ResponseSelectionActionsProps {
@@ -132,7 +99,7 @@ export function ResponseSelectionActions({
     const measure = (): void => {
       const origin = container.getBoundingClientRect()
       const next = annotations.flatMap((annotation): MarkerLayout[] => {
-        const range = annotationRange(host, annotation)
+        const range = responseAnnotationRange(host, annotation)
         if (range === null || typeof range.getClientRects !== 'function') return []
         const rects = Array.from(range.getClientRects()).filter(rect => rect.width > 0 && rect.height > 0)
         if (rects.length === 0) return []
@@ -186,7 +153,15 @@ export function ResponseSelectionActions({
 
   return (
     <div ref={root} className={css.root}>
-      <div ref={content} className={css.content} onPointerUp={capture} onKeyUp={capture}>{children}</div>
+      <div
+        ref={content}
+        className={css.content}
+        data-response-message-id={messageId}
+        onPointerUp={capture}
+        onKeyUp={capture}
+      >
+        {children}
+      </div>
       {markers.flatMap(marker => marker.highlights.map((highlight, index) => (
         <span
           key={`highlight-${marker.annotation.occurrenceId}-${index}`}

@@ -102,4 +102,44 @@ describe('response selection actions', () => {
       else Object.defineProperty(Range.prototype, 'getClientRects', original)
     }
   })
+
+  it('does not place an anchorless legacy marker on ambiguous duplicate text', () => {
+    const original = Object.getOwnPropertyDescriptor(Range.prototype, 'getClientRects')
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [{ left: 10, top: 20, right: 50, bottom: 40, width: 40, height: 20 }],
+    })
+    try {
+      const inputActions = {
+        setDraft: vi.fn(), addResponseAnnotation: vi.fn(() => true), addImages: vi.fn(),
+        removeImage: vi.fn(), pruneImages: vi.fn(), submit: vi.fn(),
+      } satisfies InputActions
+      const view = render(
+        <ResponseSelectionActions
+          messageId={'assistant-message-1' as MessageId}
+          occurrences={[{
+            occurrenceId: 8,
+            source: 'response-annotation',
+            ref: JSON.stringify({
+              index: 2, messageId: 'assistant-message-1', text: 'repeated passage',
+            }),
+            offset: 0,
+            length: 13,
+            label: 'Annotation 2',
+            clipboardText: 'Annotation 2',
+          }]}
+          inputActions={inputActions}
+          t={key => key}
+        >
+          <p>repeated passage then repeated passage</p>
+        </ResponseSelectionActions>,
+      )
+
+      expect(view.container.querySelector('[data-response-annotation-marker="2"]')).toBeNull()
+      expect(view.container.querySelector('[aria-hidden="true"]')).toBeNull()
+    } finally {
+      if (original === undefined) delete (Range.prototype as { getClientRects?: unknown }).getClientRects
+      else Object.defineProperty(Range.prototype, 'getClientRects', original)
+    }
+  })
 })

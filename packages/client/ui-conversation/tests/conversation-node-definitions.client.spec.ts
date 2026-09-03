@@ -579,7 +579,7 @@ describe('built-in conversation node Definitions', () => {
   })
 
   it('projects direct-prompt display text without changing the model-facing event', () => {
-    const modelText = '<response-annotations>\n[{"index":1,"text":"quoted"}]\n</response-annotations>\ncompare it'
+    const modelText = '<response-annotations>\n[{"index":1,"sourceMessageId":"assistant-1","text":"quoted","sourceStart":7,"sourceEnd":13}]\n</response-annotations> compare it'
     const message = {
       ...textMessage('annotated-user', modelText),
       source: { kind: 'user' as const, displayText: '@Annotation 1 compare it' },
@@ -588,8 +588,20 @@ describe('built-in conversation node Definitions', () => {
       at(1, 'user/message', message, { surfaceOp: 'append' }),
     ])
 
-    const projected = node(snapshot(value), 'user')?.data as { content?: readonly { type: string; text?: string }[] }
+    const projected = node(snapshot(value), 'user')?.data as {
+      content?: readonly { type: string; text?: string }[]
+      responseAnnotations?: readonly unknown[]
+    }
     expect(projected.content).toEqual([{ type: 'text', text: '@Annotation 1 compare it' }])
+    expect(projected.responseAnnotations).toEqual([{
+      index: 1,
+      messageId: 'assistant-1',
+      text: 'quoted',
+      startOffset: 7,
+      endOffset: 13,
+      displayStart: 0,
+      displayEnd: 13,
+    }])
     expect(message.content).toEqual([{ type: 'text', text: modelText }])
   })
 

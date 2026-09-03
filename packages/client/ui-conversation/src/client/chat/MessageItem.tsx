@@ -10,10 +10,12 @@ import type {
 } from '@deepseek-ai/dsh-client-runtime/client'
 import { JsonBlock, MessageText, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ChatNodeOwnerProps, ChatNodeViewProps, ChatViewSlotProps } from '../contract/slots.ts'
+import type { ResponseAnnotationPresentation } from '../response-annotation.ts'
 import { ReferenceIcon } from '../reference/ReferenceIcon.tsx'
 import { CompactionItem } from './CompactionItem.tsx'
 import { ContextInjectionRow } from './ContextInjectionRow.tsx'
 import { MessageIconActions } from './MessageIconActions.tsx'
+import { navigateToResponseAnnotation } from './response-annotation-location.ts'
 import css from './MessageItem.module.css'
 
 type UserImage = Extract<UserMessageNode['content'][number], { type: 'image' }>
@@ -147,14 +149,26 @@ function TurnMaxTokensItem({ t }: {
 /**
  * Display projection of reference forms in a user bubble (free geometry — no
  * textarea alignment constraint here); everything else stays plain text. The
- * logged model text remains the single truth; this is presentation only.
- * Plain-text `/name` / `@name` word-boundary tokens decorate (the sent text
- * IS the reference — the bubble uses the same plainest token
- * scan as the composer, minus the lexicon: sent tokens were validated at
- * compose time, so shape alone decorates).
+ * logged model text remains the single truth; response-annotation envelopes
+ * carry exact chip ranges, while label scanning remains a visual fallback for
+ * older display-only sessions. Plain-text `/name` / `@name` word-boundary
+ * tokens decorate (the sent text IS the reference — the bubble uses the same
+ * plainest token scan as the composer, minus the lexicon: sent tokens were
+ * validated at compose time, so shape alone decorates).
  */
-function projectUserText(text: string, sessionLabels: readonly string[]): ReactNode {
-  const ranges: { start: number; end: number; label: string; kind: 'session' | 'annotation' | 'plain' }[] = []
+function projectUserText(
+  text: string,
+  sessionLabels: readonly string[],
+  responseAnnotations: readonly ResponseAnnotationPresentation[],
+  t: ChatViewSlotProps['t'],
+): ReactNode {
+  const ranges: {
+    start: number
+    end: number
+    label: string
+    kind: 'session' | 'annotation' | 'plain'
+    annotation?: ResponseAnnotationPresentation
+  }[] = []
   for (const rawLabel of [...new Set(sessionLabels)].sort((a, b) => b.length - a.length)) {
     const label = `@${rawLabel}`
     let start = text.indexOf(label)
@@ -162,6 +176,17 @@ function projectUserText(text: string, sessionLabels: readonly string[]): ReactN
       ranges.push({ start, end: start + label.length, label, kind: 'session' })
       start = text.indexOf(label, start + label.length)
     }
+  }
+  for (const annotation of responseAnnotations) {
+    const label = `@Annotation ${annotation.index}`
+    if (text.slice(annotation.displayStart, annotation.displayEnd) !== label) continue
+    ranges.push({
+      start: annotation.displayStart,
+      end: annotation.displayEnd,
+      label,
+      kind: 'annotation',
+      annotation,
+    })
   }
   const annotation = /(^|\s)(@Annotation\s+[1-9]\d*)\b/gu
   let annotationMatch: RegExpExecArray | null
@@ -181,13 +206,19 @@ function projectUserText(text: string, sessionLabels: readonly string[]): ReactN
     if (label.length <= 1) continue
     ranges.push({ start: tokenStart, end: tokenStart + label.length, label, kind: 'plain' })
   }
-  const priority = { session: 0, annotation: 1, plain: 2 } as const
-  ranges.sort((a, b) => a.start - b.start || priority[a.kind] - priority[b.kind] || b.end - a.end)
+  const priority = (range: typeof ranges[number]): number => range.kind === 'session'
+    ? 0
+    : range.kind === 'annotation' && range.annotation !== undefined
+      ? 1
+      : range.kind === 'annotation'
+        ? 2
+        : 3
+  ranges.sort((a, b) => a.start - b.start || priority(a) - priority(b) || b.end - a.end)
   const parts: ReactNode[] = []
   let cursor = 0
   for (const range of ranges) {
     if (range.start < cursor) continue
-    const { start: tokenStart, end, label, kind } = range
+    const { start: tokenStart, end, label, kind, annotation: annotationData } = range
     if (tokenStart > cursor) parts.push(<MessageText key={cursor} text={text.slice(cursor, tokenStart)} />)
     const referenceKind = kind === 'session'
       ? 'session'
@@ -201,20 +232,38 @@ function projectUserText(text: string, sessionLabels: readonly string[]): ReactN
         : referenceKind === 'session'
           ? label.slice(1)
           : label.slice(1).replace(/^"|"$/gu, '').split(/[\\/]/u).filter(Boolean).at(-1) ?? label.slice(1)
-    parts.push(
-      <span
-        key={tokenStart}
-        className={css.refChip}
-        data-ref-chip={kind === 'annotation' ? 'annotation' : referenceKind ?? 'skill'}
-        aria-label={kind === 'annotation' ? label.slice(1) : undefined}
-        title={label}
-      >
-        {referenceKind !== undefined && (
-          <ReferenceIcon kind={referenceKind} size={16} className={css.refIcon} />
-        )}
-        {displayLabel}
-      </span>,
-    )
+    parts.push(annotationData === undefined
+      ? (
+        <span
+          key={tokenStart}
+          className={css.refChip}
+          data-ref-chip={kind === 'annotation' ? 'annotation' : referenceKind ?? 'skill'}
+          aria-label={kind === 'annotation' ? label.slice(1) : undefined}
+          title={label}
+        >
+          {referenceKind !== undefined && (
+            <ReferenceIcon kind={referenceKind} size={16} className={css.refIcon} />
+          )}
+          {displayLabel}
+        </span>
+      )
+      : (
+        <button
+          key={tokenStart}
+          type="button"
+          className={`${css.refChip} ${css.annotationButton}`}
+          data-ref-chip="annotation"
+          data-response-annotation-index={annotationData.index}
+          data-response-annotation-message-id={annotationData.messageId}
+          data-response-annotation-start={annotationData.startOffset}
+          data-response-annotation-end={annotationData.endOffset}
+          aria-label={t('annotation.item', { index: annotationData.index, text: annotationData.text })}
+          title={annotationData.text}
+          onClick={(event) => { navigateToResponseAnnotation(event.currentTarget, annotationData) }}
+        >
+          {displayLabel}
+        </button>
+      ))
     cursor = end
   }
   if (parts.length === 0) return <MessageText text={text} />
@@ -224,7 +273,7 @@ function projectUserText(text: string, sessionLabels: readonly string[]): ReactN
 
 /** Right-aligned bubble shared by user and steering rows. */
 function UserStyleBubble({
-  content, renderMessageImages, actions, pending = false, referenceLabels = [], t,
+  content, renderMessageImages, actions, pending = false, referenceLabels = [], responseAnnotations = [], t,
 }: {
   content: readonly unknown[]
   renderMessageImages: ChatNodeOwnerProps['renderMessageImages']
@@ -234,6 +283,8 @@ function UserStyleBubble({
   pending?: boolean
   /** Exact session mention labels associated by the adjacent recall node. */
   referenceLabels?: readonly string[]
+  /** Submitted response annotations with exact projected display ranges. */
+  responseAnnotations?: readonly ResponseAnnotationPresentation[]
   t: ChatViewSlotProps['t']
 }): ReactNode {
   const { text, images, rest } = contentParts(content)
@@ -244,7 +295,7 @@ function UserStyleBubble({
       <div className={css.userStack}>
         {renderMessageImages({ images, align: 'end' })}
         {showBubble && <div className={css.bubble}>
-          {projectUserText(text, referenceLabels)}
+          {projectUserText(text, referenceLabels, responseAnnotations, t)}
           {rest.map((block, i) => <JsonBlock key={i} label={t('message.extraBlock')} payload={block} truncatedLabel={truncated} />)}
         </div>}
         {referenceLabels.length > 0 && (
@@ -297,6 +348,7 @@ export const UserMessageNodeView = memo(function UserMessageNodeView({
       content={data.content}
       renderMessageImages={renderMessageImages}
       {...data.referenceLabels === undefined ? {} : { referenceLabels: data.referenceLabels }}
+      {...data.responseAnnotations === undefined ? {} : { responseAnnotations: data.responseAnnotations }}
       t={t}
       actions={text => (
         <MessageIconActions

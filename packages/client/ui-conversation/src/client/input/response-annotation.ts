@@ -1,43 +1,12 @@
-import type { MessageId } from '@deepseek-ai/dsh-client-connection/client'
 import type {
   InputTriggerSource, ReferenceInsert,
 } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
+import {
+  parseResponseAnnotationPayload, RESPONSE_ANNOTATION_SOURCE, type ResponseAnnotationPayload,
+} from '../response-annotation.ts'
 
-/** Stable codec owner used by response-selection references. */
-export const RESPONSE_ANNOTATION_SOURCE = 'response-annotation'
-
-export interface ResponseAnnotationPayload {
-  readonly index: number
-  readonly messageId: MessageId
-  readonly text: string
-  readonly startOffset?: number
-  readonly endOffset?: number
-}
-
-/** Parse one persisted response-annotation reference. */
-export function parseResponseAnnotationPayload(ref: string): ResponseAnnotationPayload {
-  const value: unknown = JSON.parse(ref)
-  if (typeof value !== 'object' || value === null) throw new Error('Response annotation payload is invalid')
-  const record = value as Record<string, unknown>
-  if (!Number.isSafeInteger(record['index']) || Number(record['index']) < 1
-    || typeof record['messageId'] !== 'string' || record['messageId'].length === 0
-    || typeof record['text'] !== 'string' || record['text'].trim().length === 0) {
-    throw new Error('Response annotation payload is invalid')
-  }
-  const startOffset = record['startOffset']
-  const endOffset = record['endOffset']
-  const hasAnchor = startOffset !== undefined || endOffset !== undefined
-  if (hasAnchor && (!Number.isSafeInteger(startOffset) || !Number.isSafeInteger(endOffset)
-    || Number(startOffset) < 0 || Number(endOffset) <= Number(startOffset))) {
-    throw new Error('Response annotation payload is invalid')
-  }
-  return {
-    index: Number(record['index']),
-    messageId: record['messageId'] as MessageId,
-    text: record['text'],
-    ...hasAnchor ? { startOffset: Number(startOffset), endOffset: Number(endOffset) } : {},
-  }
-}
+export { parseResponseAnnotationPayload, RESPONSE_ANNOTATION_SOURCE }
+export type { ResponseAnnotationPayload }
 
 /** Build the structured composer reference for one selected response passage. */
 export function responseAnnotationReference(payload: ResponseAnnotationPayload): ReferenceInsert {

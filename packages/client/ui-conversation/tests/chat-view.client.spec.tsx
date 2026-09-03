@@ -15,7 +15,7 @@ import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-test-runtime'
 import {
   createSnapshotStore, EMPTY_CONVERSATION_VIEWS, PendingWait,
 } from '@deepseek-ai/dsh-client-runtime/client'
-import { RpcId } from '@deepseek-ai/dsh-client-connection/client'
+import { RpcId, type MessageId } from '@deepseek-ai/dsh-client-connection/client'
 import type {
   ChatNode, ChatNodeOwnerProps, ChatNodeViewProps, ChatViewSlotProps, SelectionTarget, UseChatNodeTurnData,
 } from '@deepseek-ai/dsh-client-ui-conversation/client'
@@ -32,6 +32,7 @@ import {
 } from '../src/client/chat/MessageItem.tsx'
 import { TurnTailNodeView } from '../src/client/chat/TurnTailNodeView.tsx'
 import { formatRunDuration } from '../src/client/chat/message-chrome.ts'
+import type { ResponseAnnotationPresentation } from '../src/client/response-annotation.ts'
 import { chatSnapshotFixture } from './chat-snapshot-fixture.client.ts'
 
 afterEach(() => {
@@ -92,8 +93,9 @@ const user = (seq: number, text: string): UserMessageNode => ({
   content: [{ type: 'text', text }] as never,
   source: null,
 })
-const assistant = (seq: number, text: string, turn = 1): AssistantMessageNode => ({
+const assistant = (seq: number, text: string, turn = 1, messageId?: MessageId): AssistantMessageNode => ({
   kind: 'assistant', seq, time: seq * 1_000, turn, step: 1, blocks: [{ kind: 'text', text }],
+  ...(messageId === undefined ? {} : { messageId }),
 })
 const retry = (seq: number): ModelRetryNode => ({
   kind: 'model-retry', retryId: 'chat-view-retry' as ModelRetryNode['retryId'],
@@ -641,6 +643,42 @@ describe('ChatView', () => {
     expect(chips[0]?.getAttribute('aria-label')).toBe('Annotation 12')
     expect(view.getByText('compare this')).toBeTruthy()
     expect(view.queryByText('response-annotations')).toBeNull()
+  })
+
+  it('keeps submitted annotations structured and navigates duplicate source text by exact offsets', () => {
+    const messageId = 'assistant-duplicate' as MessageId
+    const responseAnnotations: readonly ResponseAnnotationPresentation[] = [{
+      index: 4,
+      messageId,
+      text: 'repeat',
+      startOffset: 14,
+      endOffset: 20,
+      displayStart: 0,
+      displayEnd: 13,
+    }]
+    const annotatedUser = {
+      ...user(2, '@Annotation 4 compare this'),
+      responseAnnotations,
+    }
+    const h = makeHarness({
+      nodes: [assistant(1, 'repeat target repeat', 1, messageId), annotatedUser],
+    })
+    const view = render(<h.ChatView {...h.props} />)
+
+    const chip = view.getByRole('button', { name: '批注 4：repeat' })
+    expect(chip.textContent).toBe('4')
+    expect(chip.getAttribute('title')).toBe('repeat')
+    expect(chip.getAttribute('data-response-annotation-message-id')).toBe(messageId)
+    expect(chip.getAttribute('data-response-annotation-start')).toBe('14')
+    expect(chip.getAttribute('data-response-annotation-end')).toBe('20')
+    expect(view.container.querySelector('[data-response-message-id="assistant-duplicate"]')).toBeTruthy()
+
+    fireEvent.click(chip)
+
+    const selection = window.getSelection()
+    expect(selection?.toString()).toBe('repeat')
+    expect(selection?.anchorOffset).toBe(14)
+    expect(selection?.focusOffset).toBe(20)
   })
 
   it('withholds assistant IconActions while the turn is still running', () => {

@@ -7,16 +7,23 @@ import {
   userMessageDisplayContent,
 } from '@deepseek-ai/dsh-client-runtime/client'
 import type { InboxState } from './inbox.ts'
+import {
+  responseAnnotationPresentations, type ResponseAnnotationPresentation,
+} from '../response-annotation.ts'
 import { chatNode } from './common.ts'
 
 interface ReferencedUserMessageNode extends UserMessageNode {
   /** Labels cited by the immediately following session-reference context. */
   readonly referenceLabels?: readonly string[]
+  /** Structured response annotations reconstructed from the durable model text. */
+  readonly responseAnnotations?: readonly ResponseAnnotationPresentation[]
 }
 
 interface ReferencedSteeringMessageNode extends SteeringMessageNode {
   /** Labels cited by the immediately following session-reference context. */
   readonly referenceLabels?: readonly string[]
+  /** Structured response annotations reconstructed from the durable model text. */
+  readonly responseAnnotations?: readonly ResponseAnnotationPresentation[]
 }
 
 type MessageNode = ReferencedUserMessageNode | ReferencedSteeringMessageNode | ContextMessageNode
@@ -63,6 +70,7 @@ export const messageDefinition: ConversationNodeDefinition<MessageNode> = {
     }
     const claimed = reader.previous<InboxState>('inbox-next-step')?.state.claimed.has(String(event.data.id)) === true
     const content = userMessageDisplayContent(event.data.content, event.data.source)
+    const responseAnnotations = responseAnnotationPresentations(event.data.content, content)
     return claimed
       ? {
         kind: 'steering',
@@ -71,6 +79,7 @@ export const messageDefinition: ConversationNodeDefinition<MessageNode> = {
         time: event.time,
         content,
         source: event.data.source,
+        ...responseAnnotations.length === 0 ? {} : { responseAnnotations },
       }
       : {
         kind: 'user',
@@ -78,6 +87,7 @@ export const messageDefinition: ConversationNodeDefinition<MessageNode> = {
         time: event.time,
         content,
         source: event.data.source,
+        ...responseAnnotations.length === 0 ? {} : { responseAnnotations },
       }
   },
   update: context => context.state,

@@ -8,6 +8,7 @@ import { SessionInputShell } from '../src/client/input/facade.ts'
 import {
   RESPONSE_ANNOTATION_SOURCE, responseAnnotationSource,
 } from '../src/client/input/response-annotation.ts'
+import { responseAnnotationPresentations } from '../src/client/response-annotation.ts'
 
 const commandImages = {
   serialize: () => Promise.resolve([]),
@@ -16,6 +17,46 @@ const commandImages = {
 }
 
 describe('response annotations', () => {
+  it('derives exact structured chip placement from durable envelopes rather than duplicate labels', () => {
+    const body = JSON.stringify([{
+      index: 1,
+      sourceMessageId: 'assistant-1',
+      text: 'second repeated passage',
+      sourceStart: 21,
+      sourceEnd: 44,
+    }])
+    const modelText = `literal @Annotation 1 then <response-annotations>\n${body}\n</response-annotations> finish`
+    const displayText = 'literal @Annotation 1 then @Annotation 1 finish'
+
+    const annotations = responseAnnotationPresentations(
+      [{ type: 'text', text: modelText }],
+      [{ type: 'text', text: displayText }],
+    )
+
+    const displayStart = displayText.lastIndexOf('@Annotation 1')
+    expect(annotations).toEqual([{
+      index: 1,
+      messageId: 'assistant-1',
+      text: 'second repeated passage',
+      startOffset: 21,
+      endOffset: 44,
+      displayStart,
+      displayEnd: displayStart + '@Annotation 1'.length,
+    }])
+  })
+
+  it('does not attach structured annotations when durable and display projections diverge', () => {
+    const body = JSON.stringify([{
+      index: 2,
+      sourceMessageId: 'assistant-2',
+      text: 'quoted',
+    }])
+    expect(responseAnnotationPresentations(
+      [{ type: 'text', text: `<response-annotations>\n${body}\n</response-annotations>` }],
+      [{ type: 'text', text: '@Annotation 2 changed' }],
+    )).toEqual([])
+  })
+
   it('numbers selected passages and serializes them as model-facing response annotations', async () => {
     const source = responseAnnotationSource()
     const serializeReference = vi.fn((name: string, ref: string, signal: AbortSignal) => {
