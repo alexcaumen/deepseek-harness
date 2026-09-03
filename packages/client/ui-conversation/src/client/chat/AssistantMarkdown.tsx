@@ -45,6 +45,15 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
   // A closing assistant message has no tool call, so its final answer is never
   // reclassified or hidden by this compatibility boundary.
   const firstToolCall = blocks.findIndex(block => block.kind === 'tool-call')
+  const privatePrelude = firstToolCall < 0
+    ? []
+    : blocks.slice(0, firstToolCall).filter((block): block is Extract<AssistantBlock, { kind: 'text' | 'reasoning' }> =>
+      block.kind === 'text' || block.kind === 'reasoning')
+  const privatePreludeText = privatePrelude.map(block => block.text).filter(Boolean).join('\n\n')
+  const privatePreludeStart = firstToolCall < 0
+    ? -1
+    : blocks.findIndex((block, index) =>
+      index < firstToolCall && (block.kind === 'text' || block.kind === 'reasoning'))
   // Tool-call heads render as tool rows in the chat view's grouping pass, so
   // a node that is only those heads (or empty) would paint an empty root
   // between tool groups — skip the shell unless something visible remains.
@@ -59,7 +68,9 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
     switch (block.kind) {
       case 'text':
         if (firstToolCall >= 0 && i < firstToolCall) {
-          rendered.push(<ReasoningRow key={i} text={block.text} running={false} t={t} />)
+          if (i === privatePreludeStart && privatePreludeText !== '') {
+            rendered.push(<ReasoningRow key={i} text={privatePreludeText} running={false} t={t} />)
+          }
         } else {
           rendered.push(
             <div key={i} data-assistant-block-kind="text">
@@ -74,7 +85,13 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
         }
         break
       case 'reasoning':
-        rendered.push(<ReasoningRow key={i} text={block.text} running={streaming && i === last} t={t} />)
+        if (firstToolCall >= 0 && i < firstToolCall) {
+          if (i === privatePreludeStart && privatePreludeText !== '') {
+            rendered.push(<ReasoningRow key={i} text={privatePreludeText} running={false} t={t} />)
+          }
+        } else {
+          rendered.push(<ReasoningRow key={i} text={block.text} running={streaming && i === last} t={t} />)
+        }
         break
       case 'image': {
         // Consecutive image blocks share one gallery so several images tile

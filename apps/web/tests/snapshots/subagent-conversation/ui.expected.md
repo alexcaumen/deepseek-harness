@@ -17,14 +17,15 @@
 - text: Explain event sourcing in one sentence. {{clock}}
 - button "Copy":
   - img
-- button "Context injection @deepseek-ai/dsh-system-prompt":
+- button "Context injection Giana Code Putri":
   - img
   - img
-  - text: Context injection @deepseek-ai/dsh-system-prompt
-- button "Think The user is asking for a one-sentence description of event sourcing. This is a straightforward knowledge question that doesn't require any skill loading or tool calls.":
+  - text: Context injection Giana Code Putri
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: Think The user is asking for a one-sentence description of event sourcing. This is a straightforward knowledge question that doesn't require any skill loading or tool calls.
+  - text: Thinking
 - paragraph: Event sourcing is a pattern where all changes to an application's state are stored as an immutable, append-only sequence of events, rather than persisting only the current state, enabling full auditability, temporal queries, and event-driven architectures.
 - button "Copy":
   - img
@@ -37,10 +38,11 @@
 - text: {{clock}} Ran for {{duration}} TTFT {{duration}} {{throughput}} tok/s Now give the same explanation to a human reader. {{clock}}
 - button "Copy":
   - img
-- button "Think The user is asking for a one-sentence description of event sourcing. This is a straightforward knowledge question that doesn't require any skill loading or tool calls.":
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: Think The user is asking for a one-sentence description of event sourcing. This is a straightforward knowledge question that doesn't require any skill loading or tool calls.
+  - text: Thinking
 - paragraph: Event sourcing is a pattern where all changes to an application's state are stored as an immutable, append-only sequence of events, rather than persisting only the current state, enabling full auditability, temporal queries, and event-driven architectures.
 - button "Copy":
   - img
@@ -56,5 +58,7 @@
   - img
 - 'button "Access mode, current: Custom"': Custom
 - button "6% of context used"
+- button "Start automatic-language dictation":
+  - img
 - button "Send message" [disabled]
 - text: 2 turns · 2 steps LLM {{duration}} TTFT avg {{duration}} · {{throughput}} tok/s Cache hit 99% Input 15.6K tok · Output 158 tok

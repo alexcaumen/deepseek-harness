@@ -22,53 +22,60 @@
   - img
   - img
   - text: Context injection Giana Code Putri
-- 'button "Think The user''s goal is: \"做两个turn，每个turn输出随机一个包的文件结构。注意你做完一个turn之后，直接输出内容，停止，我们的系统会帮你再开一个turn，你看着做一个类似的\" — which translates to: \"Do two turns, each turn output the file structure of a random package. Note that after you finish one turn, directly output the content and stop; our system will help you open another turn, and you just do something similar.\""':
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: "Think The user's goal is: \"做两个turn，每个turn输出随机一个包的文件结构。注意你做完一个turn之后，直接输出内容，停止，我们的系统会帮你再开一个turn，你看着做一个类似的\" — which translates to: \"Do two turns, each turn output the file structure of a random package. Note that after you finish one turn, directly output the content and stop; our system will help you open another turn, and you just do something similar.\""
-- button "Bash Show working directory and its contents":
+  - text: Thinking
+- button "Pwsh Show working directory and its contents":
   - img
   - img
-  - text: Bash Show working directory and its contents
+  - text: Pwsh Show working directory and its contents
 - 'button "Tool call get_goal · {}"':
   - img
   - img
   - text: "Tool call get_goal · {}"
-- 'button "Think There''s a `packages` directory. Let me look inside to see what packages are available."':
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: "Think There's a `packages` directory. Let me look inside to see what packages are available."
-- button "Bash List packages directory contents":
+  - text: Thinking
+- button "Pwsh List packages directory contents":
   - img
   - img
-  - text: Bash List packages directory contents
-- button "Think There are 4 packages:":
+  - text: Pwsh List packages directory contents
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: "Think There are 4 packages:"
-- button "Failed Bash Randomly pick one package directory":
-  - img
-  - text: Failed Bash Randomly pick one package directory
-- 'button "Think shuf is not available on macOS. I''ll use a different approach for random selection. Let me use $RANDOM in bash or use `sort -R` or Python."':
+  - text: Thinking
+- button "Pwsh Randomly pick one package directory":
   - img
   - img
-  - text: "Think shuf is not available on macOS. I'll use a different approach for random selection. Let me use $RANDOM in bash or use `sort -R` or Python."
-- button "Bash Randomly select one package with Python":
+  - text: Pwsh Randomly pick one package directory
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: Bash Randomly select one package with Python
-- 'button "Think The random pick for turn 1 is `packages/context/session-reference`. Now I''ll output its file structure. Let me get the file tree."':
+  - text: Thinking
+- button "Pwsh Randomly select one package with Python":
   - img
   - img
-  - text: "Think The random pick for turn 1 is `packages/context/session-reference`. Now I'll output its file structure. Let me get the file tree."
-- button "Bash List all files in session-reference package":
+  - text: Pwsh Randomly select one package with Python
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: Bash List all files in session-reference package
-- 'button "Think Turn 1 is done. Per the objective: \"你做完一个turn之后，直接输出内容，停止\" — after finishing a turn, directly output the content and stop. The system will open another turn."':
+  - text: Thinking
+- button "Pwsh List all files in session-reference package":
   - img
   - img
-  - text: "Think Turn 1 is done. Per the objective: \"你做完一个turn之后，直接输出内容，停止\" — after finishing a turn, directly output the content and stop. The system will open another turn."
+  - text: Pwsh List all files in session-reference package
+- status: Thinking Completed
+- button "Thinking":
+  - img
+  - img
+  - text: Thinking
 - paragraph:
   - strong: Turn 1 / 2
   - text: — 随机选中的包：
@@ -92,50 +99,47 @@
   - img
   - img
   - text: Context injection goal
-- 'button "Think This is turn 2 of 2. I need to randomly pick another package and output its file structure. In the first turn I picked `packages/context/session-reference`. Let me pick a different one randomly this time."':
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: "Think This is turn 2 of 2. I need to randomly pick another package and output its file structure. In the first turn I picked `packages/context/session-reference`. Let me pick a different one randomly this time."
-- button "Bash Randomly select another package with Python":
+  - text: Thinking
+- button "Pwsh Randomly select another package with Python":
   - img
   - img
-  - text: Bash Randomly select another package with Python
-- 'button "Think The random pick returned the same package as turn 1. Since turn 1 already covered `session-reference`, it would be better to pick a different one for variety. Let me re-roll, excluding the already-covered package."':
+  - text: Pwsh Randomly select another package with Python
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: "Think The random pick returned the same package as turn 1. Since turn 1 already covered `session-reference`, it would be better to pick a different one for variety. Let me re-roll, excluding the already-covered package."
-- button "Bash Re-roll excluding the package from turn 1":
+  - text: Thinking
+- button "Pwsh Re-roll excluding the package from turn 1":
   - img
   - img
-  - text: Bash Re-roll excluding the package from turn 1
-- button "Bash List all files in token-meter package":
+  - text: Pwsh Re-roll excluding the package from turn 1
+- button "Pwsh List all files in token-meter package":
   - img
   - img
-  - text: Bash List all files in token-meter package
-- 'button "Think This is turn 2 of 2. I''ve output the file structure for `packages/llm/token-meter`. Both turns are done. I should output the content, stop, and then mark the goal as complete since both turns are finished."':
+  - text: Pwsh List all files in token-meter package
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: "Think This is turn 2 of 2. I've output the file structure for `packages/llm/token-meter`. Both turns are done. I should output the content, stop, and then mark the goal as complete since both turns are finished."
-- paragraph:
-  - strong: Turn 2 / 2
-  - text: — 随机选中的包：
-  - code: packages/llm/token-meter
-  - text: 📦
-- button "Copy"
-- code: token-meter ├── README.md ├── package.json ├── src │ └── index.ts └── tests └── token-meter.spec.ts
-- button "Copy"
-- code: "token-meter/ ├── README.md # 包说明文档 ├── package.json # 包元数据与依赖声明 ├── src/ │ └── index.ts # 入口，导出公共 API（token 计量逻辑） └── tests/ └── token-meter.spec.ts # 单元测试"
-- paragraph:
-  - text: 两个 turn 都完成了（turn 1：
-  - code: session-reference
-  - text: ，turn 2：
-  - code: token-meter
-  - text: ）。这一轮到此结束。
+  - text: Thinking
+- status: Thinking Completed
+- button "Thinking":
+  - img
+  - img
+  - text: Thinking
 - 'button "Tool call get_goal · {}"':
   - img
   - img
   - text: "Tool call get_goal · {}"
-- paragraph: 两个 turn 均已完成，目标达成，标记 goal 为完成。
+- status: Thinking Completed
+- button "Thinking":
+  - img
+  - img
+  - text: Thinking
 - button "Tool call update_goal · goal-{{uuid}}":
   - img
   - img
@@ -210,5 +214,7 @@
   - text: DeepSeek-V4-Flash
   - img
 - button "9% of context used"
+- button "Start automatic-language dictation":
+  - img
 - button "Send message" [disabled]
 - text: 2 turns · 12 steps LLM {{duration}} · Tool call {{duration}} TTFT avg {{duration}} · {{throughput}} tok/s Cache hit 91% Input 113K tok · Output 2.4K tok

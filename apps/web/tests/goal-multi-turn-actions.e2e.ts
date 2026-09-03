@@ -1,7 +1,8 @@
 // Keyless replay of a real two-round Goal run. Each autonomous round ends as
 // its own turn, so the first answer must keep its IconActions when Goal opens
 // round two and the final answer must own a second, distinct action row.
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Browser, Page } from 'playwright'
@@ -19,7 +20,10 @@ import { connectFreshWorkspace, newEnglishPage, saveFailureShot } from './suppor
 const SNAPSHOT_DIR = fileURLToPath(new URL('./snapshots/goal-multi-turn-actions', import.meta.url))
 const FIXTURE = join(SNAPSHOT_DIR, 'session.jsonl')
 const OVERRIDE = join(SNAPSHOT_DIR, 'replay.override.json')
-const UI_EXPECTED = join(SNAPSHOT_DIR, 'ui.expected.md')
+const UI_EXPECTED = join(
+  SNAPSHOT_DIR,
+  process.platform === 'win32' ? 'ui.windows.expected.md' : 'ui.expected.md',
+)
 const MODE = webSnapshotMode()
 
 const PROMPT = '做两个turn，每个turn输出随机一个包的文件结构。注意你做完一个turn之后，直接输出内容，停止，我们的系统会帮你再开一个turn，你看着做一个类似的'
@@ -44,6 +48,62 @@ const PACKAGE_FILES: Readonly<Record<string, string>> = {
   'packages/skill/skill-filesystem/src/index.ts': 'export {}\n',
   'packages/skill/skill-filesystem/src/invariant.ts': 'export {}\n',
   'packages/skill/skill-filesystem/tests/skill-filesystem.spec.ts': 'export {}\n',
+}
+
+/** A successful Windows-native equivalent for each recorded POSIX shell step. */
+function windowsCommand(description: string): string {
+  if (description.includes('session-reference')) {
+    return "Get-ChildItem 'packages/context/session-reference' -File -Recurse | ForEach-Object { $_.FullName }"
+  }
+  if (description.includes('token-meter')) {
+    return "Get-ChildItem 'packages/llm/token-meter' -File -Recurse | ForEach-Object { $_.FullName }"
+  }
+  if (description.includes('Re-roll') || description.includes('another package')) {
+    return "Write-Output 'packages/llm/token-meter'"
+  }
+  if (description.includes('Randomly')) {
+    return "Write-Output 'packages/context/session-reference'"
+  }
+  if (description.includes('packages directory')) {
+    return "Get-ChildItem 'packages' -Directory; Get-ChildItem 'packages' -Directory -Recurse -Depth 1"
+  }
+  return 'Get-Location; Get-ChildItem -Force'
+}
+
+/** Rewrite only recorded shell-call leaves; the canonical fixture stays byte-identical. */
+function windowsReplayValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(windowsReplayValue)
+  if (value === null || typeof value !== 'object') return value
+  const input = value as Record<string, unknown>
+  const output: Record<string, unknown> = {}
+  for (const [key, child] of Object.entries(input)) output[key] = windowsReplayValue(child)
+  if (output.name === 'bash') output.name = 'pwsh'
+  for (const key of ['arguments', 'argumentsDelta'] as const) {
+    const encoded = output[key]
+    if (typeof encoded !== 'string') continue
+    try {
+      const args = JSON.parse(encoded) as { command?: unknown; description?: unknown }
+      if (typeof args.command === 'string' && typeof args.description === 'string') {
+        args.command = windowsCommand(args.description)
+        output[key] = JSON.stringify(args)
+      }
+    } catch {
+      // Incremental argument fragments are left intact; replay uses complete assistant chunks.
+    }
+  }
+  return output
+}
+
+/** Materialize Windows-only replay copies in the OS temp directory. */
+async function windowsReplayCopies(home: string): Promise<{ fixture: string; override: string }> {
+  const fixture = join(home, 'session.windows.jsonl')
+  const sourceLines = (await readFile(FIXTURE, 'utf8')).split(/\r?\n/u).filter(Boolean)
+  const rewritten = sourceLines.map(line => JSON.stringify(windowsReplayValue(JSON.parse(line)))).join('\n') + '\n'
+  await writeFile(fixture, rewritten)
+  const override = join(home, 'replay.windows.override.json')
+  const overrideDoc = JSON.parse(await readFile(OVERRIDE, 'utf8')) as unknown
+  await writeFile(override, JSON.stringify(windowsReplayValue(overrideDoc)))
+  return { fixture, override }
 }
 
 /** Materialize a stable package inventory inside the isolated session workspace. */
@@ -94,6 +154,7 @@ describe('web e2e: Goal keeps one assistant action row per completed turn', () =
   let page: Page
   let tripwire: ReturnType<typeof watchConsole>
   let sessionEvents: SessionEvent[]
+  let sidecarDir: string | undefined
 
   afterEach(async () => {
     const failures: unknown[] = []
@@ -102,6 +163,10 @@ describe('web e2e: Goal keeps one assistant action row per completed turn', () =
     const closing = scaffold
     scaffold = undefined
     await closing?.close().catch((error: unknown) => failures.push(error))
+    if (sidecarDir !== undefined) {
+      await rm(sidecarDir, { recursive: true, force: true }).catch((error: unknown) => failures.push(error))
+    }
+    sidecarDir = undefined
     if (failures.length === 1) throw failures[0]
     if (failures.length > 1) throw new AggregateError(failures, 'goal-multi-turn-actions teardown failed')
   })
@@ -109,8 +174,16 @@ describe('web e2e: Goal keeps one assistant action row per completed turn', () =
   /** Boot the real Web composition and connect a fresh package fixture workspace. */
   async function launch(): Promise<void> {
     sessionEvents = []
+    let replayFixture = FIXTURE
+    let replayOverride = OVERRIDE
+    if (MODE !== 'record' && process.platform === 'win32') {
+      sidecarDir = await mkdtemp(join(tmpdir(), 'dsh-web-goal-windows-'))
+      const copies = await windowsReplayCopies(sidecarDir)
+      replayFixture = copies.fixture
+      replayOverride = copies.override
+    }
     scaffold = await launchWebScaffold(
-      MODE === 'record' ? {} : { replayFixture: FIXTURE, replayOverride: OVERRIDE },
+      MODE === 'record' ? {} : { replayFixture, replayOverride },
     )
     await seedPackageInventory(scaffold.workspaceCwd)
     scaffold.ctx.on('session/event', (_session, event: SessionEvent) => { sessionEvents.push(event) })
@@ -155,6 +228,8 @@ describe('web e2e: Goal keeps one assistant action row per completed turn', () =
     await expect.poll(() => branchButtons.count(), { timeout: 15_000 }).toBe(2)
     expect(await branchButtons.evaluateAll(buttons => buttons.map(button => button.getAttribute('aria-disabled'))))
       .toEqual([null, null])
+    expect(await page.getByText(/unknown tool/u).count()).toBe(0)
+    expect(await page.getByRole('button', { name: /^Failed /u }).count()).toBe(0)
     await branchButtons.last().focus()
     const snapshot = await captureStableAria(page, '[class*="centerCol"]', scaffold!.workspaceCwd)
     await compareOrRefreshGolden(UI_EXPECTED, snapshot, MODE)
@@ -163,6 +238,8 @@ describe('web e2e: Goal keeps one assistant action row per completed turn', () =
   }, 140_000)
 
   it.skipIf(MODE === 'record')('keeps a closed fixture inventory', async () => {
-    await assertFixtureInventory(SNAPSHOT_DIR, ['replay.override.json', 'session.jsonl', 'ui.expected.md'])
+    await assertFixtureInventory(SNAPSHOT_DIR, [
+      'replay.override.json', 'session.jsonl', 'ui.expected.md', 'ui.windows.expected.md',
+    ])
   })
 })

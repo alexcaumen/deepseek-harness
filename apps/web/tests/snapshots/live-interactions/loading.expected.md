@@ -12,17 +12,23 @@
 - text: Reply with a one-sentence description of event sourcing, then stop. {{clock}}
 - button "Copy":
   - img
-- button "Context injection @deepseek-ai/dsh-system-prompt":
+- button "Context injection Giana Code Putri":
   - img
   - img
-  - text: Context injection @deepseek-ai/dsh-system-prompt
+  - text: Context injection Giana Code Putri
 - paragraph: partial
 - status: Deep diving...
 - textbox "Message the agent"
 - button "Commands":
   - img
 - 'button "Access mode, current: Workspace Write"': Workspace Write
+- group "Message handling while the agent is running":
+  - button "Quick queue" [pressed]
+  - button "Steer"
 - button "Select model, current DeepSeek-V4-Flash":
   - text: DeepSeek-V4-Flash
   - img
+- button "Start automatic-language dictation":
+  - img
 - button "Stop generating"
+- button "Queue message" [disabled]

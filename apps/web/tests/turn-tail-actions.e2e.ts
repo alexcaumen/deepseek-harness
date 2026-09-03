@@ -25,8 +25,9 @@ import { connectFreshWorkspace, newEnglishPage, saveFailureShot } from './suppor
 const SNAPSHOT_DIR = fileURLToPath(new URL('./snapshots/turn-tail-actions', import.meta.url))
 const FIXTURE = join(SNAPSHOT_DIR, 'session.jsonl')
 // Two goldens for the same message: parked mid-turn, then settled.
-const RUNNING_EXPECTED = join(SNAPSHOT_DIR, 'running.expected.md')
-const SETTLED_EXPECTED = join(SNAPSHOT_DIR, 'settled.expected.md')
+const SNAPSHOT_SUFFIX = process.platform === 'win32' ? '.windows.expected.md' : '.expected.md'
+const RUNNING_EXPECTED = join(SNAPSHOT_DIR, `running${SNAPSHOT_SUFFIX}`)
+const SETTLED_EXPECTED = join(SNAPSHOT_DIR, `settled${SNAPSHOT_SUFFIX}`)
 const MODE = webSnapshotMode()
 
 // The recording must carry text in the SAME assistant message as the tool
@@ -61,16 +62,22 @@ describe('web e2e: assistant IconActions wait for the turn to end', () => {
   /** Boot scaffold + page, materializing the sidecar before the replay row installs. */
   async function launch(buildOverride?: (sidecarHome: string) => ReplayOverrideDoc): Promise<void> {
     sessionEvents = []
+    sidecarDir = await mkdtemp(join(tmpdir(), 'dsh-web-e2e-sidecar-'))
+    let replayFixture = FIXTURE
+    if (MODE !== 'record' && process.platform === 'win32') {
+      replayFixture = join(sidecarDir, 'session.windows.jsonl')
+      const source = await readFile(FIXTURE, 'utf8')
+      await writeFile(replayFixture, source.replaceAll('"name":"bash"', '"name":"pwsh"'))
+    }
     let overridePath: string | undefined
     if (buildOverride !== undefined) {
-      sidecarDir = await mkdtemp(join(tmpdir(), 'dsh-web-e2e-sidecar-'))
       overridePath = join(sidecarDir, 'replay.override.json')
       await writeFile(overridePath, JSON.stringify(buildOverride(sidecarDir)))
     }
     scaffold = await launchWebScaffold(
       MODE === 'record'
         ? {}
-        : { replayFixture: FIXTURE, ...(overridePath === undefined ? {} : { replayOverride: overridePath }) },
+        : { replayFixture, ...(overridePath === undefined ? {} : { replayOverride: overridePath }) },
     )
     scaffold.ctx.on('session/event', (_session, event: SessionEvent) => { sessionEvents.push(event) })
     browser = await chromium.launch()
@@ -115,9 +122,10 @@ describe('web e2e: assistant IconActions wait for the turn to end', () => {
     // replay default (30s) leaves no headroom on a slow runner.
     const { settled } = await sendPrompt(120_000)
     // The marker IS the synchronization: the second call is provably parked,
-    // so the first step's message and tool result are already durable.
+    // so the first step's message and tool result are already durable. Tool
+    // narration stays private even though it is present in the session log.
     await expect.poll(() => existsSync(marker), { timeout: 20_000 }).toBe(true)
-    await expect.poll(() => page.getByText(NARRATION, { exact: true }).count(), { timeout: 10_000 }).toBe(1)
+    await expect.poll(() => page.getByText(NARRATION, { exact: true }).count(), { timeout: 10_000 }).toBe(0)
     await expect.poll(
       () => page.getByRole('status').filter({ hasText: 'Deep diving...' }).isVisible(),
       { timeout: 10_000 },
@@ -147,6 +155,9 @@ describe('web e2e: assistant IconActions wait for the turn to end', () => {
   }, 120_000)
 
   it.skipIf(MODE === 'record')('keeps a closed fixture inventory', async () => {
-    await assertFixtureInventory(SNAPSHOT_DIR, ['running.expected.md', 'session.jsonl', 'settled.expected.md'])
+    await assertFixtureInventory(SNAPSHOT_DIR, [
+      'running.expected.md', 'running.windows.expected.md', 'session.jsonl',
+      'settled.expected.md', 'settled.windows.expected.md',
+    ])
   })
 })

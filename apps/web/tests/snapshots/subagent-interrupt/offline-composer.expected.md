@@ -14,10 +14,10 @@
 - text: Explain event sourcing in one sentence. {{clock}}
 - button "Copy":
   - img
-- button "Context injection @deepseek-ai/dsh-system-prompt":
+- button "Context injection Giana Code Putri":
   - img
   - img
-  - text: Context injection @deepseek-ai/dsh-system-prompt
+  - text: Context injection Giana Code Putri
 - paragraph: partial
 - status: Deep diving...
 - textbox "Parent session offline; sending is unavailable but you can still stop the run" [disabled]

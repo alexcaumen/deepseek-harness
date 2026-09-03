@@ -17,24 +17,35 @@
   - img
   - img
   - text: Context injection Giana Code Putri
-- button "Think The user wants me to begin with \"Reading the workspace now.\" and call bash with \"echo alpha\" in the same message. Then after the tool result, reply with the single word DONE and stop.":
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: Think The user wants me to begin with "Reading the workspace now." and call bash with "echo alpha" in the same message. Then after the tool result, reply with the single word DONE and stop.
-- paragraph: Reading the workspace now.
-- button "Bash Print alpha to stdout":
+  - text: Thinking
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: Bash Print alpha to stdout
+  - text: Thinking
+- button "Pwsh Print alpha to stdout":
+  - img
+  - img
+  - text: Pwsh Print alpha to stdout
 - paragraph: partial
 - status: Deep diving...
 - textbox "Message the agent"
 - button "Commands":
   - img
 - 'button "Access mode, current: Workspace Write"': Workspace Write
+- group "Message handling while the agent is running":
+  - button "Quick queue" [pressed]
+  - button "Steer"
 - button "Select model, current DeepSeek-V4-Flash":
   - text: DeepSeek-V4-Flash
   - img
 - button "6% of context used"
+- button "Start automatic-language dictation":
+  - img
 - button "Stop generating"
+- button "Queue message" [disabled]
 - text: 1 turns · 1 steps LLM {{duration}} · Tool call {{duration}} TTFT avg {{duration}} · {{throughput}} tok/s Cache hit 0% Input 7.8K tok · Output 109 tok

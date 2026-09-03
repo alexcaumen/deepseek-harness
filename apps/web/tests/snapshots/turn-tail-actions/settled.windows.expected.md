@@ -12,22 +12,36 @@
 - text: Begin your reply with the plain sentence "Reading the workspace now." as text, and in that same message call the bash tool with the command "echo alpha". After the tool result, reply with the single word DONE and stop. {{clock}}
 - button "Copy":
   - img
-- tooltip "Copy"
 - button "Context injection Giana Code Putri":
   - img
   - img
   - text: Context injection Giana Code Putri
-- button "Think The user wants me to begin with \"Reading the workspace now.\" and call bash with \"echo alpha\" in the same message. Then after the tool result, reply with the single word DONE and stop.":
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: Think The user wants me to begin with "Reading the workspace now." and call bash with "echo alpha" in the same message. Then after the tool result, reply with the single word DONE and stop.
-- paragraph: Reading the workspace now.
-- button "Bash Print alpha to stdout":
+  - text: Thinking
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: Bash Print alpha to stdout
+  - text: Thinking
+- button "Pwsh Print alpha to stdout":
+  - img
+  - img
+  - text: Pwsh Print alpha to stdout
 - paragraph: partial
-- status: Deep diving...
+- text: Stopped
+- button "Copy":
+  - img
+- tooltip "Copy"
+- button "Good response":
+  - img
+- button "Bad response":
+  - img
+- button "Branch into a new conversation":
+  - img
+- text: {{clock}} Ran for {{duration}} TTFT {{duration}} {{throughput}} tok/s
 - textbox "Message the agent"
 - button "Commands":
   - img
@@ -36,5 +50,7 @@
   - text: DeepSeek-V4-Flash
   - img
 - button "6% of context used"
-- button "Stop generating"
-- text: 1 turns · 1 steps LLM {{duration}} · Tool call {{duration}} TTFT avg {{duration}} · {{throughput}} tok/s Cache hit 0% Input 7.8K tok · Output 109 tok
+- button "Start automatic-language dictation":
+  - img
+- button "Send message" [disabled]
+- text: 1 turns · 2 steps LLM {{duration}} · Tool call {{duration}} TTFT avg {{duration}} · {{throughput}} tok/s Cache hit 0% Input 7.8K tok · Output 109 tok

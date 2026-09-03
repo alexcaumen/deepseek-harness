@@ -18,10 +18,10 @@
   - img
   - img
   - text: Context injection goal
-- button "Context injection @deepseek-ai/dsh-system-prompt":
+- button "Context injection Giana Code Putri":
   - img
   - img
-  - text: Context injection @deepseek-ai/dsh-system-prompt
+  - text: Context injection Giana Code Putri
 - paragraph: partial
 - status: Deep diving...
 - region "To-dos":

@@ -105,6 +105,7 @@ describe('ReasoningRow', () => {
       <AssistantMarkdown
         t={t}
         blocks={[
+          { kind: 'reasoning', text: 'Inspect the current request.' },
           { kind: 'text', text: 'I will inspect the current directory first.' },
           { kind: 'tool-call', callId: 'call-1', name: 'pwsh', argsRaw: '{}' },
         ]}
@@ -114,12 +115,15 @@ describe('ReasoningRow', () => {
     )
 
     const disclosure = execution.getByRole('button', { name: /Thinking/ })
+    expect(execution.getAllByRole('button', { name: /Thinking/ })).toHaveLength(1)
     expect(disclosure.getAttribute('aria-expanded')).toBe('false')
+    expect(execution.queryByText('Inspect the current request.')).toBeNull()
     expect(execution.queryByText('I will inspect the current directory first.')).toBeNull()
     expect(execution.container.querySelectorAll('[data-assistant-block-kind="text"]')).toHaveLength(0)
 
     fireEvent.click(disclosure)
-    expect(execution.getByText('I will inspect the current directory first.')).toBeTruthy()
+    expect(execution.container.textContent).toContain('Inspect the current request.')
+    expect(execution.container.textContent).toContain('I will inspect the current directory first.')
     execution.unmount()
 
     const finalAnswer = render(
