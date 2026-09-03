@@ -180,7 +180,7 @@ export function SearchBlock(props: SearchBlockProps) {
   const rows = toRows(props, collapsed)
   const shown = shownCount(props)
   const empty = rows.length === 0
-  const { copied, onCopy } = useCopyFeedback(copyText(props))
+  const { status: copyStatus, onCopy } = useCopyFeedback(copyText(props))
 
   const onToggle = useCallback(() => { setExpanded(value => !value) }, [])
 
@@ -242,7 +242,7 @@ export function SearchBlock(props: SearchBlockProps) {
         <span className={css.summary}>{summaryText(props, shown, truncated, total)}</span>
         {!empty && (
           <button type="button" className={css.copyButton} onClick={onCopy}>
-            {copied ? '复制成功' : '复制'}
+            {copyStatus === 'copied' ? '复制成功' : copyStatus === 'failed' ? '复制失败' : '复制'}
           </button>
         )}
       </div>

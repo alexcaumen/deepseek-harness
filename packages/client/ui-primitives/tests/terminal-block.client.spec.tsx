@@ -353,7 +353,8 @@ describe('TerminalBlock copy', () => {
     expect(await screen.findByRole('button', { name: '复制成功' })).toBeTruthy()
   })
 
-  it('does not claim success when the host refuses the write', async () => {
+  it('shows localized failure feedback when the host refuses the write', async () => {
+    vi.useFakeTimers()
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
@@ -363,8 +364,10 @@ describe('TerminalBlock copy', () => {
     await act(async () => {
       await Promise.resolve()
     })
-    expect(screen.getByRole('button', { name: '复制' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '复制失败' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: '复制成功' })).toBeNull()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(screen.getByRole('button', { name: '复制' })).toBeTruthy()
   })
 })
 

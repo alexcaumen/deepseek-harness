@@ -195,14 +195,14 @@ describe('SearchBlock copy', () => {
     expect(await screen.findByRole('button', { name: '复制成功' })).toBeTruthy()
   })
 
-  it('does not claim success when the host refuses the write', async () => {
+  it('shows localized failure feedback when the host refuses the write', async () => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true, value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
     })
     render(<SearchBlock kind="paths" truncated={false} total={1} paths={['a']} />)
     fireEvent.click(screen.getByRole('button', { name: '复制' }))
     await act(async () => { await Promise.resolve() })
-    expect(screen.getByRole('button', { name: '复制' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '复制失败' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: '复制成功' })).toBeNull()
   })
 

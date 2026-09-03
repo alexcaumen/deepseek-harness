@@ -1,37 +1,37 @@
 // The copy-to-clipboard-with-feedback hook shared by the block primitives
-// (TerminalBlock, SearchBlock): write the given text, and on success flip a
-// transient `copied` flag that the caller renders as a "复制成功" label for one
-// second. A refused write leaves the flag untouched, so the control never claims
-// a copy the host declined.
+// (TerminalBlock, SearchBlock): write the given text, then expose the accepted
+// or refused outcome long enough for the caller to render localized feedback.
 
 import { useCallback, useState } from 'react'
 import { writeClipboard } from './clipboard.ts'
 
-/** How long the `copied` flag stays true after a successful write, in ms. */
-const COPIED_FEEDBACK_MS = 1000
+/** How long an accepted or refused outcome stays visible, in ms. */
+const COPY_FEEDBACK_MS = 1000
 
-/** The copy-feedback hook's return: the transient flag and the copy handler. */
+/** Transient result of the most recent clipboard write. */
+export type CopyFeedbackStatus = 'idle' | 'copied' | 'failed'
+
+/** The copy-feedback hook's return: the transient status and the copy handler. */
 export interface CopyFeedback {
-  /** True for {@link COPIED_FEEDBACK_MS} after a successful write; render the success label off it. */
-  copied: boolean
-  /** Copy the hook's text; no-op while `copied` is still true, silent on a refused write. */
+  /** Accepted or refused for {@link COPY_FEEDBACK_MS}, otherwise idle. */
+  status: CopyFeedbackStatus
+  /** Copy the hook's text; no-op while outcome feedback is visible. */
   onCopy: () => void
 }
 
 /**
- * Copy `text` to the clipboard with one-second success feedback.
+ * Copy `text` to the clipboard with one-second outcome feedback.
  * @param text - the text to write on copy.
- * @returns the `copied` flag and the `onCopy` handler.
+ * @returns the transient outcome status and the `onCopy` handler.
  */
 export function useCopyFeedback(text: string): CopyFeedback {
-  const [copied, setCopied] = useState(false)
+  const [status, setStatus] = useState<CopyFeedbackStatus>('idle')
   const onCopy = useCallback(() => {
-    if (copied) return
+    if (status !== 'idle') return
     void writeClipboard(text).then((ok) => {
-      if (!ok) return
-      setCopied(true)
-      window.setTimeout(() => { setCopied(false) }, COPIED_FEEDBACK_MS)
+      setStatus(ok ? 'copied' : 'failed')
+      window.setTimeout(() => { setStatus('idle') }, COPY_FEEDBACK_MS)
     })
-  }, [copied, text])
-  return { copied, onCopy }
+  }, [status, text])
+  return { status, onCopy }
 }

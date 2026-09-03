@@ -89,31 +89,20 @@ function persistDelivered(store: DesktopNotificationStore | undefined, delivered
   }
 }
 
-function compactMessage(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const message = value.replace(/\s+/g, ' ').trim()
-  return message.length > 240 ? `${message.slice(0, 237)}...` : message
-}
-
-function errorMessage(value: unknown): string | undefined {
-  if (typeof value !== 'object' || value === null) return undefined
-  if (!('message' in value)) return undefined
-  return compactMessage((value as { message?: unknown }).message)
-}
-
 function makeCandidate(
   kind: DesktopNotificationKind,
   key: string,
   sessionId: string | undefined,
   detail: string,
 ): DesktopNotificationCandidate {
-  const suffix = sessionId === undefined ? '' : ` (${sessionId})`
-  const label = kind === 'completed' ? 'Selesai' : kind === 'attention' ? 'Perlu perhatian' : 'Gagal'
+  const label = kind === 'completed'
+    ? 'Tugas selesai'
+    : kind === 'attention' ? 'Perlu perhatian' : 'Tugas terhenti'
   return {
     key,
     kind,
     title: `${APP_TITLE} - ${label}`,
-    body: `${detail}${suffix}`,
+    body: detail,
     tag: `${APP_TITLE}:${key}`,
     ...(sessionId === undefined ? {} : { sessionId }),
   }
@@ -129,54 +118,64 @@ export function classifyNotification(
       if (frame.event.type !== 'turn/end') return undefined
       const reason = frame.event.data.reason
       const key = `${frame.sessionId}:turn-end:${frame.event.seq}`
-      if (reason.kind === 'completed') {
-        return makeCandidate('completed', key, frame.sessionId, 'Sesi menyelesaikan turn.')
+      switch (reason.kind) {
+        case 'completed':
+          return makeCandidate('completed', key, frame.sessionId, 'Tugas Anda sudah selesai.')
+        case 'blocked':
+          return makeCandidate('attention', key, frame.sessionId, 'Tugas berhenti dan menunggu tindakan Anda.')
+        case 'max-tokens':
+          return makeCandidate('attention', key, frame.sessionId, 'Tugas berhenti karena batas panjang respons tercapai.')
+        case 'aborted':
+          return makeCandidate('failed', key, frame.sessionId, 'Tugas telah dibatalkan.')
+        case 'error':
+          return makeCandidate('failed', key, frame.sessionId, 'Tugas berhenti karena terjadi kendala.')
+        case 'interrupted':
+          return makeCandidate('failed', key, frame.sessionId, 'Tugas terhenti sebelum selesai.')
+        default:
+          // Extensions remain understandable without exposing their internal reason key.
+          return makeCandidate('failed', key, frame.sessionId, 'Tugas berhenti sebelum selesai.')
       }
-      if (reason.kind === 'blocked' || reason.kind === 'max-tokens') {
-        return makeCandidate('attention', key, frame.sessionId, `Sesi berhenti dengan status ${reason.kind}.`)
-      }
-      const detail = reason.kind === 'error'
-        ? errorMessage(reason.error) ?? 'Sesi berhenti karena error.'
-        : `Sesi berhenti dengan status ${reason.kind}.`
-      return makeCandidate('failed', key, frame.sessionId, detail)
     }
     case 'approval/requested':
       return makeCandidate(
         'attention',
         `${frame.sessionId}:approval:${frame.approvalId}`,
         frame.sessionId,
-        `Persetujuan diperlukan untuk ${frame.toolName}.`,
+        'Persetujuan Anda diperlukan untuk melanjutkan tugas.',
       )
     case 'question/requested':
       return makeCandidate(
         'attention',
         `${frame.sessionId}:question:${frame.questions.map(question => question.id).join(',')}`,
         frame.sessionId,
-        'Jawaban pengguna diperlukan.',
+        'Jawaban Anda diperlukan untuk melanjutkan tugas.',
       )
     case 'host/agent-error':
       return makeCandidate(
         'failed',
         `${frame.sessionId}:agent-error:${frame.message}`,
         frame.sessionId,
-        compactMessage(frame.message) ?? 'Agent mengalami error.',
+        'Tugas berhenti karena terjadi kendala.',
       )
     case 'stream/error':
       if (frame.error === undefined || typeof frame.error !== 'object' || frame.error === null) {
-        return makeCandidate('failed', `stream-error:${rpcId}`, undefined, 'Koneksi stream mengalami error.')
+        return makeCandidate('failed', `stream-error:${rpcId}`, undefined, 'Koneksi terputus. Buka Giana Code Putri untuk melanjutkan.')
       }
       return makeCandidate(
         'failed',
         `stream-error:${frame.error.code}:${frame.error.message}`,
         undefined,
-        compactMessage(frame.error.message) ?? 'Koneksi stream mengalami error.',
+        'Koneksi terputus. Buka Giana Code Putri untuk melanjutkan.',
       )
     default:
       return undefined
   }
 }
 
-/** Default sink: use the desktop host bridge, then a granted browser notification. */
+/**
+ * Default sink: use the desktop host bridge, then an already-granted browser
+ * notification. Permission requests belong to an explicit user interaction.
+ */
 export function createDesktopNotificationSink(): DesktopNotificationSink {
   return {
     notify(candidate) {

@@ -89,7 +89,7 @@ describe('WelcomeNotice', () => {
   it('uses the exact owner copy in both GUI locales', () => {
     expect(WELCOME_NOTICE_COPY.en).toEqual({
       title: 'Internal Testing Notice',
-      body: 'Giana Code is a private workbench that continues to evolve. Its core plugins and foundational APIs will keep improving.\n\nWorkbench capabilities remain open, reusable, and composable.',
+      body: 'Giana Code Putri is a private workbench that continues to evolve. Its core plugins and foundational APIs will keep improving.\n\nWorkbench capabilities remain open, reusable, and composable.',
       continueLabel: 'Continue',
     })
     expect(en.welcomeBody).toBe(WELCOME_NOTICE_COPY.en.body)
