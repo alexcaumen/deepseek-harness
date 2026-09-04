@@ -176,6 +176,18 @@ it('runs a recorded turn through the YAML-mounted lifecycle and releases after i
   expect(fixture.agent.session.deriveMessages().at(-1)).toMatchObject({
     role: 'assistant', content: [{ type: 'text', text: 'LOCAL_INFERENCE_OK' }],
   })
+  const effectiveRoutes = fixture.agent.session.events.filter(event =>
+    event.type === 'model-lifecycle/effective-route')
+  expect(effectiveRoutes).toHaveLength(1)
+  const effectiveRoute = effectiveRoutes[0]!
+  const requestHeader = fixture.agent.session.events.findLast(event =>
+    event.type === 'request/header' && event.seq < effectiveRoute.seq)
+  const providerOutput = fixture.agent.session.events.find(event =>
+    event.type === 'assistant/chunk' && event.seq > effectiveRoute.seq)
+  expect(requestHeader).toBeDefined()
+  expect(providerOutput).toBeDefined()
+  expect(requestHeader!.seq).toBeLessThan(effectiveRoute.seq)
+  expect(effectiveRoute.seq).toBeLessThan(providerOutput!.seq)
   expect({ stages: fixture.stages, outcomes: fixture.records.map(record => record.outcome) }).toMatchInlineSnapshot(`
     {
       "outcomes": [
@@ -199,6 +211,9 @@ it('records a sanitized turn failure instead of executing against unknown preexi
   await fixture.agent.whenIdle()
   expect(fixture.requests()).toBe(0)
   expect(fixture.stages).toEqual(['preflight', 'prestate'])
+  expect(fixture.agent.session.events).not.toContainEqual(
+    expect.objectContaining({ type: 'model-lifecycle/effective-route' }),
+  )
   expect(fixture.agent.session.events.filter(event => event.type === 'turn/end').map(event => event.data.reason))
     .toMatchInlineSnapshot(`
       [

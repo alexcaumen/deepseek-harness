@@ -500,6 +500,19 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 
 来源：[`packages/llm/llm-retry/src/types.ts:11`](../packages/llm/llm-retry/src/types.ts)
 
+### `model-lifecycle/*`
+
+<a id="model-lifecycleeffective-route--log-only"></a>
+
+#### `model-lifecycle/effective-route` — log-only
+
+```ts persistence-catalog
+/** Effective governed local-model route, published only after READY. */
+'model-lifecycle/effective-route': ModelEffectiveRouteEventData
+```
+
+来源：[`packages/llm/model-lifecycle/src/index.ts:169`](../packages/llm/model-lifecycle/src/index.ts)
+
 ### `permission/*`
 
 <a id="permissionpreset--log-only"></a>

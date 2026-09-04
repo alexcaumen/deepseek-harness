@@ -13,6 +13,7 @@ import { createHash } from 'node:crypto'
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { LlmError, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { ResourceLeaseError, ResourceLeaseSession, type ResourceLeaseGrant, type ResourceLeaseProvider } from './resource-lease.ts'
 
@@ -96,6 +97,7 @@ export type ModelLifecycleErrorCode =
   | 'RESOURCE_LEASE_LOST'
   | 'QUEUE_FULL'
   | 'QUEUE_TIMEOUT'
+  | 'SESSION_PUBLICATION_FAILED'
   | 'ABORTED'
 
 /** Complete provider/model pair. Provider and model are never updated independently. */
@@ -146,6 +148,26 @@ export interface ModelLifecycleAuditRecord {
   readonly outcome: 'READY' | 'RELEASED' | 'FAILED_ROLLED_BACK' | 'REJECTED' | 'IDLE_UNLOADED' | 'TAINTED'
   readonly receiptDigests: readonly string[]
   readonly errorCode?: ModelLifecycleErrorCode
+}
+
+/** Sanitized effective route committed to the exact durable user session. */
+export interface ModelEffectiveRouteEventData {
+  readonly selection: ModelSelectionIdentity
+  readonly routeId: string
+  readonly target: ModelComputeTarget
+  readonly admissionReceiptDigest: string
+  readonly revisionDigest: string
+  readonly scopeDigest: string
+  readonly transactionDigest: string
+  readonly fencingDigest: string
+  readonly receiptDigests: readonly string[]
+}
+
+declare module '@deepseek-ai/dsh-session/types' {
+  interface SessionEventMap {
+    /** Effective governed local-model route, published only after READY. */
+    'model-lifecycle/effective-route': ModelEffectiveRouteEventData
+  }
 }
 
 /** Canonical classifier, scope resolver, and sanitized audit sink. */
@@ -263,6 +285,14 @@ interface ActiveRoute {
   readonly healthDigest: string
   readonly scope: ModelExecutionScope
   readonly activatedAt: number
+}
+
+/** Internal marker that preserves rollback outcome while the host returns to its prior steady phase. */
+class RolledBackLifecycleFailure extends Error {
+  constructor(readonly failure: unknown) {
+    super('model lifecycle transaction rolled back')
+    this.name = 'RolledBackLifecycleFailure'
+  }
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -415,6 +445,7 @@ function unmanagedLease(): ModelRouteLease {
  */
 export class ModelLifecycleRuntime extends Service {
   static Config = Config
+  static inject = ['sessions']
 
   private readonly bySelection = new Map<string, Registration>()
   private readonly byRoute = new Map<string, Registration>()
@@ -557,6 +588,12 @@ export class ModelLifecycleRuntime extends Service {
       }
       return unmanagedLease()
     }
+    if (request.sessionId === undefined || this.ctx.sessions.get(SessionId(request.sessionId)) === undefined) {
+      throw new ModelLifecycleError(
+        'SCOPE_INVALID',
+        'Governed local-model inference requires one exact live session',
+      )
+    }
     const release = await this.acquire(request.signal, true)
     this.cancelIdleUnload()
     let registration: Registration | undefined
@@ -591,7 +628,7 @@ export class ModelLifecycleRuntime extends Service {
       }
       assertScope(resolution.scope)
       scope = Object.freeze({ ...resolution.scope })
-      if (request.sessionId !== undefined && scope.sessionId !== request.sessionId) {
+      if (scope.sessionId !== request.sessionId) {
         throw new ModelLifecycleError('SCOPE_INVALID', 'Resolved model scope does not match the requested session')
       }
       registration = this.byRoute.get(resolution.route.id)
@@ -639,14 +676,15 @@ export class ModelLifecycleRuntime extends Service {
         release,
       )
     } catch (error: unknown) {
-      const rolledBack = (this.phase) === 'FAILED_ROLLED_BACK'
+      const rolledBack = error instanceof RolledBackLifecycleFailure
+      const failure = rolledBack ? error.failure : error
       const tainted = this.tainted
       if (!rolledBack && !tainted) this.phase = this.active === undefined ? 'IDLE' : 'READY'
       if (
         registration !== undefined
         && scope !== undefined
         && transactionDigest !== undefined
-        && !(tainted && error instanceof ModelLifecycleError && error.code === 'AUDIT_FAILED')
+        && !(tainted && failure instanceof ModelLifecycleError && failure.code === 'AUDIT_FAILED')
       ) {
         await this.recordBestEffort(authority, {
           transactionDigest,
@@ -654,13 +692,13 @@ export class ModelLifecycleRuntime extends Service {
           routeId: registration.route.id,
           outcome: tainted ? 'TAINTED' : rolledBack ? 'FAILED_ROLLED_BACK' : 'REJECTED',
           receiptDigests: receipts.map(receipt => receipt.digest),
-          errorCode: error instanceof ModelLifecycleError ? error.code : 'PREFLIGHT_FAILED',
+          errorCode: failure instanceof ModelLifecycleError ? failure.code : 'PREFLIGHT_FAILED',
         })
       }
       if (this.tainted || this.active === undefined) await this.releaseResources('UNCERTAIN')
       release()
       if (!this.tainted && this.active !== undefined) this.scheduleIdleUnload()
-      throw lifecycleError('PREFLIGHT_FAILED', 'Local model acquisition failed', error)
+      throw lifecycleError('PREFLIGHT_FAILED', 'Local model acquisition failed', failure)
     }
   }
 
@@ -764,6 +802,7 @@ export class ModelLifecycleRuntime extends Service {
         outcome: 'READY',
         receiptDigests: receipts.map(receipt => receipt.digest),
       })
+      this.publishEffectiveRoute(registration, request, target, scope, transactionDigest, receipts)
       return this.routeLease(registration, target, scope, transactionDigest, receipts, authority, release)
     }
 
@@ -890,6 +929,7 @@ export class ModelLifecycleRuntime extends Service {
         outcome: 'READY',
         receiptDigests: receipts.map(receipt => receipt.digest),
       })
+      this.publishEffectiveRoute(registration, request, target, scope, transactionDigest, receipts)
       return this.routeLease(registration, target, scope, transactionDigest, receipts, authority, release)
     } catch (error: unknown) {
       if (this.resourceLease?.signal.aborted === true || (error instanceof ModelLifecycleError && error.code === 'STAGE_TIMEOUT')) {
@@ -927,6 +967,7 @@ export class ModelLifecycleRuntime extends Service {
             'Local model switch failed and rollback could not restore the previous route',
           )
         }
+        throw new RolledBackLifecycleFailure(error)
       }
       throw error
     }
@@ -976,6 +1017,46 @@ export class ModelLifecycleRuntime extends Service {
         }
       },
     })
+  }
+
+  private publishEffectiveRoute(
+    registration: Registration,
+    request: AcquireModelRouteRequest,
+    target: ModelComputeTarget,
+    scope: ModelExecutionScope,
+    transactionDigest: string,
+    receipts: readonly ModelLifecycleStageReceipt[],
+  ): void {
+    try {
+      const session = this.ctx.sessions.get(SessionId(scope.sessionId))
+      if (request.sessionId === undefined || request.sessionId !== scope.sessionId || session === undefined) {
+        throw new Error('resolved session is no longer live')
+      }
+      const resourceLease = this.currentResourceGrant(target)
+      session.append('model-lifecycle/effective-route', {
+        selection: {
+          provider: request.selection.provider,
+          model: request.selection.model,
+          ...request.selection.reasoningEffort === undefined
+            ? {}
+            : { reasoningEffort: request.selection.reasoningEffort },
+        },
+        routeId: registration.route.id,
+        target,
+        admissionReceiptDigest: registration.route.admissionReceiptDigest,
+        revisionDigest: registration.route.revisionDigest,
+        scopeDigest: scope.digest,
+        transactionDigest,
+        fencingDigest: resourceLease.fencingDigest,
+        receiptDigests: receipts.map(receipt => receipt.digest),
+      })
+    } catch (error: unknown) {
+      throw lifecycleError(
+        'SESSION_PUBLICATION_FAILED',
+        `Could not publish effective model route for ${registration.route.id}`,
+        error,
+      )
+    }
   }
 
   private async selectTarget(

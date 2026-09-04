@@ -420,7 +420,7 @@ Source: [`packages/feedback/command-feedback/src/index.ts:62`](../packages/feedb
 'gianaos/acp-binding': GianaOsAcpBindingEventData
 ```
 
-Source: [`packages/llm/llm-gianaos-acp/src/index.ts:56`](../packages/llm/llm-gianaos-acp/src/index.ts)
+Source: [`packages/llm/llm-gianaos-acp/src/index.ts:58`](../packages/llm/llm-gianaos-acp/src/index.ts)
 
 ### `goal/*`
 
@@ -510,6 +510,19 @@ Source: [`packages/llm/llm-retry/src/types.ts:9`](../packages/llm/llm-retry/src/
 ```
 
 Source: [`packages/llm/llm-retry/src/types.ts:11`](../packages/llm/llm-retry/src/types.ts)
+
+### `model-lifecycle/*`
+
+<a id="model-lifecycleeffective-route--log-only"></a>
+
+#### `model-lifecycle/effective-route` — log-only
+
+```ts persistence-catalog
+/** Effective governed local-model route, published only after READY. */
+'model-lifecycle/effective-route': ModelEffectiveRouteEventData
+```
+
+Source: [`packages/llm/model-lifecycle/src/index.ts:169`](../packages/llm/model-lifecycle/src/index.ts)
 
 ### `permission/*`
 

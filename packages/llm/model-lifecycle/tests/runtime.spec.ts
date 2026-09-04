@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, { LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
+import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import ModelLifecycleRuntime, { Config, createModelExecutionScopeDigest } from '../src/index.ts'
 import { fixtureResources } from './resource-fixture.ts'
 import type {
@@ -31,6 +32,14 @@ const DEFAULT_SCOPE_FIELDS = {
 } as const
 const OTHER_DIGEST = digest('d')
 const TRANSACTION_DIGEST = digest('e')
+
+class FixtureModelLifecycleRuntime extends ModelLifecycleRuntime {
+  override async acquireRoute(request: AcquireModelRouteRequest) {
+    const sessionId = SessionId(request.sessionId ?? DEFAULT_SCOPE_FIELDS.sessionId)
+    if (this.ctx.sessions.get(sessionId) === undefined) this.ctx.sessions.create(sessionId)
+    return await super.acquireRoute({ ...request, sessionId })
+  }
+}
 
 let receiptSequence = 1
 
@@ -191,7 +200,8 @@ const contexts: Context[] = []
 async function lifecycle(config: ModelLifecycleConfig = {}): Promise<Context> {
   const ctx = new Context()
   contexts.push(ctx)
-  await ctx.plugin(ModelLifecycleRuntime, config)
+  await ctx.plugin(SessionStore)
+  await ctx.plugin(FixtureModelLifecycleRuntime, config)
   return ctx
 }
 
@@ -214,6 +224,32 @@ afterEach(async () => {
 })
 
 describe('governed local-model lifecycle', () => {
+  it.each([undefined, 'missing-session'])('rejects absent live session %s before authority or resource acquisition', async (sessionId) => {
+    const ctx = new Context()
+    contexts.push(ctx)
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(ModelLifecycleRuntime)
+    const qwen = route('qwen', 'qwen', ['r5300'])
+    const log: string[] = []
+    const resources = fixtureResources()
+    const acquire = vi.spyOn(resources, 'acquire')
+    ctx.modelLifecycle.register(qwen, driver(log))
+    const authority = installAuthority(ctx, request => ({
+      kind: 'GOVERNED',
+      route: qwen,
+      scope: executionScope({ sessionId: request.sessionId ?? 'missing-session' }),
+    }), resources)
+
+    await expect(ctx.modelLifecycle.acquireRoute({
+      selection: qwen.selection,
+      ...sessionId === undefined ? {} : { sessionId },
+    })).rejects.toMatchObject({ code: 'SCOPE_INVALID' })
+
+    expect(authority.resolve).not.toHaveBeenCalled()
+    expect(acquire).not.toHaveBeenCalled()
+    expect(log).toEqual([])
+  })
+
   it('requires shared resource ownership before any local host operation', async () => {
     const ctx = await lifecycle()
     const qwen = route('qwen', 'qwen', ['r5300'])
@@ -1145,7 +1181,8 @@ describe('governed local-model lifecycle', () => {
     const ctx = new Context()
     contexts.push(ctx)
     await ctx.plugin(LlmRuntime)
-    await ctx.plugin(ModelLifecycleRuntime)
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(FixtureModelLifecycleRuntime)
     const admitted = route('qwen', 'qwen', ['r5300'])
     ctx.llm.registerAdapter(['local'], new class extends LlmAdapter {
       async * stream(): AsyncIterable<StreamChunk> {
@@ -1169,11 +1206,73 @@ describe('governed local-model lifecycle', () => {
     })
   })
 
+  it('blocks provider dispatch and rolls back when the exact session disappears before route publication', async () => {
+    const ctx = new Context()
+    contexts.push(ctx)
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(ModelLifecycleRuntime)
+    await ctx.plugin(LlmRuntime)
+    const qwen = route('qwen', 'qwen', ['r5300'])
+    const sessionId = SessionId('publication-failure-session')
+    const session = ctx.sessions.prepare(sessionId)
+    const detach = ctx.sessions.enter(session)
+    ctx.sessions.announce(session)
+    const log: string[] = []
+    const records: ModelLifecycleAuditRecord[] = []
+    let adapterRequests = 0
+    ctx.modelLifecycle.register(qwen, driver(log))
+    ctx.modelLifecycle.installAuthority({
+      resources: fixtureResources(),
+      classifyProvider: provider => provider === 'local' ? 'GOVERNED_LOCAL' : 'UNMANAGED_EXTERNAL',
+      resolve: request => ({
+        kind: 'GOVERNED',
+        route: qwen,
+        scope: executionScope({ sessionId: request.sessionId! }),
+      }),
+      record: async (record) => {
+        records.push(record)
+        if (record.outcome === 'READY') detach()
+      },
+    })
+    ctx.llm.registerAdapter(['local'], new class extends LlmAdapter {
+      async * stream(): AsyncIterable<StreamChunk> {
+        adapterRequests++
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      }
+    }())
+
+    const failure = await collect(ctx.llm.stream({
+      provider: qwen.selection.provider,
+      model: qwen.selection.model,
+      messages: [],
+      sessionId,
+    })).catch((error: unknown) => error)
+
+    expect(failure).toMatchObject({ code: 'SESSION_PUBLICATION_FAILED' })
+    expect(adapterRequests).toBe(0)
+    expect(ctx.sessions.get(sessionId)).toBeUndefined()
+    expect(log).toEqual([
+      'preflight:qwen:r5300',
+      'prestate:qwen:r5300',
+      'start:qwen:r5300',
+      'health:qwen:r5300',
+      'probe:qwen:r5300',
+      'stop:qwen:r5300',
+      'verify-stopped:qwen:r5300',
+    ])
+    expect(records.map(record => ({ outcome: record.outcome, errorCode: record.errorCode }))).toEqual([
+      { outcome: 'READY', errorCode: undefined },
+      { outcome: 'FAILED_ROLLED_BACK', errorCode: 'SESSION_PUBLICATION_FAILED' },
+    ])
+    expect(ctx.modelLifecycle.snapshot()).toEqual({ phase: 'IDLE' })
+  })
+
   it('serializes the global lease across the complete LLM stream', async () => {
     const ctx = new Context()
     contexts.push(ctx)
     await ctx.plugin(LlmRuntime)
-    await ctx.plugin(ModelLifecycleRuntime)
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(FixtureModelLifecycleRuntime)
     const qwen = route('qwen', 'qwen', ['r5300'])
     const glm = route('glm', 'glm', ['r5300'])
     const lifecycleLog: string[] = []
@@ -1410,6 +1509,7 @@ describe('governed local-model lifecycle', () => {
     const authority = installRouteAuthority(ctx, [qwen, glm], () => privateScope)
 
     const lease = await ctx.modelLifecycle.acquireRoute({
+      sessionId: privateScope.sessionId,
       selection: { provider: 'local', model: 'qwen' },
     })
     await lease.release()
@@ -1435,6 +1535,7 @@ describe('governed local-model lifecycle', () => {
     expect(Object.isFrozen(released.receiptDigests)).toBe(true)
 
     await expect(ctx.modelLifecycle.acquireRoute({
+      sessionId: privateScope.sessionId,
       selection: { provider: 'local', model: 'glm' },
     })).rejects.toMatchObject({ code: 'START_FAILED' })
     const rolledBack = authority.records[2]!
@@ -1459,6 +1560,90 @@ describe('governed local-model lifecycle', () => {
       privateScope.tenantId,
       privateScope.sessionId,
     ]) expect(serialized).not.toContain(privateValue)
+  })
+
+  it('publishes one frozen sanitized effective route for every successful managed request', async () => {
+    const ctx = await lifecycle()
+    const qwen = route('qwen', 'qwen', ['r5300'], { supportedReasoningEfforts: ['high'] })
+    const log: string[] = []
+    const sessionId = 'private-effective-route-session'
+    ctx.modelLifecycle.register(qwen, driver(log))
+    installRouteAuthority(ctx, [qwen])
+
+    const first = await ctx.modelLifecycle.acquireRoute({
+      sessionId,
+      selection: { ...qwen.selection, reasoningEffort: 'high' },
+    })
+    await first.release()
+    const second = await ctx.modelLifecycle.acquireRoute({
+      sessionId,
+      selection: { ...qwen.selection, reasoningEffort: 'high' },
+    })
+    await second.release()
+
+    const events = ctx.sessions.get(SessionId(sessionId))!.events.filter(event =>
+      event.type === 'model-lifecycle/effective-route')
+    expect(events).toHaveLength(2)
+    expect(events[0]!.data).toMatchObject({
+      selection: { provider: 'local', model: 'qwen', reasoningEffort: 'high' },
+      routeId: 'qwen',
+      target: 'r5300',
+      admissionReceiptDigest: ADMISSION_DIGEST,
+      revisionDigest: REVISION_DIGEST,
+      scopeDigest: createModelExecutionScopeDigest({ ...DEFAULT_SCOPE_FIELDS, sessionId }),
+      fencingDigest: digest('f'),
+    })
+    expect(Object.keys(events[0]!.data).sort()).toEqual([
+      'admissionReceiptDigest', 'fencingDigest', 'receiptDigests', 'revisionDigest', 'routeId',
+      'scopeDigest', 'selection', 'target', 'transactionDigest',
+    ])
+    expect(events[0]!.data.receiptDigests).toHaveLength(5)
+    expect(events[1]!.data.receiptDigests).toHaveLength(3)
+    expect(events[0]!.data.transactionDigest).not.toBe(events[1]!.data.transactionDigest)
+    for (const event of events) {
+      expect(Object.isFrozen(event)).toBe(true)
+      expect(Object.isFrozen(event.data)).toBe(true)
+      expect(Object.isFrozen(event.data.selection)).toBe(true)
+      expect(Object.isFrozen(event.data.receiptDigests)).toBe(true)
+    }
+    const serialized = JSON.stringify(events)
+    for (const privateValue of [sessionId, DEFAULT_SCOPE_FIELDS.workId, DEFAULT_SCOPE_FIELDS.principalId, DEFAULT_SCOPE_FIELDS.tenantId]) {
+      expect(serialized).not.toContain(privateValue)
+    }
+  })
+
+  it('does not publish effective routes for external, held, or failed acquisitions', async () => {
+    const ctx = await lifecycle()
+    const failed = route('failed', 'failed', ['r5300'])
+    const log: string[] = []
+    ctx.modelLifecycle.register(failed, driver(log, { failStage: 'start' }))
+    installAuthority(ctx, request => request.selection.model === 'held'
+      ? { kind: 'HELD', routeId: 'held', reason: 'test-only governance hold' }
+      : {
+        kind: 'GOVERNED',
+        route: failed,
+        scope: executionScope({ sessionId: request.sessionId! }),
+      })
+
+    const external = await ctx.modelLifecycle.acquireRoute({
+      sessionId: 'external-session',
+      selection: { provider: 'external', model: 'cloud' },
+    })
+    await external.release()
+    await expect(ctx.modelLifecycle.acquireRoute({
+      sessionId: 'held-session',
+      selection: { provider: 'local', model: 'held' },
+    })).rejects.toMatchObject({ code: 'ROUTE_HELD' })
+    await expect(ctx.modelLifecycle.acquireRoute({
+      sessionId: 'failed-session',
+      selection: failed.selection,
+    })).rejects.toMatchObject({ code: 'START_FAILED' })
+
+    for (const sessionId of ['external-session', 'held-session', 'failed-session']) {
+      expect(ctx.sessions.get(SessionId(sessionId))!.events).not.toContainEqual(
+        expect.objectContaining({ type: 'model-lifecycle/effective-route' }),
+      )
+    }
   })
 
   it('does not invalidate completed output when RELEASED audit fails, but fail-closes later local work', async () => {
