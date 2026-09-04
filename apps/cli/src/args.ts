@@ -117,7 +117,7 @@ export function parseDshArgs(argv: readonly string[], version: string): DshInvoc
   program
     .name('dsh')
     .version(version, '-V, --version', 'output the version number')
-    .description('Boot a Giana Code profile from an ordered stack of plugin-bundle patch layers and local overrides.')
+    .description('Boot a Giana CoWork profile from an ordered stack of plugin-bundle patch layers and local overrides.')
     .addHelpText('after', HELP_EXAMPLES)
     .exitOverride()
     // The launcher's flags come first and end at the first token it does not

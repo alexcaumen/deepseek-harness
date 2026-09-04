@@ -137,7 +137,7 @@ describe('TrajectoryTable', () => {
     const panel = screen.getByRole('tabpanel')
     expect(panel.querySelectorAll('[data-summary-scroll-region]').length).toBeGreaterThan(1)
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Preview' }))
+    fireEvent.click(screen.getByRole('tab', { name: 'Rendered' }))
     expect(panel.querySelector('[data-summary-scroll-region]')).toBeNull()
   })
 

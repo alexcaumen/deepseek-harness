@@ -906,7 +906,7 @@ function detailTabs(record: TableRecord): readonly DetailTabItem[] {
   if (isMarkdownRecord(record)) {
     return [
       { id: 'overview', label: 'Summary' },
-      { id: 'rendered', label: 'Preview' },
+      { id: 'rendered', label: 'Rendered' },
       { id: 'raw', label: 'Raw' },
       ...(record.cell.messageSource === undefined
         ? []
@@ -2986,7 +2986,7 @@ export function TrajectoryTable({
                   {isMarkdownRecord(selected)
                     ? (
                       <>
-                        <OverviewSection label="Preview" onOpen={() => { activateTab('rendered') }}>
+                        <OverviewSection label="Rendered" onOpen={() => { activateTab('rendered') }}>
                           <MarkdownRecordContent
                             record={selected}
                             rendered
