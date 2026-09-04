@@ -139,7 +139,7 @@ async function run() {
       `3. mcp__giana_code_tool_runtime__pwsh to run: [IO.File]::WriteAllText('${markerPath.replaceAll("'", "''")}', '${nonce}'); Write-Output ${nonce}.`,
       '4. mcp__giana_code_tool_runtime__skill_search with query "define-goal".',
       '5. mcp__giana_code_tool_runtime__skill with name "define-goal".',
-      '6. mcp__giana_code_tool_runtime__update_goal with status "complete".',
+      '6. mcp__giana_code_tool_runtime__update_goal with goal_id and revision from get_goal, and action "complete".',
       'Do not substitute your native terminal or native goal helpers.',
       `Only after all six calls succeed, reply with exactly ${expectedReply} and nothing else.`,
     ].join('\n')

@@ -11,7 +11,7 @@ import type { Scope } from '@deepseek-ai/dsh-scope'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import ToolRuntime, { TOOL_ABORTED } from '@deepseek-ai/dsh-tools'
+import ToolRuntime, { RUN_CODE_NAME, TOOL_ABORTED, defineTool } from '@deepseek-ai/dsh-tools'
 import type {
   PreToolDecision,
   ToolDefinition,
@@ -175,6 +175,28 @@ function structuredResult(result: Awaited<ReturnType<Client['callTool']>>): Tool
   return (result.structuredContent as { result: ToolExecutionResult }).result
 }
 
+type CodeRunRequest = Parameters<Context['codeRuntime']['run']>[0]
+type CodeRunResult = Awaited<ReturnType<Context['codeRuntime']['run']>>
+
+function provideCodeRuntime(ctx: Context, language = 'typescript') {
+  // Exercise the real ToolRuntime bindings without mounting a worker or interpreter.
+  const runtime = {
+    language,
+    isolation: 'fake',
+    behavior: (_request: CodeRunRequest): Promise<CodeRunResult> => Promise.resolve({ logs: [] }),
+    run: vi.fn((request: CodeRunRequest): Promise<CodeRunResult> => runtime.behavior(request)),
+  }
+  ctx.provide('codeRuntime', runtime as never)
+  return runtime
+}
+
+function callCode(client: Client, code = 'return await tools.echo({ value: "nested" })') {
+  return client.callTool({
+    name: RUN_CODE_NAME,
+    arguments: { code, description: 'Run the bridge regression program' },
+  })
+}
+
 async function rawInitialize(
   endpoint: string,
   authorization?: string,
@@ -202,9 +224,9 @@ async function rawInitialize(
 
 describe('ToolRuntimeMcpServer', () => {
   it('requires bearer auth and never reflects missing or forged credentials', async () => {
-    const { ctx, agent } = await mount()
-    const live = await agent('auth-agent')
-    const capability = ctx.mcpToolRuntime.issue(live.agent)
+    const runtime = await mount()
+    const live = await runtime.agent('auth-agent')
+    const capability = runtime.ctx.mcpToolRuntime.issue(live.agent)
     const forged = 'forged-super-secret-token'
 
     const missing = await rawInitialize(capability.endpoint)
@@ -285,6 +307,288 @@ describe('ToolRuntimeMcpServer', () => {
     })
   })
 
+  it('matches direct and nested calls to each agent presentation before tools/list', async () => {
+    const runtime = await mount()
+    const codeRuntime = provideCodeRuntime(runtime.ctx)
+    const calls: { agent: Agent | undefined; initiator: Agent | undefined; args: unknown }[] = []
+    runtime.ctx.tools.register(tool('echo', async (args, exec) => {
+      calls.push({ agent: exec.agent, initiator: runtime.ctx.agents.currentInitiator(), args })
+      return args
+    }))
+    codeRuntime.behavior = async request => ({
+      logs: [],
+      value: await request.bindings[0]!.functions.echo!({ value: 'nested' }),
+    })
+    const execute = vi.spyOn(runtime.ctx.tools, 'execute')
+
+    for (const mode of ['native', 'code', 'both'] as const) {
+      const live = await runtime.agent(`presentation-${mode}`)
+      live.session.append('turn/start', { turn: 1 })
+      if (mode !== 'native') live.scope.ctx.tools.presentAs(mode)
+      const client = await runtime.client(runtime.ctx.mcpToolRuntime.issue(live.agent))
+      execute.mockClear()
+      const before = calls.length
+
+      const direct = await client.callTool({ name: 'echo', arguments: { value: 'direct' } })
+      if (mode === 'code') {
+        expect(structuredResult(direct)).toMatchObject({
+          isError: true,
+          error: { info: { code: 'UNKNOWN_TOOL' } },
+        })
+        expect(execute).not.toHaveBeenCalled()
+      } else {
+        expect(structuredResult(direct)).toMatchObject({ isError: false, value: { value: 'direct' } })
+      }
+
+      const dispatched = execute.mock.calls.length
+      const nested = await callCode(client)
+      if (mode === 'native') {
+        expect(structuredResult(nested)).toMatchObject({
+          isError: true,
+          error: { info: { code: 'UNKNOWN_TOOL' } },
+        })
+        expect(execute).toHaveBeenCalledTimes(dispatched)
+        expect(runtime.ctx.tools.codeSdk(live.agent)).toBe('')
+      } else {
+        expect(structuredResult(nested)).toMatchObject({
+          isError: false,
+          value: { logs: [], result: { value: 'nested' } },
+        })
+      }
+      expect(calls.slice(before)).toEqual((mode === 'both' ? ['direct', 'nested'] : [mode === 'code' ? 'nested' : 'direct'])
+        .map(value => ({ agent: live.agent, initiator: live.agent, args: { value } })))
+
+      const listed = await client.listTools()
+      expect(listed.tools.map(entry => entry.name)).toEqual(mode === 'native'
+        ? ['echo']
+        : mode === 'code' ? [RUN_CODE_NAME] : ['echo', RUN_CODE_NAME])
+      expect(listed.tools).toEqual(runtime.ctx.tools.wireSchemas(live.agent).schemas.map(schema => ({
+        name: schema.name,
+        description: schema.name === RUN_CODE_NAME
+          ? `${schema.description}\n\n${runtime.ctx.tools.codeSdk(live.agent)}`
+          : schema.description,
+        inputSchema: schema.parameters,
+      })))
+    }
+    expect(codeRuntime.run).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['code', 'both'] as const)('refreshes %s SDK and dispatch authority on live restriction and undo', async (mode) => {
+    const runtime = await mount()
+    const codeRuntime = provideCodeRuntime(runtime.ctx)
+    const live = await runtime.agent(`restrict-${mode}`)
+    const sibling = await runtime.agent(`hidden-${mode}`)
+    live.session.append('turn/start', { turn: 1 })
+    live.scope.ctx.tools.presentAs(mode)
+    const secretRuns = vi.fn(async (args: unknown) => args)
+    const siblingRuns = vi.fn(async (args: unknown) => args)
+    runtime.ctx.tools.register(tool('echo'))
+    runtime.ctx.tools.register(tool('secret_tool', secretRuns))
+    sibling.scope.ctx.tools.register(tool('sibling_secret', siblingRuns))
+    const client = await runtime.client(runtime.ctx.mcpToolRuntime.issue(live.agent))
+    codeRuntime.behavior = async request => ({
+      logs: [],
+      value: await request.bindings[0]!.functions.secret_tool!({ value: 'visible' }),
+    })
+
+    expect(structuredResult(await callCode(client, 'return await tools.secret_tool({ value: "visible" })')))
+      .toMatchObject({ isError: false, value: { result: { value: 'visible' } } })
+    const initial = await client.listTools()
+    const initialDescription = initial.tools.find(entry => entry.name === RUN_CODE_NAME)?.description
+    expect(initialDescription).toContain('secret_tool:')
+    expect(initialDescription).not.toContain('sibling_secret')
+
+    let undo!: () => void
+    codeRuntime.behavior = async (request) => {
+      const functions = request.bindings[0]!.functions
+      const retained = functions.secret_tool!
+      undo = live.scope.ctx.tools.restrict({ allow: ['echo'] })
+      const denied = await retained({ value: 'must-not-run' }).then(
+        () => 'unexpected success',
+        (error: unknown) => error instanceof Error ? error.message : String(error),
+      )
+      return { logs: [], value: { denied, kept: await functions.echo!({ value: 'kept' }) } }
+    }
+    const restrictedDuringRun = structuredResult(await callCode(client, 'return await tools.secret_tool({ value: "must-not-run" })'))
+    expect(restrictedDuringRun).toMatchObject({
+      isError: false,
+      value: { result: { denied: 'unknown tool "secret_tool"', kept: { value: 'kept' } } },
+    })
+    expect(secretRuns).toHaveBeenCalledTimes(1)
+
+    // Registry membership alone does not authorize a wire call.
+    const execute = vi.spyOn(runtime.ctx.tools, 'execute')
+    for (const name of ['secret_tool', 'sibling_secret']) {
+      expect(structuredResult(await client.callTool({ name, arguments: {} }))).toMatchObject({
+        isError: true,
+        error: { info: { code: 'UNKNOWN_TOOL' } },
+      })
+    }
+    expect(execute).not.toHaveBeenCalled()
+    codeRuntime.behavior = async request => ({
+      logs: [],
+      value: {
+        names: Object.keys(request.bindings[0]!.functions),
+        kept: await request.bindings[0]!.functions.echo!({ value: 'restricted' }),
+      },
+    })
+    expect(structuredResult(await callCode(client))).toMatchObject({
+      isError: false,
+      value: { result: { names: ['echo'], kept: { value: 'restricted' } } },
+    })
+    const restricted = await client.listTools()
+    expect(restricted.tools.map(entry => entry.name)).toEqual(mode === 'code' ? [RUN_CODE_NAME] : ['echo', RUN_CODE_NAME])
+    const description = restricted.tools.find(entry => entry.name === RUN_CODE_NAME)?.description
+    expect(description).toContain('echo:')
+    expect(description).not.toContain('secret_tool')
+    expect(description).not.toContain('sibling_secret')
+
+    undo()
+    codeRuntime.behavior = async request => ({
+      logs: [],
+      value: await request.bindings[0]!.functions.secret_tool!({ value: 'restored' }),
+    })
+    expect(structuredResult(await callCode(client, 'return await tools.secret_tool({ value: "restored" })')))
+      .toMatchObject({ isError: false, value: { result: { value: 'restored' } } })
+    expect((await client.listTools()).tools).toEqual(initial.tools)
+    expect(secretRuns).toHaveBeenCalledTimes(2)
+    expect(siblingRuns).not.toHaveBeenCalled()
+  })
+
+  it.each(['typescript', 'python'])('carries the canonical typed %s SDK and error contract without recursive bindings', async (language) => {
+    const runtime = await mount()
+    const codeRuntime = provideCodeRuntime(runtime.ctx, language)
+    const live = await runtime.agent(`sdk-${language}`)
+    live.session.append('turn/start', { turn: 1 })
+    live.scope.ctx.tools.presentAs('code')
+    live.scope.ctx.tools.register(defineTool({
+      name: 'echo',
+      description: 'Return the value and its length.',
+      parameters: { value: { type: 'string', required: true } },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            value: { type: 'string', required: true },
+            length: { type: 'number', required: true },
+          },
+        },
+        render: () => [{ type: 'text', text: 'rendered echo, not the canonical JSON' }],
+      },
+      execute: args => Promise.resolve({ value: args.value, length: args.value.length }),
+    }))
+    live.scope.ctx.tools.register(tool('fails', async () => { throw new Error('echo rejected') }))
+    codeRuntime.behavior = async (request) => {
+      const binding = request.bindings[0]!
+      expect(binding.global).toBe('tools')
+      expect(binding.errorClass).toEqual({ name: 'ToolCallError', memberNameProperty: 'toolName' })
+      expect(binding.functions[RUN_CODE_NAME]).toBeUndefined()
+      expect(Object.hasOwn(binding.functions, RUN_CODE_NAME)).toBe(false)
+      const value = await binding.functions.echo!({ value: 'typed' })
+      const failure = await binding.functions.fails!({}).then(
+        () => 'unexpected success',
+        (error: unknown) => error instanceof Error ? error.message : String(error),
+      )
+      return { logs: [], value: { value, failure } }
+    }
+    const client = await runtime.client(runtime.ctx.mcpToolRuntime.issue(live.agent))
+    const program = language === 'python'
+      ? 'return await tools.echo({"value": "typed"})'
+      : 'return await tools.echo({ value: "typed" })'
+    expect(structuredResult(await callCode(client, program))).toMatchObject({
+      isError: false,
+      value: { logs: [], result: { value: { value: 'typed', length: 5 }, failure: 'echo rejected' } },
+    })
+    expect(codeRuntime.run.mock.calls[0]?.[0].program).toBe(program)
+
+    const listed = await client.listTools()
+    expect(listed.tools.map(entry => entry.name)).toEqual([RUN_CODE_NAME])
+    const schema = runtime.ctx.tools.wireSchemas(live.agent).schemas[0]!
+    const sdk = runtime.ctx.tools.codeSdk(live.agent)
+    const assembly = await runtime.ctx.systemPrompt.assemble({ scope: live.agent })
+    expect(sdk).toBe(assembly.sections.find(section => section.name === 'tools:sdk')?.text)
+    expect(listed.tools[0]).toEqual({
+      name: RUN_CODE_NAME,
+      description: `${schema.description}\n\n${sdk}`,
+      inputSchema: schema.parameters,
+    })
+    expect(listed.tools[0]?.inputSchema.required).toEqual(['code', 'description'])
+    expect(sdk).toContain('typed canonical JSON value')
+    if (language === 'typescript') {
+      expect(sdk).toContain('echo: {\n    value: string;\n  } & Record<string, JsonValue>;')
+      expect(sdk).toContain('echo: {\n    value: string;\n    length: number;\n  };')
+      expect(sdk).toContain('[K in ToolName]: (args: ToolArgsMap[K]) => Promise<ToolOutputMap[K]>;')
+      expect(sdk).toContain('declare class ToolCallError extends Error {\n  readonly name: "ToolCallError";\n  readonly toolName: ToolName;\n}')
+      expect(sdk).not.toContain('run_code:')
+    } else {
+      expect(sdk).toContain('class EchoArgs(TypedDict):\n    value: str')
+      expect(sdk).toContain('class EchoOutput(TypedDict):\n    value: str\n    length: float')
+      expect(sdk).toContain('async def echo(self, args: EchoArgs) -> EchoOutput:')
+      expect(sdk).toContain('class ToolCallError(Exception):\n    toolName: str')
+      expect(sdk).not.toContain('async def run_code(')
+    }
+    expect((await client.listTools()).tools).toEqual(listed.tools)
+
+    codeRuntime.behavior = () => Promise.resolve({
+      logs: [],
+      error: { kind: 'exception', message: 'program rejected' },
+    })
+    const failed = await callCode(client, 'raise_or_throw')
+    expect(failed.isError).toBe(true)
+    expect(structuredResult(failed)).toMatchObject({
+      isError: true,
+      error: {
+        message: 'code run failed (exception): program rejected',
+        info: { name: 'CodeRunFailedError', code: 'CODE_RUN_FAILED' },
+      },
+    })
+  })
+
+  it.each([undefined, 'private-unsupported-runtime'])('sanitizes list and call failures for runtime %s without native fallback', async (language) => {
+    const runtime = await mount()
+    const codeRuntime = language === undefined ? undefined : provideCodeRuntime(runtime.ctx, language)
+    const live = await runtime.agent('misconfigured-code-agent')
+    const native = await runtime.agent('native-without-code-runtime')
+    live.scope.ctx.tools.presentAs('both')
+    const body = vi.fn(async (args: unknown) => args)
+    runtime.ctx.tools.register(tool('echo', body))
+    const capability = runtime.ctx.mcpToolRuntime.issue(live.agent)
+    const client = await runtime.client(capability)
+    const execute = vi.spyOn(runtime.ctx.tools, 'execute')
+
+    for (const name of [RUN_CODE_NAME, 'echo']) {
+      const result = await client.callTool({ name, arguments: { code: 'return 1', description: 'Probe runtime' } })
+      expect(result.isError).toBe(true)
+      expect(result.content).toEqual([{ type: 'text', text: 'Error: tool bridge request failed' }])
+      expect(structuredResult(result)).toEqual({
+        isError: true,
+        content: [{ type: 'text', text: 'Error: tool bridge request failed' }],
+        error: {
+          message: 'tool bridge request failed',
+          info: { name: 'ToolBridgeError', code: 'BRIDGE_FAILURE' },
+        },
+      })
+      expect(JSON.stringify(result)).not.toContain(capability.token)
+      expect(JSON.stringify(result)).not.toContain('private-unsupported-runtime')
+    }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(client.listTools()).rejects.toMatchObject({
+        message: 'MCP error -32603: tool bridge listing failed',
+      })
+    }
+    expect(execute).not.toHaveBeenCalled()
+    expect(body).not.toHaveBeenCalled()
+    if (codeRuntime !== undefined) expect(codeRuntime.run).not.toHaveBeenCalled()
+
+    const nativeClient = await runtime.client(runtime.ctx.mcpToolRuntime.issue(native.agent))
+    expect(structuredResult(await nativeClient.callTool({ name: 'echo', arguments: { value: 'native' } })))
+      .toMatchObject({ isError: false, value: { value: 'native' } })
+    expect((await nativeClient.listTools()).tools.map(entry => entry.name)).toEqual(['echo'])
+    expect(runtime.ctx.tools.codeSdk(native.agent)).toBe('')
+    expect(body).toHaveBeenCalledTimes(1)
+  })
+
   it('revokes the bearer token when its exact session ends', async () => {
     const runtime = await mount()
     const live = await runtime.agent('revoked-agent')
@@ -334,6 +638,135 @@ describe('ToolRuntimeMcpServer', () => {
       reason: 'external call approval',
     })
     expect(approvalRequest?.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('retains the bound agent, scoped guard and approval signal in code subcalls', async () => {
+    const runtime = await mount()
+    const codeRuntime = provideCodeRuntime(runtime.ctx)
+    const live = await runtime.agent('nested-policy-agent')
+    const native = await runtime.agent('nested-policy-native-sibling')
+    live.session.append('turn/start', { turn: 1 })
+    live.scope.ctx.tools.presentAs('code')
+    const guardedBody = vi.fn(async () => 'ran')
+    const approvedBody = vi.fn(async () => 'approved')
+    runtime.ctx.tools.register(tool('guarded', guardedBody))
+    runtime.ctx.tools.register(tool('approval', approvedBody))
+    live.scope.ctx.tools.guard(exec => exec.name === 'guarded' ? 'nested scope denied' : undefined)
+    let approvalRequest: ApprovalRequest | undefined
+    let approvalSignal: AbortSignal | undefined
+    runtime.ctx.on('tools/pre-execute', async (exec, next): Promise<PreToolDecision> => {
+      if (exec.name !== 'approval') return next()
+      expect(exec.agent).toBe(live.agent)
+      expect(runtime.ctx.agents.currentInitiator()).toBe(live.agent)
+      approvalSignal = exec.signal
+      return { kind: 'ask', reason: 'nested approval' }
+    })
+    runtime.ctx.on('approval/request', (request) => {
+      approvalRequest = request
+      return Promise.resolve('allowed-once')
+    })
+    codeRuntime.behavior = async (request) => {
+      const functions = request.bindings[0]!.functions
+      const guarded = await functions.guarded!({}).then(
+        () => 'unexpected success',
+        (error: unknown) => error instanceof Error ? error.message : String(error),
+      )
+      return { logs: [], value: { guarded, approved: await functions.approval!({}) } }
+    }
+    const client = await runtime.client(runtime.ctx.mcpToolRuntime.issue(live.agent))
+
+    expect(structuredResult(await callCode(client, 'await tools.guarded({}); return await tools.approval({})')))
+      .toMatchObject({
+        isError: false,
+        value: { result: { guarded: 'nested scope denied', approved: 'approved' } },
+      })
+    expect(guardedBody).not.toHaveBeenCalled()
+    expect(approvedBody).toHaveBeenCalledTimes(1)
+    expect(approvalRequest).toMatchObject({ agent: live.agent, toolName: 'approval', reason: 'nested approval' })
+    expect(approvalRequest?.signal).toBeInstanceOf(AbortSignal)
+    expect(approvalRequest?.signal).toBe(approvalSignal)
+    const nativeClient = await runtime.client(runtime.ctx.mcpToolRuntime.issue(native.agent))
+    expect(structuredResult(await nativeClient.callTool({ name: 'guarded', arguments: {} })))
+      .toMatchObject({ isError: false, value: 'ran' })
+    expect(guardedBody).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['cancellation', 'revocation'] as const)('drains nested code dispatch after MCP %s', async (ending) => {
+    const runtime = await mount()
+    const codeRuntime = provideCodeRuntime(runtime.ctx)
+    const live = await runtime.agent(`nested-${ending}`)
+    live.session.append('turn/start', { turn: 1 })
+    live.scope.ctx.tools.presentAs('code')
+    let entered = false
+    let bodySettled = false
+    let nestedSignal: AbortSignal | undefined
+    const results = new Map<string, ToolExecutionResult>()
+    live.scope.ctx.tools.register(tool('slow', async (_args, exec) => {
+      expect(exec.agent).toBe(live.agent)
+      expect(runtime.ctx.agents.currentInitiator()).toBe(live.agent)
+      nestedSignal = exec.signal
+      entered = true
+      await new Promise<void>((resolve) => {
+        if (exec.signal.aborted) resolve()
+        else exec.signal.addEventListener('abort', () => { resolve() }, { once: true })
+      })
+      bodySettled = true
+      return 'late-success'
+    }))
+    runtime.ctx.on('tools/result', (exec, result) => {
+      results.set(exec.name, result)
+      return undefined
+    })
+    codeRuntime.behavior = async (request) => {
+      try {
+        return { logs: [], value: await request.bindings[0]!.functions.slow!({}) }
+      } catch {
+        // Real runtimes resolve aborts after their in-flight binding rejects.
+        return { logs: [], error: { kind: 'abort', message: 'nested run aborted' } }
+      }
+    }
+    const capability = runtime.ctx.mcpToolRuntime.issue(live.agent)
+    const client = await runtime.client(capability)
+    const controller = new AbortController()
+    const pending = client.callTool(
+      { name: RUN_CODE_NAME, arguments: { code: 'return await tools.slow({})', description: 'Await nested dispatch' } },
+      undefined,
+      { signal: controller.signal, timeout: 2_000 },
+    ).then(result => ({ rejected: false, result }), (error: unknown) => ({ rejected: true, error }))
+
+    try {
+      await vi.waitFor(() => { expect(entered).toBe(true) }, { timeout: 2_000 })
+      if (ending === 'cancellation') controller.abort(new Error('nested test cancellation'))
+      else await capability.revoke()
+      await vi.waitFor(() => {
+        expect(bodySettled).toBe(true)
+        expect(nestedSignal?.aborted).toBe(true)
+        expect(results.get('slow')).toMatchObject({
+          isError: true,
+          error: { info: { code: TOOL_ABORTED } },
+        })
+        expect(results.get(RUN_CODE_NAME)).toMatchObject({
+          isError: true,
+          error: {
+            message: 'code run failed (abort): nested run aborted',
+            info: { code: 'CODE_RUN_FAILED' },
+          },
+        })
+      }, { timeout: 2_000 })
+      if (ending === 'revocation') {
+        const retried = await rawInitialize(capability.endpoint, `Bearer ${capability.token}`)
+        expect(retried.status).toBe(401)
+        expect(retried.text).not.toContain(capability.token)
+        // Revocation already drained the body; close the client's pending HTTP wait.
+        controller.abort()
+      }
+      const outcome = await pending
+      if (ending === 'cancellation') expect(outcome.rejected).toBe(true)
+    } finally {
+      controller.abort()
+      await capability.revoke()
+      await pending
+    }
   })
 
   it('transports authorized image bytes and MIME as typed MCP content', async () => {

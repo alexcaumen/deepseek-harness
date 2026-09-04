@@ -2136,10 +2136,22 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     description: 'Tool registry and execution pipeline. Scoped registrations shadow globals; one visibility resolver feeds presentation, lookup, and dispatch.',
     methods: [
       {
+        signature: 'codeSdk(scope?: ScopeKey): string',
+        description: 'Render the same scoped SDK used by the system prompt for an external tool consumer. Reads current visibility and runtime language on every call; missing or unsupported runtimes fail before exposing any declarations.',
+        parameters: [{ name: 'scope', description: 'the calling agent, or undefined for the global view.' }],
+        returns: 'the generated SDK, or empty text for a native-mode scope.',
+      },
+      {
         signature: 'presentAs(mode: ToolPresentationMode): () => void',
         description: 'Present the calling scope\'s tools in `mode` instead of the deployment default. Nearest scope on the chain wins, so a preset\'s standing declaration covers every agent joined under it.\n\nScoped only, and one declaration per scope: this is how an agent preset composes Code Mode agents beside native ones in the same process, and a process-global override would be the `mode` config field instead.',
         parameters: [{ name: 'mode', description: 'the presentation the covered agents\' models see.' }],
         returns: 'the exact disposer that restores the deployment default.',
+      },
+      {
+        signature: 'wireSchemas(scope?: ScopeKey): ToolProviderResult',
+        description: 'Project schemas for direct calls under the scope\'s current presentation. Capability bindings inside run_code use schemas instead. The knownNames list is only for prompt-order validation, not authorization: restrictions preserve known names while a code-mode collapse removes them.',
+        parameters: [{ name: 'scope', description: 'the calling agent, or undefined for the global view.' }],
+        returns: 'detached direct-call schemas and prompt-order validation names.',
       },
       {
         signature: 'register(definition: ToolDefinition): () => void',
@@ -5013,7 +5025,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolRuntime',
-    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    constructor(ctx: Context, config: Config = {});\n    presentAs(mode: ToolPresentationMode): () => void;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n}',
+    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    constructor(ctx: Context, config: Config = {});\n    codeSdk(scope?: ScopeKey): string;\n    presentAs(mode: ToolPresentationMode): () => void;\n    wireSchemas(scope?: ScopeKey): ToolProviderResult;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n}',
   },
   {
     name: 'ToolRuntimeScheduler',

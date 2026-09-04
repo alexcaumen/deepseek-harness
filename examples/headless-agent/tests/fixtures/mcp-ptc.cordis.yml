@@ -1,0 +1,44 @@
+- id: mcp-ptc-fixture
+  name: './mcp-ptc-fixture.ts'
+
+# Source-only staging bridge: no change to the runnable examples' dependency inventory.
+- id: mcp-tool-runtime
+  name: '../../../../packages/mcp/mcp-server-tool-runtime/src/index.ts'
+  config:
+    host: 127.0.0.1
+    port: 0
+
+- id: code-runtime
+  name: '@deepseek-ai/dsh-code-runtime-worker-thread'
+  config:
+    computeMs: 5000
+    maxWallMs: 10000
+    maxOutputBytes: 16384
+    maxOldGenerationSizeMb: 64
+
+- id: base
+  name: '@deepseek-ai/cordis-plugin-include'
+  config:
+    path: ../../cordis.yml
+    patches:
+      - id: llm-deepseek
+        disabled: true
+      - id: agent-spine
+        config:
+          agents:
+            - id: main
+              provider: mcp-ptc-script
+              model: mcp-ptc-script
+              cwd: !!js process.cwd()
+          tools:
+            mode: native
+          workspaceContext: false
+          includeRuntimeContext: false
+          dshHome: './.dsh-home'
+          skills:
+            enabled: false
+          persona: 'Keyless MCP tool presentation regression.'
+      - id: persistence
+        config:
+          root: './.sessions'
+          compression: none

@@ -116,6 +116,21 @@ async function runCode(
 }
 
 describe('mode-aware wire contribution', () => {
+  it.each(['native', 'code', 'both'] as const)('exposes the canonical detached projection and SDK to consumers in %s', async (mode) => {
+    const { ctx, tools, systemPrompt } = await setup({ mode })
+    registerEcho(ctx)
+    const projection = tools.wireSchemas()
+    const assembly = await systemPrompt.assemble()
+    expect(projection.schemas).toEqual(assembly.tools)
+    expect(tools.codeSdk()).toBe(assembly.sections.find(section => section.name === 'tools:sdk')?.text ?? '')
+    const first = projection.schemas[0]!
+    Object.assign(first.parameters, { description: 'consumer-local change' })
+    first.description = 'consumer-local change'
+    expect(tools.wireSchemas().schemas).toEqual(assembly.tools)
+    expect(tools.schemas().map(schema => schema.name)).toEqual(mode === 'native' ? ['echo'] : ['echo', RUN_CODE_NAME])
+    await ctx.fiber.dispose()
+  })
+
   it("mode 'native' contributes every schema, no run_code, no SDK section — and needs no runtime", async () => {
     const { ctx, systemPrompt } = await setup({ mode: 'native', runtime: false })
     registerEcho(ctx)

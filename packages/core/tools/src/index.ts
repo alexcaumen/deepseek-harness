@@ -877,18 +877,25 @@ export class ToolRuntime extends Service {
       name: 'tools:sdk',
       order: SDK_SECTION_ORDER,
       // Regenerate from the calling scope's visible tools in stable order.
-      text: (context) => {
-        const mode = this.modeFor(context.scope)
-        if (mode === 'native') return ''
-        const runtime = this.requireCodeRuntime(mode)
-        // Own-property read: a language like `toString`/`constructor` would
-        // otherwise resolve an inherited Object.prototype member as a renderer.
-        const render = SDK_RENDERERS[runtime.language]
-        /* v8 ignore next -- requireCodeRuntime rejects an unknown language before this runs. */
-        if (render === undefined) throw new Error(`dsh-tools: no SDK renderer for ${runtime.language}`)
-        return render(this.sdkSchemas(context.scope))
-      },
+      text: context => this.codeSdk(context.scope),
     }
+  }
+
+  /**
+   * Render the same scoped SDK used by the system prompt for an external tool
+   * consumer. Reads current visibility and runtime language on every call;
+   * missing or unsupported runtimes fail before exposing any declarations.
+   * @param scope - the calling agent, or undefined for the global view.
+   * @returns the generated SDK, or empty text for a native-mode scope.
+   */
+  codeSdk(scope?: ScopeKey): string {
+    const mode = this.modeFor(scope)
+    if (mode === 'native') return ''
+    const runtime = this.requireCodeRuntime(mode)
+    const render = SDK_RENDERERS[runtime.language]
+    /* v8 ignore next -- requireCodeRuntime rejects an unknown language before this runs. */
+    if (render === undefined) throw new Error(`dsh-tools: no SDK renderer for ${runtime.language}`)
+    return render(this.sdkSchemas(scope))
   }
 
   /**
@@ -974,14 +981,18 @@ export class ToolRuntime extends Service {
   }
 
   /**
-   * Build one scope's wire schemas and names for prompt-order validation.
-   * Restrictions do not make known tools invalid, but a mode collapse does.
+   * Project schemas for direct calls under the scope's current presentation.
+   * Capability bindings inside run_code use {@link schemas} instead. The
+   * knownNames list is only for prompt-order validation, not authorization:
+   * restrictions preserve known names while a code-mode collapse removes them.
+   * @param scope - the calling agent, or undefined for the global view.
+   * @returns detached direct-call schemas and prompt-order validation names.
    */
-  private wireSchemas(scope?: ScopeKey): ToolProviderResult {
+  wireSchemas(scope?: ScopeKey): ToolProviderResult {
     const view = this.view(scope)
     const mode = this.modeFor(scope)
     if (mode === 'native') {
-      const schemas = [...view.visible.values()].map(definition => this.schemaOf(definition, false))
+      const schemas = [...view.visible.values()].map(definition => this.schemaOf(definition))
       return { schemas, knownNames: [...view.knownNames] }
     }
     // Validate the runtime language BEFORE projecting schemas: schemaOf reads
@@ -990,7 +1001,7 @@ export class ToolRuntime extends Service {
     // renderer-table rejection the canonical assembly-time error for a
     // language with no SDK renderer.
     this.requireCodeRuntime(mode)
-    const schemas = [...view.visible.values()].map(definition => this.schemaOf(definition, false))
+    const schemas = [...view.visible.values()].map(definition => this.schemaOf(definition))
     if (mode === 'code') {
       return {
         schemas: schemas.filter(schema => schema.name === RUN_CODE_NAME),
@@ -1232,7 +1243,7 @@ export class ToolRuntime extends Service {
    * @returns one deep-cloned schema per visible tool.
    */
   schemas(scope?: ScopeKey): ToolSchema[] {
-    return [...this.view(scope).visible.values()].map(definition => this.schemaOf(definition, true))
+    return [...this.view(scope).visible.values()].map(definition => this.schemaOf(definition))
   }
 
   /** Project visible callable tools onto the generated Code Mode SDK contract. */
@@ -1246,16 +1257,16 @@ export class ToolRuntime extends Service {
           throw new Error(`tool "${definition.name}" output schema must be lossless JSON before SDK projection`)
         }
         return {
-          ...this.schemaOf(definition, true),
+          ...this.schemaOf(definition),
           output,
         }
       })
   }
 
   /** Project one definition onto the model-facing schema fields. */
-  private schemaOf(definition: ToolDefinition, detachParameters: boolean): ToolSchema {
+  private schemaOf(definition: ToolDefinition): ToolSchema {
     const { name, description, parameters } = definition
-    const detached = detachParameters ? snapshotJsonValue(parameters) : parameters
+    const detached = snapshotJsonValue(parameters)
     if (detached === undefined) {
       throw new Error(`tool "${name}" parameters must be lossless JSON before schema projection`)
     }

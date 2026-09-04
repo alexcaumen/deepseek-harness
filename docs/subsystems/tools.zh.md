@@ -503,6 +503,15 @@ Tool registry and execution pipeline. Scoped registrations shadow globals; one v
 
 ```ts cordis-catalog
 /**
+ * Render the same scoped SDK used by the system prompt for an external tool
+ * consumer. Reads current visibility and runtime language on every call;
+ * missing or unsupported runtimes fail before exposing any declarations.
+ * @param scope - the calling agent, or undefined for the global view.
+ * @returns the generated SDK, or empty text for a native-mode scope.
+ */
+codeSdk(scope?: ScopeKey): string
+
+/**
  * Present the calling scope's tools in `mode` instead of the deployment
  * default. Nearest scope on the chain wins, so a preset's standing
  * declaration covers every agent joined under it.
@@ -514,6 +523,16 @@ Tool registry and execution pipeline. Scoped registrations shadow globals; one v
  * @returns the exact disposer that restores the deployment default.
  */
 presentAs(mode: ToolPresentationMode): () => void
+
+/**
+ * Project schemas for direct calls under the scope's current presentation.
+ * Capability bindings inside run_code use {@link schemas} instead. The
+ * knownNames list is only for prompt-order validation, not authorization:
+ * restrictions preserve known names while a code-mode collapse removes them.
+ * @param scope - the calling agent, or undefined for the global view.
+ * @returns detached direct-call schemas and prompt-order validation names.
+ */
+wireSchemas(scope?: ScopeKey): ToolProviderResult
 
 /**
  * Register globally or in the calling agent scope. Scoped tools shadow
@@ -589,7 +608,7 @@ executionMode(exec: ToolExecutionInput): ToolExecutionMode
 async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>
 ```
 
-Types: [ScopeKey](scope.zh.md)
+Types: [ScopeKey](scope.zh.md) · [ToolProviderResult](system-prompt.zh.md)
 
 Source: [`packages/core/tools/src/index.ts`](../../packages/core/tools/src/index.ts)
 

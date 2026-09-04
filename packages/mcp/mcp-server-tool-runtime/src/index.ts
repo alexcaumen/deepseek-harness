@@ -26,6 +26,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import { CallId } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { Session } from '@deepseek-ai/dsh-session'
+import { RUN_CODE_NAME } from '@deepseek-ai/dsh-tools'
 import type { ToolExecutionFailure, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 
 const DEFAULT_PATH = '/mcp/tool-runtime'
@@ -85,6 +86,7 @@ interface Binding {
 
 interface McpConnection {
   readonly binding: Binding
+  // oxlint-disable-next-line typescript/no-deprecated -- per-request scoped schemas require the SDK's low-level handler API.
   readonly server: Server
   readonly transport: StreamableHTTPServerTransport
   sessionId?: string
@@ -323,19 +325,29 @@ export class ToolRuntimeMcpServer extends Service {
     }
   }
 
+  // oxlint-disable-next-line typescript/no-deprecated -- this bridge owns dynamic list/call handlers, not static tool registrations.
   private createMcpServer(binding: Binding): Server {
+    // oxlint-disable-next-line typescript/no-deprecated -- preserve low-level authenticated session and request handling.
     const server = new Server(
       { name: 'dsh-tool-runtime', version: '0.1.1-rc.2' },
       { capabilities: { tools: {} } },
     )
-    server.setRequestHandler(ListToolsRequestSchema, async () => {
+    server.setRequestHandler(ListToolsRequestSchema, () => {
       if (!this.bindingIsLive(binding)) throw new Error('authorization expired')
-      return {
-        tools: this.ctx.tools.schemas(binding.agent).map(schema => ({
-          name: schema.name,
-          description: schema.description,
-          inputSchema: schema.parameters,
-        })),
+      try {
+        const { schemas } = this.ctx.tools.wireSchemas(binding.agent)
+        return {
+          tools: schemas.map(schema => ({
+            name: schema.name,
+            description: schema.name === RUN_CODE_NAME
+              ? `${schema.description}\n\n${this.ctx.tools.codeSdk(binding.agent)}`
+              : schema.description,
+            inputSchema: schema.parameters,
+          })),
+        }
+      } catch {
+        // Configuration and schema errors must not disclose backend details.
+        throw new Error('tool bridge listing failed')
       }
     })
     server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
@@ -353,11 +365,10 @@ export class ToolRuntimeMcpServer extends Service {
     if (!this.bindingIsLive(binding)) {
       return projectResult(binding.agent.ctx, unknownToolResult(name), requestSignal)
     }
-    const visible = this.ctx.tools.schemas(binding.agent).some(schema => schema.name === name)
-    if (!visible) return projectResult(binding.agent.ctx, unknownToolResult(name), requestSignal)
-
     const fused = fuseSignals(requestSignal, binding.abort.signal)
     try {
+      const visible = this.ctx.tools.wireSchemas(binding.agent).schemas.some(schema => schema.name === name)
+      if (!visible) return await projectResult(binding.agent.ctx, unknownToolResult(name), fused.signal)
       const result = await this.ctx.agents.withInitiator(binding.agent, () => this.ctx.tools.execute({
         callId: CallId(`mcp-${randomUUID()}`),
         name,
@@ -424,6 +435,7 @@ export class ToolRuntimeMcpServer extends Service {
 
 function resolveHost(host: Config['host']): LoopbackHost {
   const value = host ?? '127.0.0.1'
+  // oxlint-disable-next-line typescript/no-unnecessary-condition -- reject public binds even from untyped constructor callers.
   if (value !== '127.0.0.1' && value !== '::1') {
     throw new Error('mcp tool runtime host must be numeric loopback (127.0.0.1 or ::1)')
   }

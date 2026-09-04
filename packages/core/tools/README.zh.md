@@ -117,6 +117,8 @@ ctx.tools.register(defineTool({
 
 ### Code Mode
 
+外部工具消费者使用 `wireSchemas(scope).schemas` 获取可直接调用的工具，使用 `codeSdk(scope)` 获取规范生成的程序声明。两者每次读取当前作用域的呈现模式与可见性；代码呈现要求支持的运行时。`wireSchemas` 返回独立的 schema 数据；`knownNames` 仅用于提示词顺序验证，绝不是调用允许列表。`schemas(scope)` 仍是构建程序绑定所需的完整能力目录。经过认证的 [MCP 桥接](../../mcp/mcp-server-tool-runtime/README.zh.md) 使用这些投影，不改变执行权限。
+
 在 `code` 或 `both` 模式下，注册表为当前作用域公开保留的 `run_code` 传输和按所加载运行时语言生成的确定性 SDK——注册表按 `ctx.codeRuntime.language` 选择渲染器（`typescript` → 下方的 TypeScript SDK，`python` → Python SDK）。SDK 为每个可见工具声明精确的参数与规范输出类型（TypeScript 为 `ToolArgsMap`/`ToolOutputMap`，Python 为具名 `TypedDict`），每个绑定都会解析为该工具的规范 JSON 值。每个无损 JSON 绑定调用都会在原生调度约定下重新进入完整工具流水线（并发安全的调用最多可重叠 `maxParallelSubCalls` 个；独占调用单独运行并构成排序屏障），并在日志中与外层调用建立关联。拒绝及其他失败结果会以程序实际可见的 `ToolCallError` 形式拒绝，且只携带 `toolName` 和 `message`；Native 内容和内部错误码留在 Code 约定之外。程序的外层日志与返回值会重新进入模型上下文；当成功结算的子调用最终 Native 内容包含图片时，桥接层还会经父结果延后完整有序内容，避免图片被 JSON 专用绑定遮蔽。最终 post-execute 阻止或内容替换具有权威性。普通副作用不会回滚，子调用的 `additionalContexts` 会通过父结果延迟，以保持调用／结果相邻。运行结算会中止并排空尚未完成的绑定；运行时失败以 `CodeRunFailedError` 形式出现。
 
 在 `code`（而非 `both`）下，该传输同时也是模型唯一可用的入口：模型直呼其他任何可见工具名，都会在创建执行时、早于 `tools/pre-execute`、审批 `ask` 和 guards 解析为 `UNKNOWN_TOOL`，因此没有任何一方会观察或批准一个注定失败的调用。拒绝信息会给出正确路径（`only \`run_code\` is callable directly — call \`<name>\` from inside a \`run_code\` program instead`），因为同一份提示词刚刚声明过那个工具，只说 `unknown tool` 会被读成部署损坏。SDK 子分发携带外层执行的 `parent` token，不受此限制，因此程序保留 SDK 声明的全部绑定。参见[执行器塌缩 note](../../../.agents/notes/implemented/bug-fix/2026-08-07-code-mode-executor-collapse.md)、[Code Mode 基础](../../../.agents/notes/implemented/feature/2026-06-15-code-mode.md)、[类型化返回约定](../../../.agents/notes/implemented/feature/2026-07-20-code-mode-typed-tool-returns.md)和[代码运行时 seam](../../code-runtime/README.md)。可以运行 `pnpm run demo:code-mode` 试用。

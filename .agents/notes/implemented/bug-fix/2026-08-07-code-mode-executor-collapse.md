@@ -20,6 +20,10 @@ The collapse is a security-relevant invariant, so acceptance is pinned through t
 
 ## Alternatives considered
 
+### Advertise the capability catalog to external MCP clients
+
+The capability catalog includes tools that only nested programs may call under `code`. Advertising them as directly callable produces predictable `UNKNOWN_TOOL` errors. The authenticated MCP bridge reads the public `wireSchemas(scope).schemas` projection on both listing and dispatch, and appends the canonical `codeSdk(scope)` declarations to the transport description. Returning only the transport schema without the SDK would leave remote models unable to discover its program bindings. These readers share the registry's scoped mode and language resolution; full system-prompt assembly is not an authorization source and may run unrelated providers. No adapter sets a synthetic parent token or changes the agent's mode to force a native call through.
+
 ### Filter `get()` / the registry view by mode
 
 The view is consumed by presenters, `tool-cordis` inspection, and the SDK binder; collapsing it would hide from the program surface tools that must still bind, and would change the public resolution contract for every consumer, not just the executor.
