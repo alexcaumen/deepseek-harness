@@ -470,13 +470,6 @@
   opacity: 0.88;
   transform: scaleY(var(--dictation-amplitude, 0.08));
   transform-origin: center;
-  transition: transform 95ms linear;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .dictationBar {
-    transition: none;
-  }
 }
 
 /* Plan / Read-only / model — native <select>, chip-like closed chrome
