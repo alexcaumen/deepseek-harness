@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { readFile, mkdir, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { resolve, win32 } from 'node:path'
 import { spawnSync } from 'node:child_process'
@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url'
 import { inflateSync } from 'node:zlib'
 
 const SCREENSHOT_TOOL = 'cua_computer_use_screenshot'
+const MAX_PNG_BYTES = 16 * 1024 * 1024
+const MAX_INFLATED_PNG_BYTES = 128 * 1024 * 1024
 const MUTATING_INPUT_PATTERN = /(?:^|_)(?:mouse|keyboard|shortcut|macro|task|mission|smart|system)(?:_|$)/i
 const ALLOWED_PARENT_ENVIRONMENT = Object.freeze([
   'APPDATA', 'COMSPEC', 'HOMEDRIVE', 'HOMEPATH', 'LOCALAPPDATA',
@@ -110,6 +112,7 @@ function textError(result) {
 }
 
 function parsePng(bytes) {
+  if (bytes.length > MAX_PNG_BYTES) throw new Error('Screenshot PNG exceeds the 16 MiB evidence limit.')
   const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
   if (bytes.length < 45 || !bytes.subarray(0, 8).equals(signature)) throw new Error('Screenshot is not a PNG.')
   let offset = 8
@@ -138,23 +141,39 @@ function parsePng(bytes) {
   if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
     throw new Error('Screenshot PNG dimensions are invalid.')
   }
-  if (!ended || compressed.length === 0 || inflateSync(Buffer.concat(compressed)).length === 0) {
+  if (!ended || compressed.length === 0
+    || inflateSync(Buffer.concat(compressed), { maxOutputLength: MAX_INFLATED_PNG_BYTES }).length === 0) {
     throw new Error('Screenshot PNG is not decodable.')
   }
   return { width, height }
 }
 
-function imageEvidence(result) {
+function imageEvidence(result, expectedScreenshotSha256) {
   const images = (result.content ?? []).filter((row) => row.type === 'image' && typeof row.data === 'string')
   return images.map((row) => {
     const bytes = Buffer.from(row.data, 'base64')
     if (row.mimeType !== 'image/png') throw new Error(`Unexpected screenshot MIME type: ${String(row.mimeType)}`)
+    if (bytes.length > MAX_PNG_BYTES) throw new Error('Screenshot PNG exceeds the 16 MiB evidence limit.')
+    const sha256 = createHash('sha256').update(bytes).digest('hex')
+    if (sha256 !== expectedScreenshotSha256) {
+      return {
+        mimeType: row.mimeType,
+        bytes: bytes.length,
+        width: null,
+        height: null,
+        sha256,
+        decoded: false,
+        hashMatches: false,
+      }
+    }
     const dimensions = parsePng(bytes)
     return {
       mimeType: row.mimeType,
       bytes: bytes.length,
       ...dimensions,
-      sha256: createHash('sha256').update(bytes).digest('hex'),
+      sha256,
+      decoded: true,
+      hashMatches: true,
     }
   })
 }
@@ -177,8 +196,10 @@ export async function exerciseReadOnlyComputerUse(client, windowHandle, expected
 
   const screenshot = await call(SCREENSHOT_TOOL, { window_handle: windowHandle, format: 'png' })
   const mutatingCalls = callLedger.filter((entry) => MUTATING_INPUT_PATTERN.test(entry.name))
-  const images = imageEvidence(screenshot)
-  const exactFixtureScreenshot = images.length === 1 && images[0].sha256 === expectedScreenshotSha256
+  const images = imageEvidence(screenshot, expectedScreenshotSha256)
+  const exactFixtureScreenshot = images.length === 1
+    && images[0].hashMatches
+    && images[0].decoded
   const checks = {
     screenshotToolDiscovered: true,
     screenshotSucceeded: screenshot.isError !== true,
@@ -188,16 +209,22 @@ export async function exerciseReadOnlyComputerUse(client, windowHandle, expected
     mutatingInputIssued: mutatingCalls.length > 0,
     keyloggerExposed: names.includes('global_keylogger'),
     faceAutomationExposed: names.includes('automation_face'),
+    independentWindowOwnershipProven: false,
+    liveCaptureProven: false,
   }
+  const readOnlyContractPass = checks.screenshotSucceeded
+    && checks.screenshotImageReturned
+    && checks.exactFixtureScreenshot
+    && checks.onlyApprovedReadCallsIssued
+    && !checks.mutatingInputIssued
+    && !checks.keyloggerExposed
+    && !checks.faceAutomationExposed
   return {
     checks,
-    scopedPass: checks.screenshotSucceeded
-      && checks.screenshotImageReturned
-      && checks.exactFixtureScreenshot
-      && checks.onlyApprovedReadCallsIssued
-      && !checks.mutatingInputIssued
-      && !checks.keyloggerExposed
-      && !checks.faceAutomationExposed,
+    readOnlyContractPass,
+    scopedPass: readOnlyContractPass
+      && checks.independentWindowOwnershipProven
+      && checks.liveCaptureProven,
     toolCount: names.length,
     toolNames: names,
     readToolSchemas: { [SCREENSHOT_TOOL]: screenshotTool.inputSchema },
@@ -211,6 +238,14 @@ async function hashFile(path) {
   return createHash('sha256').update(await readFile(path)).digest('hex')
 }
 
+function loadClientDependencies(profilePackage) {
+  const require = createRequire(profilePackage)
+  return {
+    Client: require('@modelcontextprotocol/sdk/client/index.js').Client,
+    StdioClientTransport: require('@modelcontextprotocol/sdk/client/stdio.js').StdioClientTransport,
+  }
+}
+
 export function readGitState(sourceRoot, spawn = spawnSync) {
   const run = (args) => spawn('git.exe', ['-C', sourceRoot, ...args], { encoding: 'utf8', windowsHide: true })
   const head = run(['rev-parse', 'HEAD'])
@@ -222,14 +257,17 @@ export function readGitState(sourceRoot, spawn = spawnSync) {
   return { head: head.stdout.trim().toLowerCase(), tree: tree.stdout.trim().toLowerCase(), clean: status.stdout === '' }
 }
 
-export async function runCanary(options, dependencies) {
-  const gitBefore = readGitState(options.sourceRoot)
+export async function runCanary(options, overrides = {}) {
+  const readSourceState = overrides.readGitState ?? readGitState
+  const hash = overrides.hashFile ?? hashFile
+  const loadDependencies = overrides.loadClientDependencies ?? loadClientDependencies
+  const gitBefore = readSourceState(options.sourceRoot)
   if (gitBefore.head !== options.sourceCommit || gitBefore.tree !== options.sourceTree || !gitBefore.clean) {
     throw new Error('Source watermark is not the requested clean commit/tree.')
   }
-  const serverBefore = await hashFile(options.server)
-  const profileBefore = await hashFile(options.profilePackage)
-  const { Client, StdioClientTransport } = dependencies
+  const serverBefore = await hash(options.server)
+  const profileBefore = await hash(options.profilePackage)
+  const { Client, StdioClientTransport } = loadDependencies(options.profilePackage)
   const transport = new StdioClientTransport({
     command: options.server,
     cwd: options.serverCwd,
@@ -246,9 +284,9 @@ export async function runCanary(options, dependencies) {
   } finally {
     await client.close()
   }
-  const serverAfter = await hashFile(options.server)
-  const profileAfter = await hashFile(options.profilePackage)
-  const gitAfter = readGitState(options.sourceRoot)
+  const serverAfter = await hash(options.server)
+  const profileAfter = await hash(options.profilePackage)
+  const gitAfter = readSourceState(options.sourceRoot)
   if (serverAfter !== serverBefore || profileAfter !== profileBefore
     || JSON.stringify(gitAfter) !== JSON.stringify(gitBefore)) {
     throw new Error('Canary provenance changed during execution.')
@@ -256,7 +294,7 @@ export async function runCanary(options, dependencies) {
   return {
     schemaVersion: 2,
     observedAt: new Date().toISOString(),
-    claimCeiling: 'SCOPED_READ_ONLY_FIXTURE_SCREENSHOT_NO_DESKTOP_INPUT',
+    claimCeiling: 'HELD_STATIC_FIXTURE_HASH_NO_INDEPENDENT_WINDOW_OWNERSHIP',
     fixture: {
       id: options.fixtureId,
       windowHandle: options.windowHandle,
@@ -271,15 +309,28 @@ export async function runCanary(options, dependencies) {
   }
 }
 
+export async function createFreshOutputRoot(outputRoot, fs = { lstat, mkdir, realpath }) {
+  const expectedParent = win32.resolve('N:\\codex-temp')
+  const parent = win32.dirname(outputRoot)
+  const actualParent = win32.resolve(await fs.realpath(parent))
+  if (actualParent.toLowerCase() !== expectedParent.toLowerCase()) {
+    throw new Error('Evidence parent must resolve directly to N:\\codex-temp.')
+  }
+  await fs.mkdir(outputRoot)
+  const info = await fs.lstat(outputRoot)
+  const actualOutput = win32.resolve(await fs.realpath(outputRoot))
+  if (!info.isDirectory() || info.isSymbolicLink()
+    || actualOutput.toLowerCase() !== win32.resolve(outputRoot).toLowerCase()) {
+    throw new Error('Evidence output must be a newly created local directory, not a link or junction.')
+  }
+}
+
 async function main() {
   if (process.platform !== 'win32') throw new Error('The Windows desktop canary runs only on Windows.')
   const options = parseCanaryArguments(process.argv.slice(2))
-  await mkdir(options.outputRoot, { recursive: true })
+  await createFreshOutputRoot(options.outputRoot)
   const receiptPath = resolve(options.outputRoot, 'windows-desktop-canary.json')
-  const require = createRequire(options.profilePackage)
-  const { Client } = require('@modelcontextprotocol/sdk/client/index.js')
-  const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js')
-  const receipt = await runCanary(options, { Client, StdioClientTransport })
+  const receipt = await runCanary(options)
   await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' })
   process.stdout.write(`${JSON.stringify(receipt, null, 2)}\n`)
   if (!receipt.scopedPass) process.exitCode = 1

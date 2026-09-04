@@ -2,9 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   buildCanaryEnvironment,
+  createFreshOutputRoot,
   exerciseReadOnlyComputerUse,
   parseCanaryArguments,
   readGitState,
+  runCanary,
 } from './canary-windows-desktop.mjs'
 
 const fixturePng = Buffer.from(
@@ -86,7 +88,10 @@ test('the no-spawn exercise can call only the fixture screenshot tool', async ()
     },
   }
   const result = await exerciseReadOnlyComputerUse(client, 4242, fixtureSha256)
-  assert.equal(result.scopedPass, true)
+  assert.equal(result.readOnlyContractPass, true)
+  assert.equal(result.scopedPass, false)
+  assert.equal(result.checks.independentWindowOwnershipProven, false)
+  assert.equal(result.checks.liveCaptureProven, false)
   assert.equal(result.checks.mutatingInputIssued, false)
   assert.deepEqual(calls, [{
     name: 'cua_computer_use_screenshot',
@@ -104,7 +109,9 @@ test('rejects malformed or wrong-fixture screenshot evidence', async () => {
       return { content: [{ type: 'image', mimeType: 'image/png', data: Buffer.from('not-a-png').toString('base64') }] }
     },
   }
-  await assert.rejects(() => exerciseReadOnlyComputerUse(client, 4242, fixtureSha256), /not a PNG/)
+  const malformed = Buffer.from('not-a-png')
+  const malformedSha256 = (await import('node:crypto')).createHash('sha256').update(malformed).digest('hex')
+  await assert.rejects(() => exerciseReadOnlyComputerUse(client, 4242, malformedSha256), /not a PNG/)
 
   client.callTool = async () => ({
     content: [{ type: 'image', mimeType: 'image/png', data: fixturePng.toString('base64') }],
@@ -112,6 +119,92 @@ test('rejects malformed or wrong-fixture screenshot evidence', async () => {
   const wrong = await exerciseReadOnlyComputerUse(client, 4242, 'f'.repeat(64))
   assert.equal(wrong.scopedPass, false)
   assert.equal(wrong.checks.exactFixtureScreenshot, false)
+  assert.equal(wrong.screenshotEvidence[0].decoded, false)
+})
+
+test('creates evidence only as a fresh direct directory', async () => {
+  const calls = []
+  const directory = { isDirectory: () => true, isSymbolicLink: () => false }
+  const fs = {
+    async realpath(path) {
+      calls.push(['realpath', path])
+      return path
+    },
+    async mkdir(path) {
+      calls.push(['mkdir', path])
+    },
+    async lstat(path) {
+      calls.push(['lstat', path])
+      return directory
+    },
+  }
+  const output = 'N:\\codex-temp\\giana-cowork-windows-desktop-owned-001'
+  await createFreshOutputRoot(output, fs)
+  assert.deepEqual(calls.map(([operation]) => operation), ['realpath', 'mkdir', 'lstat', 'realpath'])
+
+  await assert.rejects(() => createFreshOutputRoot(output, {
+    ...fs,
+    async realpath(path) {
+      return path === 'N:\\codex-temp' ? 'N:\\redirected' : path
+    },
+  }), /resolve directly/)
+})
+
+test('hashes source, server and profile before loading the profile SDK', async () => {
+  const events = []
+  const git = { head: '1'.repeat(40), tree: '2'.repeat(40), clean: true }
+  class Transport {}
+  class Client {
+    async connect() {
+      events.push('connect')
+    }
+
+    async listTools() {
+      return { tools: [{ name: 'cua_computer_use_screenshot', inputSchema: {} }] }
+    }
+
+    async callTool() {
+      return { content: [{ type: 'image', mimeType: 'image/png', data: fixturePng.toString('base64') }] }
+    }
+
+    async close() {
+      events.push('close')
+    }
+  }
+  const options = {
+    profilePackage: 'N:\\fixtures\\profile\\package.json',
+    server: 'N:\\fixtures\\server\\server.exe',
+    serverCwd: 'N:\\fixtures\\server',
+    sourceRoot: 'N:\\fixtures\\source',
+    sourceCommit: git.head,
+    sourceTree: git.tree,
+    expectedScreenshotSha256: fixtureSha256,
+    fixtureId: 'owned-hidden-window-001',
+    windowHandle: 4242,
+  }
+  const receipt = await runCanary(options, {
+    readGitState() {
+      events.push('git')
+      return git
+    },
+    async hashFile(path) {
+      events.push(`hash:${path}`)
+      return path.includes('server') ? 'a'.repeat(64) : 'b'.repeat(64)
+    },
+    loadClientDependencies() {
+      events.push('load-sdk')
+      return { Client, StdioClientTransport: Transport }
+    },
+  })
+  assert.equal(receipt.readOnlyContractPass, true)
+  assert.equal(receipt.scopedPass, false)
+  assert.equal(receipt.claimCeiling, 'HELD_STATIC_FIXTURE_HASH_NO_INDEPENDENT_WINDOW_OWNERSHIP')
+  assert.deepEqual(events.slice(0, 4), [
+    'git',
+    'hash:N:\\fixtures\\server\\server.exe',
+    'hash:N:\\fixtures\\profile\\package.json',
+    'load-sdk',
+  ])
 })
 
 test('forces complete untracked-file visibility in Git provenance', () => {
