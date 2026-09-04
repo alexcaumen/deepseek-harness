@@ -48,6 +48,8 @@ A finished turn materializes one ordered `turn-tail` Conversation Node. Its engi
 
 Submitted reference chips and their surrounding literal text share one inline flow. Annotation badges wrap only with available width or authored newlines; display layout never rewrites the stored annotation payload, source offsets, or user text.
 
+The empty-session headline shows the Giana CoWork brand mark and name without a Preview badge. This presentation does not imply release or production acceptance.
+
 ## Model Experience
 
 None, as the conversation UI renders session history and streams in the browser; nothing here reaches a model request.
