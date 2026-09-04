@@ -12,6 +12,15 @@ describe('MessageText', () => {
     const { container } = render(<MessageText text={'# line1\n`line2`'} />)
     expect(container.textContent).toBe('# line1\n`line2`')
     expect(container.querySelector('h1')).toBeNull()
+    expect(container.firstElementChild?.tagName).toBe('DIV')
+  })
+
+  it('renders inline literal fragments without interpreting markup or dropping newlines', () => {
+    const text = '# literal\n<script>not executable</script>'
+    const { container } = render(<MessageText text={text} inline />)
+    expect(container.firstElementChild?.tagName).toBe('SPAN')
+    expect(container.textContent).toBe(text)
+    expect(container.querySelector('script')).toBeNull()
   })
 })
 

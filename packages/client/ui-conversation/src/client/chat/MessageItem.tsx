@@ -219,7 +219,7 @@ function projectUserText(
   for (const range of ranges) {
     if (range.start < cursor) continue
     const { start: tokenStart, end, label, kind, annotation: annotationData } = range
-    if (tokenStart > cursor) parts.push(<MessageText key={cursor} text={text.slice(cursor, tokenStart)} />)
+    if (tokenStart > cursor) parts.push(<MessageText key={cursor} text={text.slice(cursor, tokenStart)} inline />)
     const referenceKind = kind === 'session'
       ? 'session'
       : label.startsWith('@')
@@ -268,7 +268,7 @@ function projectUserText(
     cursor = end
   }
   if (parts.length === 0) return <MessageText text={text} />
-  if (cursor < text.length) parts.push(<MessageText key={cursor} text={text.slice(cursor)} />)
+  if (cursor < text.length) parts.push(<MessageText key={cursor} text={text.slice(cursor)} inline />)
   return <>{parts}</>
 }
 

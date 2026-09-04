@@ -645,6 +645,18 @@ describe('ChatView', () => {
     expect(view.queryByText('response-annotations')).toBeNull()
   })
 
+  it('keeps text between annotation chips inline without removing authored line breaks', () => {
+    const h = makeHarness({ nodes: [user(1, 'Compare @Annotation 1 and @Annotation 2\nKeep this line.')] })
+    const view = render(<h.ChatView {...h.props} />)
+    const chips = view.container.querySelectorAll('[data-ref-chip="annotation"]')
+    expect(chips).toHaveLength(2)
+    expect(chips[0]?.previousElementSibling?.tagName).toBe('SPAN')
+    expect(chips[0]?.nextElementSibling?.tagName).toBe('SPAN')
+    expect(chips[0]?.nextElementSibling?.textContent).toBe(' and ')
+    expect(chips[1]?.nextElementSibling?.tagName).toBe('SPAN')
+    expect(chips[1]?.nextElementSibling?.textContent).toBe('\nKeep this line.')
+  })
+
   it('keeps submitted annotations structured and navigates duplicate source text by exact offsets', () => {
     const originalRects = Object.getOwnPropertyDescriptor(Range.prototype, 'getClientRects')
     Object.defineProperty(Range.prototype, 'getClientRects', {
