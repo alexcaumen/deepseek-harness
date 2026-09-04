@@ -12,10 +12,10 @@
 - text: Use web_search once with queries ["DeepSeek Harness snapshot search","DeepSeek Harness multi-query search"]. Then reply exactly SEARCH_DONE and stop. {{clock}}
 - button "Copy":
   - img
-- button "Context injection Giana Code Putri":
+- button "Context injection Giana CoWork":
   - img
   - img
-  - text: Context injection Giana Code Putri
+  - text: Context injection Giana CoWork
 - button "Search DeepSeek Harness snapshot search, DeepSeek Harness multi-query search":
   - img
   - img
@@ -38,5 +38,7 @@
   - text: DeepSeek-V4-Flash
   - img
 - button "0% of context used"
+- button "Start automatic-language dictation":
+  - img
 - button "Send message" [disabled]
 - text: 1 turns · 2 steps LLM {{duration}} · Tool call {{duration}} TTFT avg {{duration}} · {{throughput}} tok/s Cache hit 0% Input 22 tok · Output 7 tok

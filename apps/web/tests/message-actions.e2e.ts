@@ -104,7 +104,17 @@ describe('web e2e: message IconActions and clocks on settled history', () => {
     const sessionRow = page.locator('[role="treeitem"]').nth(1)
     await sessionRow.waitFor({ timeout: 10_000 })
     await sessionRow.click()
-    await expect.poll(() => page.getByText(MID_TURN_TEXT, { exact: true }).count(), { timeout: 15_000 }).toBe(1)
+    const prelude = page.locator('[data-assistant-block-kind="reasoning"]').first()
+    const toggle = prelude.getByRole('button', { name: 'Thinking', exact: true })
+    await toggle.waitFor({ timeout: 15_000 })
+    expect(await toggle.getAttribute('aria-expanded')).toBe('false')
+    await toggle.click()
+    const expectedPrelude = [
+      'The user wants me to read a.txt and b.txt, then reply with "DONE". Let me do both reads in parallel.',
+      MID_TURN_TEXT,
+    ].join('\n\n')
+    await expect.poll(() => prelude.getByText(expectedPrelude, { exact: true }).count(), { timeout: 15_000 }).toBe(1)
+    await toggle.click()
     await expect.poll(() => page.getByText('DONE', { exact: true }).count(), { timeout: 15_000 }).toBe(1)
 
     // Focus-reveal the footers (hover:hover keeps them opacity-hidden until

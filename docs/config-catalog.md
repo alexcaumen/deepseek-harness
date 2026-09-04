@@ -866,6 +866,8 @@ export interface Config {
   host: '127.0.0.1' | '0.0.0.0'
   /** Listen port; zero requests an OS-assigned port. */
   port: number
+  /** Optional immutable release revision exposed for trusted launchers. */
+  releaseRevision?: string
 }
 ```
 
@@ -1462,7 +1464,7 @@ export interface Config {
 export type LoopbackHost = '127.0.0.1' | '::1'
 ```
 
-Source: [`packages/mcp/mcp-server-tool-runtime/src/index.ts:35`](../packages/mcp/mcp-server-tool-runtime/src/index.ts)
+Source: [`packages/mcp/mcp-server-tool-runtime/src/index.ts:57`](../packages/mcp/mcp-server-tool-runtime/src/index.ts)
 
 <a id="deepseek-aidsh-message-feedback"></a>
 
@@ -1479,6 +1481,29 @@ export interface Config {
 ```
 
 Source: [`packages/feedback/message-feedback/src/index.ts:49`](../packages/feedback/message-feedback/src/index.ts)
+
+<a id="deepseek-aidsh-model-lifecycle"></a>
+
+## `@deepseek-ai/dsh-model-lifecycle`
+
+```ts config-catalog
+/** Durable local-model routing preference. */
+export interface ModelLifecycleConfig {
+  /** Preferred compute target; Automatic performs the admitted fallback order. */
+  readonly preference?: ModelComputePreference
+  /** Minimum time an activated model remains resident before an idle unload. */
+  readonly minimumDwellMs?: number
+  /** Idle time after the last inference lease before unloading; zero disables it. */
+  readonly idleUnloadMs?: number
+  /** Maximum duration of one host-driver stage before it is cancelled. */
+  readonly stageTimeoutMs?: number
+}
+
+/** User-visible routing intent for a governed local model. */
+export type ModelComputePreference = typeof MODEL_COMPUTE_PREFERENCES[number]
+```
+
+Source: [`packages/llm/model-lifecycle/src/index.ts:31`](../packages/llm/model-lifecycle/src/index.ts)
 
 <a id="deepseek-aidsh-permission-presets"></a>
 
@@ -1500,6 +1525,12 @@ export interface Config {
    * sandbox and approval defaults is used.
    */
   defaultPreset?: string
+  /**
+   * Named presets whose durable selection should follow a changed deployment
+   * definition when an existing session is loaded. Empty by default: most
+   * deployments preserve historical knob values exactly.
+   */
+  reconcileExistingPresets?: string[]
 }
 
 /** One preset's sandbox/approval bundle and optional client presentation. */
@@ -2415,7 +2446,7 @@ Source: [`packages/e2b/subprocess-e2b/src/index.ts:25`](../packages/e2b/subproce
 ```ts config-catalog
 /** Plugin config: the deployment-authored fragment of the system prompt (see {@link Config.persona} for its contract). */
 export interface Config {
-  /** Include the fixed Giana Code identity before the deployment persona (default true). */
+  /** Include the fixed Giana CoWork identity before the deployment persona (default true). */
   includeHarnessIdentity?: boolean
   /** Include dynamic runtime-context snapshots in model history (default true). */
   includeRuntimeContext?: boolean
@@ -3428,7 +3459,7 @@ Source: [`packages/llm/llm-princess-os/src/index.ts:58`](../packages/llm/llm-pri
 export interface Config {
   /** `*`-wildcard patterns that are always denied before tool dispatch. */
   denyPatterns?: string[]
-  /** `*`-wildcard patterns that require the deployment approval service. */
+  /** `*`-wildcard patterns that require a one-shot human decision through the DSH approval service. */
   askPatterns?: string[]
 }
 ```

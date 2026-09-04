@@ -39,7 +39,7 @@ const allowedLoaderStatuses = new Set([
 
 try {
   await page.goto(baseURL, { waitUntil: 'domcontentloaded', timeout: 120_000 })
-  await page.getByText('Giana Code Putri', { exact: true }).first().waitFor({ state: 'visible', timeout: 120_000 })
+  await page.getByText('Giana CoWork', { exact: true }).first().waitFor({ state: 'visible', timeout: 120_000 })
   await page.getByText('Settings', { exact: true }).first().click()
   await page.getByText('Plugins', { exact: true }).first().click()
   await page.getByText('Plugin list', { exact: true }).click()
@@ -56,7 +56,7 @@ try {
   const invalidLoaderStatuses = loaderStatuses.filter(status => status === null || !allowedLoaderStatuses.has(status))
 
   const checks = {
-    title: await page.title() === 'Giana Code Putri',
+    title: await page.title() === 'Giana CoWork',
     featureCount: summaryFeatures?.trim() === '96',
     allFeatureClaimsDiscoverable: featureClaims === 96,
     noLegacyFeatureRuntimeState: legacyRuntimeStates === 0,

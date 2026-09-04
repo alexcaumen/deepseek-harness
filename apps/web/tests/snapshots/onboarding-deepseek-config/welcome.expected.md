@@ -1,5 +1,5 @@
 - dialog "内测声明":
   - heading "内测声明" [level=2]
-  - paragraph: Giana Code Putri 目前仍处在面向私人工作台持续完善的阶段。核心插件与基础 API 会继续迭代。
+  - paragraph: Giana CoWork 目前仍处在面向私人工作台持续完善的阶段。核心插件与基础 API 会继续迭代。
   - paragraph: 工作台能力保持开放、可复用、可组合。
   - button "继续"

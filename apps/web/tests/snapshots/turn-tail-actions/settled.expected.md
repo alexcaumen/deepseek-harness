@@ -12,10 +12,10 @@
 - text: Begin your reply with the plain sentence "Reading the workspace now." as text, and in that same message call the bash tool with the command "echo alpha". After the tool result, reply with the single word DONE and stop. {{clock}}
 - button "Copy":
   - img
-- button "Context injection Giana Code Putri":
+- button "Context injection Giana CoWork":
   - img
   - img
-  - text: Context injection Giana Code Putri
+  - text: Context injection Giana CoWork
 - button "Think The user wants me to begin with \"Reading the workspace now.\" and call bash with \"echo alpha\" in the same message. Then after the tool result, reply with the single word DONE and stop.":
   - img
   - img

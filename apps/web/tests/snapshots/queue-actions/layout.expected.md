@@ -18,10 +18,10 @@
   - img
   - img
   - text: Context injection goal
-- button "Context injection Giana Code Putri":
+- button "Context injection Giana CoWork":
   - img
   - img
-  - text: Context injection Giana Code Putri
+  - text: Context injection Giana CoWork
 - paragraph: partial
 - status: Deep diving...
 - region "To-dos":

@@ -213,6 +213,7 @@
     { "path": "./packages/code-runtime/code-runtime-worker-thread" },
     { "path": "./packages/llm/llm-deepseek" },
     { "path": "./packages/llm/llm-gianaos-catalog" },
+    { "path": "./packages/llm/model-lifecycle" },
     { "path": "./packages/llm/llm-gianaos-acp" },
     { "path": "./packages/llm/llm-gianaos-telephone" },
     { "path": "./packages/llm/llm-gianaos-workspace-bridge" },

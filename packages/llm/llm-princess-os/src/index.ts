@@ -84,7 +84,7 @@ export const Config: z<Config> = z.object({
   agentDescription: z.string().default('Princess OS private agent via ACP'),
   systemInstruction: z.string().default([
     'This ACP route belongs to Princess OS.',
-    'Giana Code is only the workbench and transcript projection.',
+    'Giana CoWork is only the workbench and transcript projection.',
     'Do not claim to be one of the Giana Girls and do not write to any GianaOS profile or canonical database.',
   ].join(' ')),
   pythonCommand: z.string().required(),

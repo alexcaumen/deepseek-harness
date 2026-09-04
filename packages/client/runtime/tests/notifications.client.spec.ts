@@ -41,7 +41,7 @@ describe('desktop notifications', () => {
     const completed = classifyNotification(turnEnd({ kind: 'completed' }))
     expect(completed).toMatchObject({
       kind: 'completed',
-      title: 'Giana Code Putri - Tugas selesai',
+      title: 'Giana CoWork - Tugas selesai',
       body: 'Tugas Anda sudah selesai.',
       sessionId: 'session-1',
     })
@@ -72,14 +72,19 @@ describe('desktop notifications', () => {
       type: 'question/requested', sessionId,
       questions: [{ id: 'question-1', header: 'Confirm', options: [] }],
     } as never)).toMatchObject({ kind: 'attention', body: 'Jawaban Anda diperlukan untuk melanjutkan tugas.' })
-    expect(classifyNotification({
+    const agentError = classifyNotification({
       type: 'host/agent-error', sessionId, message: 'backend failed',
-    } as never)).toMatchObject({ kind: 'failed', body: 'Tugas berhenti karena terjadi kendala.' })
-    expect(classifyNotification({
+    } as never, 'agent-rpc')
+    expect(agentError).toMatchObject({ kind: 'failed', body: 'Tugas berhenti karena terjadi kendala.' })
+    expect(`${agentError?.key} ${agentError?.tag}`).not.toContain('backend failed')
+    const streamError = classifyNotification({
       type: 'stream/error', error: { code: 'CLOSED', message: 'socket closed' },
-    } as never)).toMatchObject({
-      kind: 'failed', body: 'Koneksi terputus. Buka Giana Code Putri untuk melanjutkan.',
+    } as never, 'stream-rpc')
+    expect(streamError).toMatchObject({
+      kind: 'failed', body: 'Koneksi terputus. Buka Giana CoWork untuk melanjutkan.',
     })
+    expect(`${streamError?.key} ${streamError?.tag}`).not.toContain('socket closed')
+    expect(`${streamError?.key} ${streamError?.tag}`).not.toContain('CLOSED')
     expect(classifyNotification({ type: 'session-status', sessionId, running: false } as never)).toBeUndefined()
   })
 

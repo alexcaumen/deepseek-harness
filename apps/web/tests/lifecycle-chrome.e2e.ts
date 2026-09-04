@@ -163,7 +163,9 @@ describe('web e2e: lifecycle & chrome (workspace flow / reload / dark mode)', ()
     }
     // The blank frame renders the hero, not the resident composer: the
     // headline plus the guidance placeholder are the empty state's anchors.
-    await expect.poll(() => page.getByText('Into the Unknown', { exact: false }).count(), { timeout: 15_000 }).toBe(1)
+    const heroHeadline = page.getByText('Preview', { exact: true }).locator('..')
+      .getByText('Giana CoWork', { exact: true })
+    await expect.poll(() => heroHeadline.count(), { timeout: 15_000 }).toBe(1)
     const input = page.locator('textarea').first()
     await input.waitFor({ timeout: 10_000 })
     if (MODE !== 'record') {
@@ -180,11 +182,12 @@ describe('web e2e: lifecycle & chrome (workspace flow / reload / dark mode)', ()
       try {
         await input.press('Enter')
         if (MODE !== 'record') {
-          const liveTail = page.locator('[data-variant="think"][data-state="running"] [data-follow-end]')
-          await expect.poll(async () => await liveTail.evaluate(element => (
-            element.scrollWidth > element.clientWidth
-              && element.scrollLeft >= element.scrollWidth - element.clientWidth - 1
-          )), { timeout: 10_000, interval: 10 }).toBe(true)
+          const liveReasoning = page.locator(
+            '[data-assistant-block-kind="reasoning"][data-state="running"] [data-disclosure-row]',
+          )
+          await liveReasoning.waitFor({ timeout: 10_000 })
+          expect(await liveReasoning.getAttribute('aria-expanded')).toBe('false')
+          expect(await liveReasoning.getByText('Thinking', { exact: true }).count()).toBe(1)
         }
         return await settled
       } finally {

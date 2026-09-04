@@ -20,7 +20,7 @@
 - button "Settings":
   - img
   - text: Settings
-- text: Into the Unknown Preview
+- text: Giana CoWork Preview
 - button "Choose workspace":
   - img
   - text: workspace
@@ -37,7 +37,11 @@
 - button "Select model, current DeepSeek-V4-Flash":
   - text: DeepSeek-V4-Flash
   - img
+- button "Start automatic-language dictation":
+  - img
 - button "Send message" [disabled]
 - text: Details
+- button "Toggle full inspector":
+  - img
 - button "Close details"
 - text: Click a tool row in the message flow to view its details

@@ -126,7 +126,7 @@ async function run() {
     page.on('pageerror', error => { pageErrors.push(String(error)) })
 
     await page.goto(baseURL, { waitUntil: 'domcontentloaded', timeout: 120_000 })
-    await page.getByText('Giana Code Putri', { exact: true }).first().waitFor({ state: 'visible', timeout: 120_000 })
+    await page.getByText('Giana CoWork', { exact: true }).first().waitFor({ state: 'visible', timeout: 120_000 })
     await page.getByRole('button', { name: 'New session' }).filter({ hasText: 'New Session' }).click()
     await page.waitForTimeout(600)
     await selectPutri(page)

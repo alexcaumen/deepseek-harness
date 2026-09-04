@@ -25,7 +25,7 @@ try {
     page.on('pageerror', error => errors.push({ viewport: viewport.name, source: 'pageerror', text: error.message }))
 
     await page.goto(endpoint, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-    await page.getByText('Giana Code Putri', { exact: true }).first().waitFor({ state: 'visible', timeout: 20_000 })
+    await page.getByText('Giana CoWork', { exact: true }).first().waitFor({ state: 'visible', timeout: 20_000 })
     await page.waitForTimeout(1_000)
 
     const requiredControls = [

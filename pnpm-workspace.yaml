@@ -70,4 +70,5 @@ minimumReleaseAgeExclude:
   - dsh-better-sidebar@0.15.2
 
 patchedDependencies:
+  dsh-better-sidebar@0.15.2: patches/dsh-better-sidebar@0.15.2.patch
   node-pty@1.2.0-beta.15: patches/node-pty@1.2.0-beta.15.patch

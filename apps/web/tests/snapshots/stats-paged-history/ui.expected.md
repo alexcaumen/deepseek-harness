@@ -353,5 +353,7 @@
 - button "Select model, current DeepSeek-V4-Flash":
   - text: DeepSeek-V4-Flash
   - img
+- button "Start automatic-language dictation":
+  - img
 - button "Send message" [disabled]
 - text: 28 turns · 28 steps LLM {{duration}}

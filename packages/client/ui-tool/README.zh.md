@@ -30,9 +30,11 @@ ctx.slots.inject('tool.call.toolview', () =>
 
 owner 载荷为 `ToolCallOwnerProps`：`callId`、`toolName`、冻结的 `block`、可选 `cwd` 与 `home`，以及普通的 `openFile`、`inspect` 回调。路径摘要先相对会话 cwd 缩短，再把剩余的 POSIX 宿主家目录写成 `~`；`filePath` 与 Host 打开仍使用作者给出的文件系统路径。注册项会收到常规的会话 slot 运行时共享数据，但不会收到 React node、运行时服务或 root/subcall 知识。
 
-本包当前拥有 generic fallback，以及 shell/pwsh、read、write/edit、grep/glob、web、todo、question 和 Code Dispatch 的内置展示。`ui-skill` 展示了业务包自行拥有的 `skill` 注册项。
+本包当前拥有 generic fallback，以及 shell/pwsh、read、write/edit、grep/glob、web、todo、question 和 Code Dispatch 的内置展示。`bash` 和 `pwsh` 注册同一个可展开终端渲染器，同时保留各自的工具标题及已记录的命令和结果。`ui-skill` 展示了业务包自行拥有的 `skill` 注册项。
 
 各类卡片的上限与 fallback 规则仍由对应的 [terminal](../../../.agents/notes/implemented/feature/2026-07-28-web-terminal-card.zh.md)、[diff](../../../.agents/notes/implemented/feature/2026-07-30-web-diff-card.zh.md)、[read](../../../.agents/notes/implemented/feature/2026-07-30-web-read-card-frontend.zh.md)、[search](../../../.agents/notes/implemented/feature/2026-07-30-web-search-card.zh.md) 和 [web](../../../.agents/notes/implemented/feature/2026-07-30-web-result-card-frontend.zh.md) Agent Note 负责。
+
+已完成的 shell 调用即使缺少终端展示器，仍可展开查看原始输入和输出，包括成功的后台确认和来自其他主机的历史记录。只有失败结果采用错误样式；缺少展示元数据不代表进程成功退出。
 
 ## 模型体验
 

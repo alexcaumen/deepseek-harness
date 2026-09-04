@@ -13,15 +13,10 @@
 - button "Copy":
   - img
 - tooltip "Copy"
-- button "Context injection Giana Code Putri":
+- button "Context injection Giana CoWork":
   - img
   - img
-  - text: Context injection Giana Code Putri
-- status: Thinking Completed
-- button "Thinking":
-  - img
-  - img
-  - text: Thinking
+  - text: Context injection Giana CoWork
 - status: Thinking Completed
 - button "Thinking":
   - img

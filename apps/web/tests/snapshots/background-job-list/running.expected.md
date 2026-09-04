@@ -1,2 +1,2 @@
 - list "Background jobs":
-  - listitem: bash sleep 45 running {{duration}}
+  - listitem: pwsh Start-Sleep -Seconds 45 running {{duration}}

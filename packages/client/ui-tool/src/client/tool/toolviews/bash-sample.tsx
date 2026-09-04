@@ -3,7 +3,7 @@
 // Product chrome matches ToolRow / Think (figma: Bash · {description}).
 //
 // A bash call normally declares the terminal render intent, so this row renders
-// the command's own output through TerminalBlock. Execution failures that
+// the command's own output through TerminalBlock. Results that
 // settle without terminal material use the bounded generic IN/OUT fallback —
 // both are expand-gated exactly like
 // ToolRow's unified interaction: collapsed by default, the whole summary row
@@ -66,13 +66,12 @@ export function BashRow({ toolName, block, sessionId, useSessions, inspect, t }:
     : model.state
   const status = stateStatus(state, t)
   const [expanded, setExpanded] = useState(false)
-  // Execution failures (for example cancellation before the process reports a
-  // terminal result) use the generic presenter. Keep their recorded args and
-  // full error reachable instead of collapsing the row to the first line.
-  const genericError = terminal === null
-    && model.state === 'error'
+  // Persisted shell results and background acknowledgements may have no terminal
+  // presenter. Keep their original input/output reachable, including successes.
+  const genericResult = terminal === null
+    && 'kind' in block
     && (model.body !== null || model.output !== null)
-  const expandable = terminal !== null || genericError
+  const expandable = terminal !== null || genericResult
   const open = expanded && expandable
   const failureLine = model.state === 'error' ? model.errorSummary : null
   const toggleExpand = () => {
@@ -144,7 +143,7 @@ export function BashRow({ toolName, block, sessionId, useSessions, inspect, t }:
                 {model.output !== null && (
                   <div className={css.ioSection}>
                     <span className={css.ioLabel}>OUT</span>
-                    <span className={css.ioText} data-error>
+                    <span className={css.ioText} data-error={model.state === 'error' || undefined}>
                       {model.output}
                     </span>
                   </div>
@@ -171,11 +170,13 @@ export const bashToolviewSample = {
   name: 'bash-toolview-sample',
   inject: ['slots'],
   /**
-   * Register the bash row into the Tool-owned keyed view slot.
+   * Register Bash and PowerShell into the Tool-owned keyed view slot.
    * @param ctx - registrant context (disposal rides ctx.effect inside slots.register).
    */
   apply(ctx: Context): void {
-    ctx.slots.inject('tool.call.toolview', () =>
-      ctx.slots.register({ name: 'tool.call.toolview', key: 'bash', locale: NS }, BashRow))
+    for (const key of ['bash', 'pwsh']) {
+      ctx.slots.inject('tool.call.toolview', () =>
+        ctx.slots.register({ name: 'tool.call.toolview', key, locale: NS }, BashRow))
+    }
   },
 }

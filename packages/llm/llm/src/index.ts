@@ -64,6 +64,16 @@ declare module '@deepseek-ai/cordis' {
      */
     'llm/stream'(this: LlmRuntime, options: GenerateOptions, next: () => AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk>
 
+    /**
+     * Add transport cancellation without changing an immutable model request.
+     * Called after stream middleware admission, before adapter resolution and
+     * dispatch. Listeners must preserve cancellation returned by `next()`.
+     * This signal does not change logged content or prepared adapter identity.
+     * @param options - Original immutable request observed during stream admission.
+     * @mode waterfall
+     */
+    'llm/dispatch-signal'(this: LlmRuntime, options: GenerateOptions, next: () => AbortSignal | undefined): AbortSignal | undefined
+
   }
 }
 
@@ -899,6 +909,11 @@ export class LlmRuntime extends Service {
     options: GenerateOptions,
     prepared?: PreparedDispatch,
   ): AsyncGenerator<StreamChunk> {
+    const signal = this.ctx.waterfall(this, 'llm/dispatch-signal', options, () => options.signal)
+    if (signal !== undefined && signal !== options.signal) {
+      const transportOptions = { ...options, signal: options.signal === undefined ? signal : AbortSignal.any([options.signal, signal]) }
+      options = Object.isFrozen(options) ? Object.freeze(transportOptions) : transportOptions
+    }
     let iterator: AsyncIterator<StreamChunk>
     try {
       const registration = prepared?.registration ?? this.registration(options.provider)

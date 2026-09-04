@@ -11,11 +11,11 @@
 - button "Copy":
   - img
 - tooltip "Copy"
-- button "Think The user wants me to read a.txt and b.txt, then reply with \"DONE\". Let me do both reads in parallel.":
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: Think The user wants me to read a.txt and b.txt, then reply with "DONE". Let me do both reads in parallel.
-- paragraph: I will read both files before answering.
+  - text: Thinking
 - button "Copy":
   - img
 - button "Good response":
@@ -35,10 +35,11 @@
   - img
   - text: Read
   - button "b.txt"
-- button "Think Both files have been read. a.txt contains \"alpha\" and b.txt contains \"beta\". I'll now reply with DONE as instructed.":
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: Think Both files have been read. a.txt contains "alpha" and b.txt contains "beta". I'll now reply with DONE as instructed.
+  - text: Thinking
 - text: Stopped Now give the final answer. 7/25 {{clock}}
 - button "Copy":
   - img
@@ -58,6 +59,8 @@
 - 'button "Access mode, current: Workspace Write"': Workspace Write
 - button "Select model, current DeepSeek-V4-Flash":
   - text: DeepSeek-V4-Flash
+  - img
+- button "Start automatic-language dictation":
   - img
 - button "Send message" [disabled]
 - text: 2 turns · 3 steps LLM {{duration}} · Tool call {{duration}} TTFT avg {{duration}} · {{throughput}} tok/s Cache hit 98% Input 7.8K tok · Output 103 tok

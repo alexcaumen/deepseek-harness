@@ -21,7 +21,7 @@ export interface ContextInjectionRowProps {
 /** Keep upstream package provenance durable while presenting the owned product name. */
 export function contextProducerLabel(label: string | null): string | null {
   if (label === null) return null
-  return label.startsWith('@deepseek-ai/') ? 'Giana Code Putri' : label
+  return label.startsWith('@deepseek-ai/') ? 'Giana CoWork' : label
 }
 
 /**

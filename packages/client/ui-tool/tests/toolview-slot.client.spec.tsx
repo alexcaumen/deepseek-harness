@@ -64,6 +64,10 @@ const LAYOUT_CHILDREN = {
  */
 async function bench(nodes: ToolResultNode[]) {
   const runtime = await SlotTestRuntime.create()
+  runtime.provide('inputTriggers', {
+    registerSource: () => () => {},
+    sessionOf: () => undefined as never,
+  })
   runtime.provide('connection', {
     api: { settings: {} },
     isLoopback: false,
@@ -93,16 +97,16 @@ async function bench(nodes: ToolResultNode[]) {
 }
 
 describe('keyed toolview hole through the real machinery', () => {
-  it('dispatches registered rows by entryKey and unregistered tools to the GenericToolCard fallback', async () => {
+  it.each(['bash', 'pwsh'])('dispatches %s through the shell renderer and unknown tools to the generic fallback', async (shell) => {
     const b = await bench([
-      toolResult(3, 'c1', 'bash'),
+      toolResult(3, 'c1', shell),
       toolResult(4, 'c2', 'mystery', '{"n":1}'),
     ])
     const view = b.runtime.renderRoot()
     // bash: the sample plugin's keyed registration took the row (root
     // session → global arm, decided inside the component off useSessions).
     expect(view.container.querySelector('[data-sample="bash"]')).not.toBeNull()
-    expect(view.getByText('Bash')).toBeTruthy()
+    expect(view.getByText(shell === 'pwsh' ? 'Pwsh' : 'Bash')).toBeTruthy()
     expect(view.getByText('Build')).toBeTruthy()
     // mystery: no registration under that key → render-site fallback.
     expect(view.getByText('Tool call')).toBeTruthy()
@@ -171,12 +175,12 @@ describe('keyed toolview hole through the real machinery', () => {
     await b.runtime.dispose()
   })
 
-  it('a duplicate key registration fails loud at load', async () => {
+  it.each(['bash', 'pwsh'])('a duplicate %s key registration fails loud at load', async (shell) => {
     const b = await bench([])
     expect(() => b.slots.register(
-      { name: 'tool.call.toolview', key: 'bash' },
+      { name: 'tool.call.toolview', key: shell },
       () => null,
-    )).toThrow(/key "bash"/)
+    )).toThrow(`key "${shell}"`)
     await b.runtime.dispose()
   })
 
@@ -207,6 +211,10 @@ describe('keyed toolview hole through the real machinery', () => {
 describe('registrant declaration injection', () => {
   it('runs a registrant before ui-tool and waits on the actual toolview declaration', async () => {
     const runtime = await SlotTestRuntime.create()
+    runtime.provide('inputTriggers', {
+      registerSource: () => () => {},
+      sessionOf: () => undefined as never,
+    })
     runtime.provide('connection', {
       api: { settings: {} },
       isLoopback: false,
@@ -243,7 +251,7 @@ describe('registrant declaration injection', () => {
     await runtime.mount({ inject: [...injectConversation], apply: applyConversation })
     await runtime.mount({ inject: [...injectTool], apply: applyTool })
     expect(runtime.slots.entries('tool.call.toolview').map(e => e.options.key))
-      .toEqual(expect.arrayContaining(['bash', 'late']))
+      .toEqual(expect.arrayContaining(['bash', 'pwsh', 'late']))
     await runtime.dispose()
   })
 })

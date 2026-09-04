@@ -30,9 +30,11 @@ ctx.slots.inject('tool.call.toolview', () =>
 
 The owner payload is `ToolCallOwnerProps`: `callId`, `toolName`, the frozen `block`, optional `cwd` and `home`, and plain `openFile`/`inspect` callbacks. Path summaries relativize to the session cwd first, then replace a leftover POSIX host home with `~`; `filePath` and Host open keep the authored filesystem path. The registration receives the normal session slot runtime share. It does not receive React nodes, Runtime services, or root/subcall knowledge.
 
-This package currently owns the generic fallback and the built-in shell/pwsh, read, write/edit, grep/glob, web, todo, question, and Code Dispatch presentations. `ui-skill` demonstrates a business-owned registration for `skill`.
+This package currently owns the generic fallback and the built-in shell/pwsh, read, write/edit, grep/glob, web, todo, question, and Code Dispatch presentations. Both `bash` and `pwsh` register the same expandable terminal renderer while retaining their own tool title and logged command/result. `ui-skill` demonstrates a business-owned registration for `skill`.
 
 Card-specific limits and fallback rules remain in the owning [terminal](../../../.agents/notes/implemented/feature/2026-07-28-web-terminal-card.md), [diff](../../../.agents/notes/implemented/feature/2026-07-30-web-diff-card.md), [read](../../../.agents/notes/implemented/feature/2026-07-30-web-read-card-frontend.md), [search](../../../.agents/notes/implemented/feature/2026-07-30-web-search-card.md), and [web](../../../.agents/notes/implemented/feature/2026-07-30-web-result-card-frontend.md) notes.
+
+Settled shell calls without a terminal presenter remain expandable through their original input and output, including successful background acknowledgements and history from another host. Only failed results receive error styling; missing presentation metadata never implies a successful process exit.
 
 ## Model Experience
 

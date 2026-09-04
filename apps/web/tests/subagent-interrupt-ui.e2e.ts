@@ -207,7 +207,7 @@ describe.skipIf(MODE === 'record')('web e2e: composer interrupt for a running co
       const stop = page.getByRole('button', { name: 'Stop generating' })
       expect(await stop.count()).toBe(1)
       expect(await stop.isEnabled()).toBe(true)
-      const send = page.getByRole('button', { name: 'Send message' })
+      const send = page.getByRole('button', { name: 'Queue message' })
       expect(await send.count()).toBe(1)
       expect(await send.isDisabled()).toBe(true)
       await compareOrRefreshGolden(
@@ -262,11 +262,11 @@ describe.skipIf(MODE === 'record')('web e2e: composer interrupt for a running co
     await input.waitFor({ timeout: 15_000 })
     expect(await input.isDisabled()).toBe(false)
 
-    // Queue a follow-up through Send while independent Stop remains available.
+    // Queue a follow-up while independent Stop remains available.
     const promptResponse = page.waitForResponse(response =>
       new URL(response.url()).pathname === '/api/subagent.prompt')
     await input.fill(FOLLOWUP)
-    await page.getByRole('button', { name: 'Send message' }).click()
+    await page.getByRole('button', { name: 'Queue message' }).click()
     expect(((await (await promptResponse).json()) as { result: { ok: boolean } }).result)
       .toMatchObject({ ok: true })
 
@@ -288,7 +288,8 @@ describe.skipIf(MODE === 'record')('web e2e: composer interrupt for a running co
     await expect.poll(() => scaffold.ctx.agents.get(childId)?.status, { timeout: 15_000 }).toBe('idle')
     const child = scaffold.ctx.agents.get(childId)
     expect(child).toBeDefined()
-    expect(child!.inbox.nextTurn).toHaveLength(2)
+    expect(child!.inbox.nextTurn.map(message => message.content.flatMap(block =>
+      block.type === 'text' ? [block.text] : []))).toEqual([[REARM_WAKE], [FOLLOWUP]])
     expect(child!.session.events.filter(event => event.type === 'turn/start')).toHaveLength(2)
     await page.getByRole('button', { name: 'Send message' }).waitFor({ timeout: 15_000 })
 

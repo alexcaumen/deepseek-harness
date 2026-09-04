@@ -646,6 +646,11 @@ describe('ChatView', () => {
   })
 
   it('keeps submitted annotations structured and navigates duplicate source text by exact offsets', () => {
+    const originalRects = Object.getOwnPropertyDescriptor(Range.prototype, 'getClientRects')
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [{ left: 10, top: 20, right: 70, bottom: 40, width: 60, height: 20 }],
+    })
     const messageId = 'assistant-duplicate' as MessageId
     const responseAnnotations: readonly ResponseAnnotationPresentation[] = [{
       index: 4,
@@ -660,25 +665,108 @@ describe('ChatView', () => {
       ...user(2, '@Annotation 4 compare this'),
       responseAnnotations,
     }
-    const h = makeHarness({
-      nodes: [assistant(1, 'repeat target repeat', 1, messageId), annotatedUser],
+    try {
+      const h = makeHarness({
+        nodes: [assistant(1, 'repeat target repeat', 1, messageId), annotatedUser],
+      })
+      const view = render(<h.ChatView {...h.props} />)
+
+      const chip = view.getByRole('button', { name: '批注 4：repeat' })
+      expect(chip.textContent).toBe('4')
+      expect(chip.getAttribute('title')).toBe('repeat')
+      expect(chip.getAttribute('data-response-annotation-message-id')).toBe(messageId)
+      expect(chip.getAttribute('data-response-annotation-start')).toBe('14')
+      expect(chip.getAttribute('data-response-annotation-end')).toBe('20')
+      const source = view.container.querySelector<HTMLElement>('[data-response-message-id="assistant-duplicate"]')
+      expect(source).toBeTruthy()
+      const scrollIntoView = vi.fn()
+      const sourceText = source?.querySelector<HTMLElement>('p')
+      if (sourceText === null || sourceText === undefined) throw new Error('annotation source paragraph missing')
+      sourceText.scrollIntoView = scrollIntoView
+
+      fireEvent.mouseEnter(chip)
+      expect(view.getByRole('tooltip').textContent).toBe('repeat')
+      fireEvent.mouseLeave(chip)
+      expect(view.queryByRole('tooltip')).toBeNull()
+      fireEvent.focus(chip)
+      expect(view.getByRole('tooltip').textContent).toBe('repeat')
+      fireEvent.blur(chip)
+
+      const marker = view.getByRole('button', { name: '批注 4 来源：repeat' })
+      expect(marker.getAttribute('data-response-annotation-marker')).toBe('4')
+      expect(marker.closest('[data-response-annotation-source-message-id]')
+        ?.getAttribute('data-response-annotation-source-message-id')).toBe(messageId)
+      fireEvent.mouseOver(marker)
+      expect(view.getByRole('tooltip').textContent).toBe('repeat')
+      fireEvent.mouseOut(marker)
+      expect(view.queryByRole('tooltip')).toBeNull()
+      fireEvent.focus(marker)
+      expect(view.getByRole('tooltip').textContent).toBe('repeat')
+      fireEvent.blur(marker)
+
+      fireEvent.click(chip)
+
+      const selection = window.getSelection()
+      expect(selection?.toString()).toBe('repeat')
+      expect(selection?.anchorOffset).toBe(14)
+      expect(selection?.focusOffset).toBe(20)
+      expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', inline: 'nearest' })
+    } finally {
+      if (originalRects === undefined) delete (Range.prototype as { getClientRects?: unknown }).getClientRects
+      else Object.defineProperty(Range.prototype, 'getClientRects', originalRects)
+    }
+  })
+
+  it('indexes durable annotations once per structural chat order across streamed snapshots', () => {
+    const originalRects = Object.getOwnPropertyDescriptor(Range.prototype, 'getClientRects')
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => [{ left: 10, top: 20, right: 70, bottom: 40, width: 60, height: 20 }],
     })
-    const view = render(<h.ChatView {...h.props} />)
+    const messageIds = Array.from({ length: 30 }, (_, index) => `assistant-${index}` as MessageId)
+    const nodes: ConversationNode[] = messageIds.map((messageId, index) =>
+      assistant(index + 1, `answer ${index}`, 1, messageId))
+    nodes.push({
+      ...user(31, '@Annotation 1 inspect'),
+      responseAnnotations: [{
+        index: 1,
+        messageId: messageIds[15]!,
+        text: 'answer',
+        startOffset: 0,
+        endOffset: 6,
+        displayStart: 0,
+        displayEnd: 13,
+      }],
+    } as UserMessageNode)
+    const chat = chatSnapshotFixture({ nodes })
+    let getCount = 0
+    const countedChat = {
+      ...chat,
+      nodes: {
+        get: (key: string) => {
+          getCount += 1
+          return chat.nodes.get(key)
+        },
+        values: () => chat.nodes.values(),
+      },
+    }
+    try {
+      const h = makeHarness({ chat: countedChat })
+      render(<h.ChatView {...h.props} />)
 
-    const chip = view.getByRole('button', { name: '批注 4：repeat' })
-    expect(chip.textContent).toBe('4')
-    expect(chip.getAttribute('title')).toBe('repeat')
-    expect(chip.getAttribute('data-response-annotation-message-id')).toBe(messageId)
-    expect(chip.getAttribute('data-response-annotation-start')).toBe('14')
-    expect(chip.getAttribute('data-response-annotation-end')).toBe('20')
-    expect(view.container.querySelector('[data-response-message-id="assistant-duplicate"]')).toBeTruthy()
+      expect(screen.getByRole('button', { name: '批注 1 来源：answer' })).toBeTruthy()
+      expect(getCount).toBeLessThanOrEqual(nodes.length * 3 + 5)
+      const initialReads = getCount
 
-    fireEvent.click(chip)
+      act(() => { h.set({ chat: { ...countedChat, legacy: { ...countedChat.legacy } } }) })
 
-    const selection = window.getSelection()
-    expect(selection?.toString()).toBe('repeat')
-    expect(selection?.anchorOffset).toBe(14)
-    expect(selection?.focusOffset).toBe(20)
+      // Keyed row selectors still read their own live Node once or twice. A
+      // second full annotation-index scan would add the whole history again.
+      expect(getCount - initialReads).toBeLessThanOrEqual(messageIds.length * 2 + 2)
+    } finally {
+      if (originalRects === undefined) delete (Range.prototype as { getClientRects?: unknown }).getClientRects
+      else Object.defineProperty(Range.prototype, 'getClientRects', originalRects)
+    }
   })
 
   it('withholds assistant IconActions while the turn is still running', () => {

@@ -45,11 +45,13 @@ Exact-model metadata is a separate correctness query, not a catalog decoration o
 | Event | Mode | Purpose |
 |---|---|---|
 | `llm/stream` | waterfall | Intercept/wrap every streaming model call for caching, logging, or routing |
+| `llm/dispatch-signal` | waterfall | Add transport cancellation after stream admission without rewriting the model request |
 
 ### Extension points
 
 - Subclass `LlmAdapter` and call `ctx.llm.registerAdapter(providers, adapter)` to add one or more provider routes. `GenerateOptions.provider` selects the adapter; `GenerateOptions.model` is adapter-owned and may be resolved dynamically. Override `providerRetryPolicy()` to supply provider-owned recovery configuration, `providerInfo()` and asynchronous `listModels()` to expose selector metadata, then implement `resolveModel()` when exact identity, capacity, an output default, or selectable reasoning efforts are available; an asynchronous resolver must honor its optional cancellation signal. The defaults use bounded normal retry policy, use the route and model ids as names, advertise no models, and return no capacity, output default, or reasoning metadata.
 - Wrap `llm/stream` via `ctx.on()` waterfall listeners for caching, logging, or routing. A wrapper that retries after emitting a chunk has no durable attempt boundary; shipped agent retry policy therefore uses `agent/request-error` instead.
+- Use `llm/dispatch-signal` to add a resource-lifetime cancellation signal after stream admission and before terminal adapter resolution/dispatch. Call `next()` and compose its result. The original caller signal is always retained; only a detached transport envelope gets the combined signal. Frozen requests, message content, and prepared adapter identity remain unchanged. Adapter implementations must honor cancellation; an abort does not prove remote work has stopped.
 
 ### Messages (`message.ts`) and content blocks (`types.ts`)
 

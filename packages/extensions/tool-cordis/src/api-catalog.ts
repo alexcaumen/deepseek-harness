@@ -1091,6 +1091,43 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     ],
   },
   {
+    key: 'modelLifecycle',
+    summary: 'One in-process transaction coordinator for every governed local route.',
+    description: 'One in-process transaction coordinator for every governed local route. Registrations supply mechanics; this service owns serialization, target precedence, inference leases, and rollback ordering.',
+    methods: [
+      {
+        signature: 'currentPreference(): ModelComputePreference',
+        description: 'Read the current durable routing intent; actual placement remains a preflight decision.',
+        parameters: [],
+        returns: 'The persisted Automatic, R5300, or PRDG preference.',
+      },
+      {
+        signature: 'installAuthority(authority: ModelLifecycleAuthority): () => void',
+        description: 'Install the sole classifier, scope resolver, and audit sink.',
+        parameters: [{ name: 'authority', description: 'Canonical governance adapter for this runtime instance.' }],
+        returns: 'A release function for orderly plugin disposal.',
+      },
+      {
+        signature: 'register(route: GovernedModelRoute, driver: ModelLifecycleDriver): () => Promise<void>',
+        description: 'Register one immutable route/driver pair for the lifetime of its owner.',
+        parameters: [{ name: 'route', description: 'Externally admitted route identity and target manifest.' }, { name: 'driver', description: 'Host-specific resource and process mechanism.' }],
+        returns: 'An async release function that stops an active route before removal.',
+      },
+      {
+        signature: 'async acquireRoute(request: AcquireModelRouteRequest): Promise<ModelRouteLease>',
+        description: 'Acquire a governed route for one complete inference, or return an inert lease for an ordinary provider. The lease must remain held until the model stream settles so another request cannot unload the active model mid-turn.',
+        parameters: [{ name: 'request', description: 'Complete provider/model selection and optional cancellation signal.' }],
+        returns: 'A lease that the caller must release exactly once.',
+      },
+      {
+        signature: 'snapshot(): ModelLifecycleSnapshot',
+        description: 'Read detached runtime state without resource paths or private payloads.',
+        parameters: [],
+        returns: 'A sanitized snapshot of phase and active route.',
+      },
+    ],
+  },
+  {
     key: 'permissionPresets',
     summary: 'Owns the deployment\'s permission presets and their write path.',
     description: 'Owns the deployment\'s permission presets and their write path. Requires a confining `ctx.shell` executor and `ctx.approval`; unmatched knob values are reported as CUSTOM_PRESET, not an error.',
@@ -2627,6 +2664,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     parameters: [],
   },
   {
+    name: 'llm/dispatch-signal',
+    mode: 'waterfall',
+    signature: '\'llm/dispatch-signal\'(this: LlmRuntime, options: GenerateOptions, next: () => AbortSignal | undefined): AbortSignal | undefined',
+    summary: 'Add transport cancellation without changing an immutable model request.',
+    description: 'Add transport cancellation without changing an immutable model request. Called after stream middleware admission, before adapter resolution and dispatch. Listeners must preserve cancellation returned by `next()`. This signal does not change logged content or prepared adapter identity.',
+    parameters: [{ name: 'options', description: 'Original immutable request observed during stream admission.' }],
+  },
+  {
     name: 'llm/stream',
     mode: 'waterfall',
     signature: '\'llm/stream\'(this: LlmRuntime, options: GenerateOptions, next: () => AsyncIterable<StreamChunk>): AsyncIterable<StreamChunk>',
@@ -2854,6 +2899,10 @@ export const EVENT_API: readonly EventApiEntry[] = [
 
 /** Shapes of every exported type the Service and Event signatures reference (transitively), sorted by name. */
 export const TYPE_API: readonly TypeApiEntry[] = [
+  {
+    name: 'AcquireModelRouteRequest',
+    declaration: 'export interface AcquireModelRouteRequest {\n    readonly sessionId?: string;\n    readonly selection: ModelSelectionIdentity;\n    readonly preference?: ModelComputePreference;\n    readonly signal?: AbortSignal;\n}',
+  },
   {
     name: 'AdapterRegistrationHandle',
     declaration: 'export interface AdapterRegistrationHandle {\n    (): void;\n    replace(providers: string[]): void;\n}',
@@ -3455,6 +3504,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface GoalView extends GoalSnapshot {\n    readonly roundsStarted: number;\n    readonly createdAt: number;\n    readonly updatedAt: number;\n    readonly activation: GoalActivation;\n}',
   },
   {
+    name: 'GovernedModelRoute',
+    declaration: 'export interface GovernedModelRoute {\n    readonly id: string;\n    readonly selection: ModelSelectionIdentity;\n    readonly disposition: ModelRouteDisposition;\n    readonly admissionReceiptDigest: string;\n    readonly revisionDigest: string;\n    readonly targets: readonly ModelComputeTarget[];\n    readonly allowRamCpuOffload: boolean;\n    readonly supportedReasoningEfforts?: readonly string[];\n    readonly stageTimeoutsMs?: Readonly<Partial<Record<ModelLifecycleStage, number>>>;\n}',
+  },
+  {
     name: 'GrantRecord',
     declaration: 'export interface GrantRecord {\n    readonly kind: \'grant\';\n    readonly payload: unknown;\n}',
   },
@@ -3803,6 +3856,62 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface MessageSourceMap {\n    user: {\n        kind: \'user\';\n    };\n    plugin: {\n        kind: \'plugin\';\n        plugin: string;\n    } & ContextFormed;\n    model: ModelMessageSource;\n    tool: ToolMessageSource;\n}',
   },
   {
+    name: 'ModelCapacityDecision',
+    declaration: 'export type ModelCapacityDecision = {\n    readonly ok: true;\n    readonly receipt: ModelLifecycleStageReceipt;\n} | {\n    readonly ok: false;\n    readonly reason: string;\n};',
+  },
+  {
+    name: 'ModelComputeTarget',
+    declaration: 'export type ModelComputeTarget = \'r5300\' | \'prdg\' | \'ram-cpu\';',
+  },
+  {
+    name: 'ModelDrainContext',
+    declaration: 'export interface ModelDrainContext extends ModelLifecycleStageContext {\n    readonly nextRoute: GovernedModelRoute;\n    readonly nextTarget: ModelComputeTarget;\n}',
+  },
+  {
+    name: 'ModelExecutionScope',
+    declaration: 'export interface ModelExecutionScope {\n    readonly workId: string;\n    readonly principalId: string;\n    readonly tenantId: string;\n    readonly sessionId: string;\n    readonly digest: string;\n}',
+  },
+  {
+    name: 'ModelHealthDecision',
+    declaration: 'export type ModelHealthDecision = {\n    readonly ok: true;\n    readonly receipt: ModelLifecycleStageReceipt;\n} | {\n    readonly ok: false;\n    readonly reason: string;\n};',
+  },
+  {
+    name: 'ModelLifecycleAuditRecord',
+    declaration: 'export interface ModelLifecycleAuditRecord {\n    readonly transactionDigest: string;\n    readonly scopeDigest: string;\n    readonly routeId: string;\n    readonly target?: ModelComputeTarget;\n    readonly outcome: \'READY\' | \'RELEASED\' | \'FAILED_ROLLED_BACK\' | \'REJECTED\' | \'IDLE_UNLOADED\' | \'TAINTED\';\n    readonly receiptDigests: readonly string[];\n    readonly errorCode?: ModelLifecycleErrorCode;\n}',
+  },
+  {
+    name: 'ModelLifecycleAuthority',
+    declaration: 'export interface ModelLifecycleAuthority {\n    readonly resources?: ResourceLeaseProvider;\n    classifyProvider(provider: string): ModelProviderClassification;\n    resolve(request: AcquireModelRouteRequest): Promise<ModelRouteResolution> | ModelRouteResolution;\n    record(record: ModelLifecycleAuditRecord): Promise<void>;\n}',
+  },
+  {
+    name: 'ModelLifecycleDriver',
+    declaration: 'export interface ModelLifecycleDriver {\n    capturePrestate(context: ModelLifecycleStageContext): Promise<ModelLifecyclePrestateReceipt>;\n    preflight(context: ModelLifecycleStageContext): Promise<ModelCapacityDecision>;\n    drain(context: ModelDrainContext): Promise<ModelLifecycleStageReceipt>;\n    stop(context: ModelLifecycleStageContext): Promise<ModelLifecycleStageReceipt>;\n    verifyStopped(context: ModelLifecycleStageContext): Promise<ModelLifecycleStageReceipt>;\n    start(context: ModelLifecycleStageContext): Promise<ModelLifecycleStageReceipt>;\n    health(context: ModelLifecycleStageContext): Promise<ModelHealthDecision>;\n    probe(context: ModelLifecycleStageContext): Promise<ModelHealthDecision>;\n}',
+  },
+  {
+    name: 'ModelLifecycleErrorCode',
+    declaration: 'export type ModelLifecycleErrorCode = \'ROUTE_HELD\' | \'GOVERNANCE_UNAVAILABLE\' | \'SCOPE_INVALID\' | \'REASONING_UNSUPPORTED\' | \'MANUAL_TARGET_UNAVAILABLE\' | \'NO_CAPACITY\' | \'PREFLIGHT_FAILED\' | \'DRAIN_FAILED\' | \'STOP_FAILED\' | \'START_FAILED\' | \'HEALTH_FAILED\' | \'ROLLBACK_FAILED\' | \'AUDIT_FAILED\' | \'STAGE_TIMEOUT\' | \'RUNTIME_TAINTED\' | \'RESIDENCY_UNVERIFIED\' | \'RESOURCE_LEASE_UNAVAILABLE\' | \'RESOURCE_LEASE_LOST\' | \'ABORTED\';',
+  },
+  {
+    name: 'ModelLifecyclePrestateReceipt',
+    declaration: 'export interface ModelLifecyclePrestateReceipt extends ModelLifecycleStageReceipt {\n    readonly residency: {\n        readonly kind: \'EMPTY\';\n    } | {\n        readonly kind: \'RESIDENT\';\n        readonly routeId: string;\n        readonly revisionDigest: string;\n    } | {\n        readonly kind: \'UNKNOWN\';\n    };\n}',
+  },
+  {
+    name: 'ModelLifecycleSnapshot',
+    declaration: 'export interface ModelLifecycleSnapshot {\n    readonly phase: \'IDLE\' | \'PREPARING\' | \'DRAINING\' | \'LOADING\' | \'READY\' | \'IN_USE\' | \'FAILED_ROLLED_BACK\' | \'TAINTED\';\n    readonly active?: {\n        readonly routeId: string;\n        readonly target: ModelComputeTarget;\n        readonly revisionDigest: string;\n        readonly healthDigest: string;\n    };\n}',
+  },
+  {
+    name: 'ModelLifecycleStage',
+    declaration: 'export type ModelLifecycleStage = typeof lifecycleStages[number];',
+  },
+  {
+    name: 'ModelLifecycleStageContext',
+    declaration: 'export interface ModelLifecycleStageContext {\n    readonly route: GovernedModelRoute;\n    readonly target: ModelComputeTarget;\n    readonly scope: ModelExecutionScope;\n    readonly transactionDigest: string;\n    readonly resourceLease: ResourceLeaseGrant;\n    readonly deadlineAt: number;\n    readonly signal?: AbortSignal;\n}',
+  },
+  {
+    name: 'ModelLifecycleStageReceipt',
+    declaration: 'export interface ModelLifecycleStageReceipt {\n    readonly stage: ModelLifecycleStage;\n    readonly routeId: string;\n    readonly target: ModelComputeTarget;\n    readonly revisionDigest: string;\n    readonly scopeDigest: string;\n    readonly transactionDigest: string;\n    readonly fencingDigest: string;\n    readonly digest: string;\n}',
+  },
+  {
     name: 'ModelMessageSource',
     declaration: 'export interface ModelMessageSource extends AssistantProvenance {\n    kind: \'model\';\n}',
   },
@@ -3813,6 +3922,26 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ModelModalityMap',
     declaration: 'export interface ModelModalityMap {\n    text: \'text\';\n    image: \'image\';\n}',
+  },
+  {
+    name: 'ModelProviderClassification',
+    declaration: 'export type ModelProviderClassification = \'UNMANAGED_EXTERNAL\' | \'GOVERNED_LOCAL\';',
+  },
+  {
+    name: 'ModelRouteDisposition',
+    declaration: 'export type ModelRouteDisposition = \'HIDDEN_HELD\' | \'VISIBLE_DISABLED\' | \'AVAILABLE\';',
+  },
+  {
+    name: 'ModelRouteLease',
+    declaration: 'export interface ModelRouteLease {\n    readonly managed: boolean;\n    readonly routeId?: string;\n    readonly target?: ModelComputeTarget;\n    readonly signal?: AbortSignal;\n    release(): Promise<void>;\n}',
+  },
+  {
+    name: 'ModelRouteResolution',
+    declaration: 'export type ModelRouteResolution = {\n    readonly kind: \'UNMANAGED_EXTERNAL\';\n} | {\n    readonly kind: \'HELD\';\n    readonly routeId: string;\n    readonly reason: string;\n} | {\n    readonly kind: \'GOVERNED\';\n    readonly route: GovernedModelRoute;\n    readonly scope: ModelExecutionScope;\n};',
+  },
+  {
+    name: 'ModelSelectionIdentity',
+    declaration: 'export interface ModelSelectionIdentity {\n    readonly provider: string;\n    readonly model: string;\n    readonly reasoningEffort?: string;\n}',
   },
   {
     name: 'ObjectJsonSchema',
@@ -3977,6 +4106,30 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ResolvedSubagentStartRequest',
     declaration: 'export interface ResolvedSubagentStartRequest extends SubagentStartRequest {\n    readonly descriptor: SubagentDescriptorData;\n}',
+  },
+  {
+    name: 'ResourceLeaseGrant',
+    declaration: 'export interface ResourceLeaseGrant {\n    readonly leaseRef: ResourceLeaseRef;\n    readonly issuerRef: ResourceLeaseIssuerRef;\n    readonly holderRef: ResourceLeaseHolderRef;\n    readonly targets: readonly ResourceLeaseTarget[];\n    readonly fencingDigest: string;\n    readonly receiptDigest: string;\n    readonly expiresAt: number;\n    readonly renewAfterMs: number;\n}',
+  },
+  {
+    name: 'ResourceLeaseHolderRef',
+    declaration: 'export type ResourceLeaseHolderRef = Branded<\'ResourceLeaseHolderRef\'>;',
+  },
+  {
+    name: 'ResourceLeaseIssuerRef',
+    declaration: 'export type ResourceLeaseIssuerRef = Branded<\'ResourceLeaseIssuerRef\'>;',
+  },
+  {
+    name: 'ResourceLeaseProvider',
+    declaration: 'export interface ResourceLeaseProvider {\n    acquire(request: {\n        targets: readonly ResourceLeaseTarget[];\n    }, signal: AbortSignal): Promise<ResourceLeaseGrant>;\n    renew(grant: ResourceLeaseGrant, signal: AbortSignal): Promise<ResourceLeaseGrant>;\n    release(grant: ResourceLeaseGrant, outcome: \'SETTLED\' | \'UNCERTAIN\', signal: AbortSignal): Promise<void>;\n}',
+  },
+  {
+    name: 'ResourceLeaseRef',
+    declaration: 'export type ResourceLeaseRef = Branded<\'ResourceLeaseRef\'>;',
+  },
+  {
+    name: 'ResourceLeaseTarget',
+    declaration: 'export type ResourceLeaseTarget = \'r5300\' | \'prdg\' | \'ram-cpu\';',
   },
   {
     name: 'RestoredSessionOptions',

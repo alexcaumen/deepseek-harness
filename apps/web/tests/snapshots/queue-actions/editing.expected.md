@@ -12,10 +12,10 @@
 - text: Reply with a one-sentence description of event sourcing, then stop. {{clock}}
 - button "Copy":
   - img
-- button "Context injection Giana Code Putri":
+- button "Context injection Giana CoWork":
   - img
   - img
-  - text: Context injection Giana Code Putri
+  - text: Context injection Giana CoWork
 - paragraph: partial
 - status: Deep diving...
 - button "2 queued messages" [disabled] [expanded]

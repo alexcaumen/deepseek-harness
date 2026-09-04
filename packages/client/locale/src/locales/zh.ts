@@ -5,6 +5,7 @@ export const zh = {
   'close': '关闭',
   'copy': '复制',
   'copied': '复制成功',
+  'copyFailed': '复制失败',
   'retry': '重试',
   'loading': '加载中…',
   'load.failed': '加载失败',

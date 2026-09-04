@@ -35,7 +35,6 @@ const FILE_REFERENCE_PROMPT = fileURLToPath(new URL(
  */
 const EXPECTED_TOOLS = [
   'ask_user_question',
-  'bash',
   'create_goal',
   'edit',
   'exit_plan_mode',
@@ -50,6 +49,7 @@ const EXPECTED_TOOLS = [
   'read_image',
   'send_message',
   'skill',
+  'skill_search',
   'subagent',
   'subagent_fork',
   'todo_write',
@@ -57,7 +57,8 @@ const EXPECTED_TOOLS = [
   'web_search',
   'workflow',
   'write',
-]
+  process.platform === 'win32' ? 'pwsh' : 'bash',
+].sort()
 
 /**
  * `glob` and `grep` come from `dsh-tool-fs-search`, which spawns the PACKAGED
@@ -194,15 +195,20 @@ it('lets a preset producer reach the background-job registry', async () => {
   })
   try {
     const signal = new AbortController().signal
+    const shellTool = process.platform === 'win32' ? 'pwsh' : 'bash'
+    const command = process.platform === 'win32'
+      ? "Write-Output 'SHIPPED_BACKGROUND_OK'"
+      : 'printf SHIPPED_BACKGROUND_OK'
+    const jobId = `${shellTool}-1`
     // `tool-bash` is a preset row and `tasks` is a host registry; the producer
     // resolves it with `ctx.get`, so a registry hidden behind a preset realm
     // fails here — with every task control still listed in the catalog above.
     const started = await ctx.tools.execute({
       signal,
-      callId: CallId('shipped-bash-background'),
-      name: 'bash',
+      callId: CallId('shipped-shell-background'),
+      name: shellTool,
       arguments: {
-        command: 'printf SHIPPED_BACKGROUND_OK',
+        command,
         description: 'shipped background probe',
         run_in_background: true,
       },
@@ -210,7 +216,7 @@ it('lets a preset producer reach the background-job registry', async () => {
     })
     expect({ isError: started.isError, content: started.content }).toEqual({
       isError: false,
-      content: [{ type: 'text', text: 'started background job bash-1' }],
+      content: [{ type: 'text', text: `started background job ${jobId}` }],
     })
 
     // The controller reads what the producer started: same registry, one
@@ -224,7 +230,7 @@ it('lets a preset producer reach the background-job registry', async () => {
     })
     expect(listed.isError).toBe(false)
     expect(listed.content).toEqual([
-      { type: 'text', text: expect.stringContaining('bash-1 [bash]') as unknown as string },
+      { type: 'text', text: expect.stringContaining(`${jobId} [${shellTool}]`) as unknown as string },
     ])
 
     // The full round trip: the output a host-plane producer wrote is collected
@@ -233,7 +239,7 @@ it('lets a preset producer reach the background-job registry', async () => {
       signal,
       callId: CallId('shipped-task-output'),
       name: 'job_output',
-      arguments: { job_id: 'bash-1', wait: true },
+      arguments: { job_id: jobId, wait: true },
       agent: handle.agent,
     })
     expect(collected.isError).toBe(false)

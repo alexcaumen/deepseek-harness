@@ -119,7 +119,8 @@ describe.skipIf(MODE === 'record')('web e2e: details panel follows the current S
     await expect.poll(() => detailsTrack(page), { timeout: 5_000 }).toBe(0)
 
     await page.getByRole('button', { name: /^(?:New session|新.*会话)$/ }).last().click()
-    await page.getByText('Giana Code Putri', { exact: true }).waitFor({ timeout: 15_000 })
+    await page.locator('div[data-phase="hero"]').getByText('Giana CoWork', { exact: true })
+      .waitFor({ timeout: 15_000 })
     await expect.poll(() => detailsTrack(page), { timeout: 5_000 }).toBe(0)
 
     const original = page.locator('[role=treeitem]').filter({ hasText: 'Reply with the single word' }).first()

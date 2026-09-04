@@ -12,24 +12,23 @@ it('ships install metadata with the built web application', async () => {
   const manifest: unknown = JSON.parse(await readFile(join(DIST_ROOT, 'manifest.webmanifest'), 'utf8'))
   expect(manifest).toEqual({
     id: '/',
-    name: 'Giana Code Putri',
+    name: 'Giana CoWork',
     short_name: 'Giana',
     start_url: '/',
     scope: '/',
     display: 'fullscreen',
     icons: [{
-      src: '/giana-os-logo.png',
-      sizes: '1254x1254',
+      src: '/giana-cowork-logo.png',
+      sizes: '1024x1024',
       type: 'image/png',
       purpose: 'any',
     }],
   })
 })
 
-it('ships a favicon that switches to a light mark under dark color scheme', async () => {
-  const favicon = await readFile(join(DIST_ROOT, 'favicon.svg'), 'utf8')
-  // The light fill must live inside the dark-scheme media query, so the icon
-  // stays black in light mode and only turns white under a dark scheme.
-  expect(favicon).toMatch(/@media \(prefers-color-scheme: dark\)\s*{\s*path\s*{[^}]*fill:\s*#fff/i)
-  expect(favicon).toContain('fill="#000"')
+it('ships the canonical Giana CoWork favicon asset', async () => {
+  const index = await readFile(join(DIST_ROOT, 'index.html'), 'utf8')
+  const favicon = await readFile(join(DIST_ROOT, 'giana-cowork-logo.png'))
+  expect(index).toContain('<link rel="icon" type="image/png" href="/giana-cowork-logo.png" />')
+  expect(favicon.byteLength).toBeGreaterThan(0)
 })

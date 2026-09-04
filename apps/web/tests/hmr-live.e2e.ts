@@ -10,7 +10,9 @@ import { Context } from '@deepseek-ai/cordis'
 import type { Fiber } from '@deepseek-ai/cordis'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
-import { readClientBuildRecord } from '../../../scripts/client-build-environment.ts'
+import {
+  CLIENT_BUILD_RECORD_PATH, readClientBuildRecord,
+} from '../../../scripts/client-build-environment.ts'
 import { REPO_ROOT } from './support.ts'
 
 function spawnSpec(argv: readonly string[], cwd: string, env?: Record<string, string>): SubprocessSpawnSpec {
@@ -21,6 +23,12 @@ function spawnSpec(argv: readonly string[], cwd: string, env?: Record<string, st
     graceMs: 5_000,
     ...env === undefined ? {} : { env },
   }
+}
+
+function pnpmDevWebArgv(): readonly string[] {
+  return process.platform === 'win32'
+    ? [process.env.ComSpec ?? 'cmd.exe', '/d', '/s', '/c', 'pnpm run dev:web']
+    : ['pnpm', 'run', 'dev:web']
 }
 
 function waitForOutput(child: SubprocessHandle, pattern: RegExp, label: string): Promise<string> {
@@ -72,17 +80,21 @@ it('hot-reloads a real client-plugin source edit without refreshing the page', a
   const world = await mkdtemp(join(tmpdir(), 'dsh-web-hmr-world-'))
   const sourcePath = join(REPO_ROOT, 'packages/client/ui-conversation/src/client/locales.ts')
   const binPath = join(REPO_ROOT, 'apps/cli/lib/bin.js')
+  const buildRecordPath = join(REPO_ROOT, CLIENT_BUILD_RECORD_PATH)
   if (!existsSync(binPath)) throw new Error('HMR browser test needs the built dsh bin; run pnpm run build first')
   const clientBuildEnvironment = readClientBuildRecord(REPO_ROOT).environment
   const clientBundlePaths = globSync('packages/*/*/lib/client.js{,.map}', { cwd: REPO_ROOT })
     .map(path => join(REPO_ROOT, path))
   const originalClientBundles = await Promise.all(clientBundlePaths.map(async path => [path, await readFile(path)] as const))
+  const originalBuildRecord = await readFile(buildRecordPath)
   const originalSource = await readFile(sourcePath)
-  const oldText = 'Into the Unknown'
-  const sourceNeedle = "'hero.headline': 'Into the Unknown'"
+  const oldText = 'Giana CoWork'
+  const sourceNeedle = "'hero.headline': 'Giana CoWork'"
   const newText = `HMR UPDATED ${'x'.repeat(80)}`
-  const updatedSource = originalSource.toString().replace(sourceNeedle, `'hero.headline': '${newText}'`)
-  if (updatedSource === originalSource.toString()) throw new Error(`HMR source lacks ${JSON.stringify(sourceNeedle)}`)
+  const sourceText = originalSource.toString()
+  const sourceIndex = sourceText.lastIndexOf(sourceNeedle)
+  if (sourceIndex === -1) throw new Error(`HMR source lacks ${JSON.stringify(sourceNeedle)}`)
+  const updatedSource = `${sourceText.slice(0, sourceIndex)}'hero.headline': '${newText}'${sourceText.slice(sourceIndex + sourceNeedle.length)}`
 
   const subprocessCtx = new Context()
   let subprocessFiber: Fiber | undefined
@@ -93,7 +105,7 @@ it('hot-reloads a real client-plugin source edit without refreshing the page', a
   try {
     subprocessFiber = await subprocessCtx.plugin(LocalSubprocessRuntime)
     watcher = subprocessCtx.subprocess.spawn(spawnSpec(
-      ['pnpm', 'run', 'dev:web'],
+      pnpmDevWebArgv(),
       REPO_ROOT,
       { ...clientBuildEnvironment },
     ))
@@ -104,6 +116,7 @@ it('hot-reloads a real client-plugin source edit without refreshing the page', a
       {
         DEEPSEEK_API_KEY: 'keyless-hmr-no-call',
         DSH_HOME: join(world, '.dsh'),
+        DSH_MCP_TOOL_RUNTIME_PORT: '0',
       },
     ))
     const baseUrl = await waitForOutput(host, /dsh web: (http:\/\/[^\s]+)/, 'built dsh web')
@@ -112,7 +125,8 @@ it('hot-reloads a real client-plugin source edit without refreshing the page', a
     const pageErrors: string[] = []
     page.on('pageerror', error => pageErrors.push(String(error)))
     await page.goto(baseUrl, { waitUntil: 'load' })
-    await page.getByText(oldText, { exact: true }).waitFor({ timeout: 15_000 })
+    await page.locator('div[data-phase="hero"]').getByText(oldText, { exact: true })
+      .waitFor({ timeout: 15_000 })
     const pageIdentity = await page.evaluate(() => {
       const identity = crypto.randomUUID()
       Object.defineProperty(window, '__dshHmrPageIdentity', { value: identity })
@@ -132,6 +146,7 @@ it('hot-reloads a real client-plugin source edit without refreshing the page', a
     await Promise.all(originalClientBundles.map(async ([path, content]) => {
       await writeFile(path, content).catch((error: unknown) => failures.push(error))
     }))
+    await writeFile(buildRecordPath, originalBuildRecord).catch((error: unknown) => failures.push(error))
     if (host !== undefined) await stopTree(host).catch((error: unknown) => failures.push(error))
     await browser?.close().catch((error: unknown) => failures.push(error))
     await subprocessFiber?.dispose().catch((error: unknown) => failures.push(error))

@@ -13,6 +13,7 @@
     - button "Agent 预设":
       - img
       - text: Agent 预设
+    - button "侧边卡片"
   - button "打开配置文件"
   - button "关闭":
     - img
@@ -69,3 +70,11 @@
   - group: 自定义设置
   - button "取消"
   - button "保存"
+  - region "原生订阅":
+    - heading "原生订阅" [level=3]
+    - paragraph: 通过官方本地客户端使用现有的 Codex 或 Claude Code 登录。
+    - link "打开 Codex 登录":
+      - /url: dsh-auth://codex
+    - link "打开 Claude Code 登录":
+      - /url: dsh-auth://claude
+    - paragraph: 身份验证保留在原生客户端中；Giana CoWork 不会复制浏览器 Cookie 或 OAuth 令牌。

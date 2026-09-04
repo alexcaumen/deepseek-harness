@@ -7,6 +7,7 @@ export const en = {
   'close': 'Close',
   'copy': 'Copy',
   'copied': 'Copied',
+  'copyFailed': 'Copy failed',
   'retry': 'Retry',
   'loading': 'Loading…',
   'load.failed': 'Failed to load',

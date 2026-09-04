@@ -67,7 +67,7 @@ describe('official browser-brand plugin', () => {
 
   it('renders the official name independently from both requested mark sizes', () => {
     const name = render(<OfficialBrandName />)
-    expect(name.getByText('Giana Code Putri')).toBeTruthy()
+    expect(name.getByText('Giana CoWork')).toBeTruthy()
     name.unmount()
 
     const mark = render(<OfficialBrandMark size={34} className="hero-mark" />)

@@ -13,6 +13,7 @@
     - button "Agent 预设":
       - img
       - text: Agent 预设
+    - button "侧边卡片"
   - button "打开配置文件"
   - button "关闭":
     - img
@@ -78,7 +79,7 @@
         - text: 删除
       - paragraph:
         - text: 预设文件：
-        - code: {{presetRoot}}/my-agent
+        - code: {{presetRoot}}\my-agent
   - button "用「创造模式」创作自定义预设":
     - img
     - text: 用「创造模式」创作自定义预设

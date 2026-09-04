@@ -696,6 +696,13 @@ describe('automatic-language dictation', () => {
     expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.080')
     expect(audio.analyser.getByteTimeDomainData).toHaveBeenCalledTimes(2)
 
+    // A throttled frame catches up by elapsed cadence slots, preserving the
+    // advertised seven-second travel instead of advancing only once per RAF.
+    act(() => { frames.step(704) })
+    expect(bars[64]?.style.getPropertyValue('--dictation-amplitude')).toBe(newestSample)
+    expect(bars[65]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.080')
+    expect(audio.analyser.getByteTimeDomainData).toHaveBeenCalledTimes(8)
+
     fireEvent.click(microphone)
     expect(frames.cancel).toHaveBeenCalled()
     expect(audio.source.disconnect).toHaveBeenCalledOnce()
@@ -998,22 +1005,38 @@ describe('running and lock semantics', () => {
         endOffset: 26,
       })).toBe(true)
     })
+    const olderScope = document.createElement('div')
+    olderScope.dataset.responseAnnotationSourceMessageId = 'assistant-older'
+    const olderMarker = document.createElement('button')
+    olderMarker.dataset.responseAnnotationMarker = '1'
+    olderScope.append(olderMarker)
+    const sourceScope = document.createElement('div')
+    sourceScope.dataset.responseAnnotationSourceMessageId = 'assistant-1'
     const marker = document.createElement('button')
     marker.dataset.responseAnnotationMarker = '1'
+    sourceScope.append(marker)
     const scrollIntoView = vi.fn()
     const focus = vi.fn()
     marker.scrollIntoView = scrollIntoView
     marker.focus = focus
-    document.body.append(marker)
+    document.body.append(olderScope, sourceScope)
     try {
       const annotation = result.view.getByRole('button', { name: '批注 1：selected source passage' })
       expect(annotation.textContent).toBe('1')
       expect(annotation.getAttribute('title')).toBe('selected source passage')
+      fireEvent.mouseEnter(annotation)
+      expect(result.view.getByRole('tooltip').textContent).toBe('selected source passage')
+      fireEvent.mouseLeave(annotation)
+      expect(result.view.queryByRole('tooltip')).toBeNull()
+      fireEvent.focus(annotation)
+      expect(result.view.getByRole('tooltip').textContent).toBe('selected source passage')
+      fireEvent.blur(annotation)
       fireEvent.click(annotation)
       expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' })
       expect(focus).toHaveBeenCalledWith({ preventScroll: true })
     } finally {
-      marker.remove()
+      olderScope.remove()
+      sourceScope.remove()
     }
   })
 

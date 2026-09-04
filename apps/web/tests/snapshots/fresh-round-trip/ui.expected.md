@@ -12,10 +12,10 @@
 - text: "Use the bash tool to run exactly: echo WEB_E2E_OK. Then reply with the single word DONE and stop. {{clock}}"
 - button "Copy":
   - img
-- button "Context injection Giana Code Putri":
+- button "Context injection Giana CoWork":
   - img
   - img
-  - text: Context injection Giana Code Putri
+  - text: Context injection Giana CoWork
 - status: Thinking Completed
 - button "Thinking":
   - img

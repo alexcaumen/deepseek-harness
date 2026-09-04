@@ -12,14 +12,15 @@
 - text: "Using ONE run_code program: run pwsh `Write-Output CODE_ROUND_OK`, then read the file missing.txt catching its error in the program. Return an object with both outcomes. Then reply DONE and stop. {{clock}}"
 - button "Copy":
   - img
-- button "Context injection Giana Code Putri":
+- button "Context injection Giana CoWork":
   - img
   - img
-  - text: Context injection Giana Code Putri
-- 'button "Think The user wants me to write a single `run_code` program that:"':
+  - text: Context injection Giana CoWork
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: "Think The user wants me to write a single `run_code` program that:"
+  - text: Thinking
 - button "Code Run pwsh echo and catch missing file read":
   - img
   - img
@@ -33,10 +34,11 @@
 - 'button "Read Error: cannot read \"{{cwd}}\\workspace\\missing.txt\": not found"':
   - img
   - text: "Read Error: cannot read \"{{cwd}}\\workspace\\missing.txt\": not found"
-- button "Think The program ran successfully. Let me now reply DONE as instructed.":
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: Think The program ran successfully. Let me now reply DONE as instructed.
+  - text: Thinking
 - paragraph: DONE
 - button "Copy":
   - img

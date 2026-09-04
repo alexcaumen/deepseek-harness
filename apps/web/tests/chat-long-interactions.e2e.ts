@@ -236,7 +236,16 @@ describe('web e2e: long Chat interaction contract', () => {
     await summary2.press('Enter')
     await expect.poll(() => summary2.getAttribute('aria-expanded'), { timeout: 10_000 }).toBe('true')
     expect(await summary1.getAttribute('aria-expanded')).toBe('false')
-    await call2.getByText(`${toolMarker2} output line 12`, { exact: true }).waitFor({ timeout: 10_000 })
+    await expect.poll(() => call2.textContent(), { timeout: 10_000 })
+      .toContain(`${toolMarker2} output line 12`)
+    // Windows replays this historical Bash result without its original presenter.
+    if (process.platform === 'win32') expect(await call2.ariaSnapshot()).toMatchInlineSnapshot(`
+      "- button "Bash CHAT_SCROLL_INTERACTION_TOOL_088_2" [expanded]:
+        - img
+        - text: Bash CHAT_SCROLL_INTERACTION_TOOL_088_2
+      - text: "IN { \\"command\\": \\"printf 'CHAT_SCROLL_INTERACTION_TOOL_088_2\\\\\\\\n'\\", \\"description\\": \\"CHAT_SCROLL_INTERACTION_TOOL_088_2\\" } OUT CHAT_SCROLL_INTERACTION_TOOL_088_2 output line 01 CHAT_SCROLL_INTERACTION_TOOL_088_2 output line 02 CHAT_SCROLL_INTERACTION_TOOL_088_2 output line 03 CHAT_SCROLL_INTERACTION_TOOL_088_2 output line 04 CHAT_SCROLL_INTERACTION_TOOL_088_2 output line 05 CHAT_SCROLL_INTERACTION_TOOL_088_2 output line 06 CHAT_SCROLL_INTERACTION_TOOL_088_2 output line 07 CHAT_SCROLL_INTERACTION_TOOL_088_2 output line 08 CHAT_SCROLL_INTERACTION_TOOL_088_2 output line 09 CHAT_SCROLL_INTERACTION_TOOL_088_2 output line 10 CHAT_SCROLL_INTERACTION_TOOL_088_2 output line 11 CHAT_SCROLL_INTERACTION_TOOL_088_2 output line 12"
+      - button "Inspect""
+    `)
 
     const branchUserKey = messageKey(branchUserEvent)
     const branchAssistantKey = assistantKey(branchAssistantEvent)

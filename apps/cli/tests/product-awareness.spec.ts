@@ -13,7 +13,7 @@ interface PresetEntry {
 
 const CORDIS_PRESET = fileURLToPath(new URL('../config/agent-presets/cordis/agent.cordis.yml', import.meta.url))
 
-describe('Giana Code Putri product awareness', () => {
+describe('Giana CoWork product awareness', () => {
   it('renders the shipped Cordis persona under the product identity', async () => {
     const parsed: unknown = yaml.load(readFileSync(CORDIS_PRESET, 'utf8'), { schema: entryListSchema })
     if (!Array.isArray(parsed)) throw new TypeError('the Cordis preset must parse to an entry array')
@@ -28,8 +28,8 @@ describe('Giana Code Putri product awareness', () => {
 
       const rendered = renderPrompt(await ctx.systemPrompt.assemble())
       const productOpening = rendered.split('Two planes decide where an edit belongs.')[0]
-      expect(productOpening).toContain('working through Giana Code Putri')
-      expect(productOpening).toContain('modify the Giana Code Putri implementation')
+      expect(productOpening).toContain('working through Giana CoWork')
+      expect(productOpening).toContain('modify the Giana CoWork implementation')
       expect(productOpening).toContain('powered by the gianaos/putri model')
       expect(productOpening).not.toMatch(/\b(?:DeepSeek Harness|DSH|harness)\b/i)
       expect(rendered).toContain('${DSH_HOME:-$HOME/.dsh}')

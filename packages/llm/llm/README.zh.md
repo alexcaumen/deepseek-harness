@@ -45,11 +45,13 @@
 | 事件 | 模式 | 用途 |
 |---|---|---|
 | `llm/stream` | waterfall | 拦截／包装每次流式模型调用，用于缓存、日志或路由 |
+| `llm/dispatch-signal` | waterfall | 流准入后添加传输取消信号，不改写模型请求 |
 
 ### 扩展点
 
 - 继承 `LlmAdapter` 并调用 `ctx.llm.registerAdapter(providers, adapter)`，添加一条或多条提供方路由。`GenerateOptions.provider` 选择适配器；`GenerateOptions.model` 属于适配器，可以动态解析。覆盖 `providerRetryPolicy()` 以提供由提供方定义的恢复配置，覆盖 `providerInfo()` 和异步 `listModels()` 以公开 selector 元数据；精确身份、容量、输出默认值或可选推理强度可用时，实现 `resolveModel()`；异步解析器必须响应其可选的取消 signal。默认实现使用有界的 normal 重试策略，将路由和模型 id 用作名称，不公布模型，也不返回容量、输出默认值或推理元数据。
 - 包装 `llm/stream` 时，通过 `ctx.on()` waterfall listener 实现缓存、日志或路由。包装层如果在已经发出分片后重试，就没有可持久记录的尝试边界；因此，随产品交付的 agent 重试策略改用 `agent/request-error`。
+- 使用 `llm/dispatch-signal` 可在流准入后、最终适配器解析及派发前添加资源生命周期取消信号。调用 `next()` 并合并其结果。原始调用者信号始终保留；只有独立的传输请求副本获得合并信号。冻结请求、消息内容和预备适配器身份保持不变。适配器必须响应取消；取消不等于远程工作已经停止。
 
 ### 消息（`message.ts`）与内容块（`types.ts`）
 

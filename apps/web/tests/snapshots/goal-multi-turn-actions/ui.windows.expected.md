@@ -18,10 +18,10 @@
   - img
   - img
   - text: Context injection goal
-- button "Context injection Giana Code Putri":
+- button "Context injection Giana CoWork":
   - img
   - img
-  - text: Context injection Giana Code Putri
+  - text: Context injection Giana CoWork
 - status: Thinking Completed
 - button "Thinking":
   - img
@@ -121,11 +121,6 @@
   - img
   - img
   - text: Pwsh List all files in token-meter package
-- status: Thinking Completed
-- button "Thinking":
-  - img
-  - img
-  - text: Thinking
 - status: Thinking Completed
 - button "Thinking":
   - img

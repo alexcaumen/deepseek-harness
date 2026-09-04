@@ -1,12 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { MessageId } from '@deepseek-ai/dsh-client-connection/client'
-import type { InputActions, InputState } from '../input/contract.ts'
-import {
-  parseResponseAnnotationPayload, RESPONSE_ANNOTATION_SOURCE,
-  type ResponseAnnotationPayload,
-} from '../response-annotation.ts'
-import type { ChatViewSlotProps } from '../contract/slots.ts'
+import type { ResponseAnnotationPayload } from '../response-annotation.ts'
+import type { ChatNodeViewProps, ChatViewSlotProps } from '../contract/slots.ts'
 import { responseAnnotationRange } from './response-annotation-location.ts'
 import css from './ResponseSelectionActions.module.css'
 
@@ -18,12 +14,12 @@ interface SelectionState {
   readonly top: number
 }
 
-interface AnnotationMarker extends ResponseAnnotationPayload {
+export interface ResponseAnnotationOccurrence extends ResponseAnnotationPayload {
   readonly occurrenceId: number
 }
 
 interface MarkerLayout {
-  readonly annotation: AnnotationMarker
+  readonly annotation: ResponseAnnotationOccurrence
   readonly highlights: readonly { left: number; top: number; width: number; height: number }[]
   readonly left: number
   readonly top: number
@@ -38,8 +34,8 @@ function renderedOffset(host: HTMLElement, container: Node, offset: number): num
 
 export interface ResponseSelectionActionsProps {
   readonly messageId: MessageId
-  readonly occurrences: InputState['occurrences']
-  readonly inputActions: InputActions
+  readonly occurrences: readonly ResponseAnnotationOccurrence[]
+  readonly inputActions: ChatNodeViewProps<'assistant-step'>['inputActions']
   readonly t: ChatViewSlotProps['t']
   readonly children: ReactNode
 }
@@ -52,15 +48,10 @@ export function ResponseSelectionActions({
   const content = useRef<HTMLDivElement>(null)
   const [selected, setSelected] = useState<SelectionState | null>(null)
   const [markers, setMarkers] = useState<readonly MarkerLayout[]>([])
-  const annotations = useMemo(() => occurrences.flatMap((occurrence): AnnotationMarker[] => {
-    if (occurrence.source !== RESPONSE_ANNOTATION_SOURCE) return []
-    try {
-      const annotation = parseResponseAnnotationPayload(occurrence.ref)
-      return annotation.messageId === messageId ? [{ ...annotation, occurrenceId: occurrence.occurrenceId }] : []
-    } catch {
-      return []
-    }
-  }), [messageId, occurrences])
+  const annotations = useMemo(
+    () => occurrences.filter(annotation => annotation.messageId === messageId),
+    [messageId, occurrences],
+  )
 
   const capture = useCallback(() => {
     const selection = window.getSelection()

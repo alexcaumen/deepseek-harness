@@ -66,18 +66,24 @@ describe('minimal agent preset', () => {
     const stateDir = join(scaffold.workspaceCwd, 'persistent-state')
     await mkdir(stateDir)
     const signal = new AbortController().signal
+    const windows = process.platform === 'win32'
+    const shellTool = windows ? 'pwsh' : 'bash'
     await scaffold.ctx.tools.execute({
       signal,
-      callId: CallId('minimal-bash-state-setup'),
-      name: 'bash',
-      arguments: { command: `cd ${JSON.stringify(stateDir)} && export DSH_MINIMAL_STATE=PERSISTED` },
+      callId: CallId('minimal-shell-state-setup'),
+      name: shellTool,
+      arguments: { command: windows
+        ? `Set-Location -LiteralPath '${stateDir.replaceAll("'", "''")}'; $env:DSH_MINIMAL_STATE = 'PERSISTED'`
+        : `cd ${JSON.stringify(stateDir)} && export DSH_MINIMAL_STATE=PERSISTED` },
       agent: agentHandle.agent,
     })
     const bash = await scaffold.ctx.tools.execute({
       signal,
-      callId: CallId('minimal-bash-state-read'),
-      name: 'bash',
-      arguments: { command: 'printf \'%s:%s\n\' "$DSH_MINIMAL_STATE" "$PWD"' },
+      callId: CallId('minimal-shell-state-read'),
+      name: shellTool,
+      arguments: { command: windows
+        ? 'Write-Output "$($env:DSH_MINIMAL_STATE):$((Get-Location).Path)"'
+        : 'printf \'%s:%s\n\' "$DSH_MINIMAL_STATE" "$PWD"' },
       agent: agentHandle.agent,
     })
     const seedPath = join(scaffold.workspaceCwd, 'preset-smoke.txt')
@@ -97,12 +103,21 @@ describe('minimal agent preset', () => {
       .replaceAll(scaffold.workspaceCwd, '{{cwd}}')
       .trimEnd()
 
-    expect({
+    const transcript = {
       prompt: requestHeader.system,
       tools: requestHeader.tools?.map(tool => tool.name),
       bash: text(bash),
       editor: text(editor),
-    }).toMatchInlineSnapshot(`
+    }
+    if (windows) {
+      expect(transcript).toEqual({
+        prompt: 'You are a helpful software engineer assistant.',
+        tools: ['pwsh', 'str_replace_editor'],
+        bash: 'PERSISTED:{{cwd}}\\persistent-state',
+        editor: "Here's the content of {{cwd}}\\preset-smoke.txt with line numbers (which has a total of 2 lines):\n     1  MINIMAL_EDITOR_OK\n     2",
+      })
+    } else {
+      expect(transcript).toMatchInlineSnapshot(`
       {
         "bash": "PERSISTED:{{cwd}}/persistent-state",
         "editor": "Here's the content of {{cwd}}/preset-smoke.txt with line numbers (which has a total of 2 lines):
@@ -115,6 +130,7 @@ describe('minimal agent preset', () => {
         ],
       }
     `)
+    }
     expect(requestHeader.tools?.toSorted((left, right) => left.name.localeCompare(right.name)))
       .toEqual(scaffold.ctx.tools.schemas(agentHandle.agent).toSorted((left, right) => left.name.localeCompare(right.name)))
     await assertFixtureInventory(SNAPSHOT_DIR, ['session.jsonl'])

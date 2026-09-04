@@ -49,7 +49,7 @@ interface DesktopGlobals {
   }
 }
 
-const APP_TITLE = 'Giana Code Putri'
+const APP_TITLE = 'Giana CoWork'
 const DELIVERED_STORAGE_KEY = 'giana.code.putri.notifications.delivered.v1'
 
 function globals(): DesktopGlobals {
@@ -153,19 +153,19 @@ export function classifyNotification(
     case 'host/agent-error':
       return makeCandidate(
         'failed',
-        `${frame.sessionId}:agent-error:${frame.message}`,
+        `${frame.sessionId}:agent-error:${rpcId}`,
         frame.sessionId,
         'Tugas berhenti karena terjadi kendala.',
       )
     case 'stream/error':
       if (frame.error === undefined || typeof frame.error !== 'object' || frame.error === null) {
-        return makeCandidate('failed', `stream-error:${rpcId}`, undefined, 'Koneksi terputus. Buka Giana Code Putri untuk melanjutkan.')
+        return makeCandidate('failed', `stream-error:${rpcId}`, undefined, 'Koneksi terputus. Buka Giana CoWork untuk melanjutkan.')
       }
       return makeCandidate(
         'failed',
-        `stream-error:${frame.error.code}:${frame.error.message}`,
+        `stream-error:${rpcId}`,
         undefined,
-        'Koneksi terputus. Buka Giana Code Putri untuk melanjutkan.',
+        'Koneksi terputus. Buka Giana CoWork untuk melanjutkan.',
       )
     default:
       return undefined

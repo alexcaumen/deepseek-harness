@@ -103,7 +103,7 @@ describe('SidebarRoot shell', () => {
         options?.fallback ?? null) as SidebarRootComponentProps['renderSlot']}
     />)
 
-    expect(screen.getByText('Giana Code Putri')).toBeTruthy()
+    expect(screen.getByText('Giana CoWork')).toBeTruthy()
     expect(screen.getByText('0123456')).toBeTruthy()
     expect(container.querySelector('svg')).not.toBeNull()
   })

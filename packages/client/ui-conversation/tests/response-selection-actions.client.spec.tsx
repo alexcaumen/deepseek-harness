@@ -75,15 +75,11 @@ describe('response selection actions', () => {
           messageId={'assistant-message-1' as MessageId}
           occurrences={[{
             occurrenceId: 7,
-            source: 'response-annotation',
-            ref: JSON.stringify({
-              index: 1, messageId: 'assistant-message-1', text: 'selected passage',
-              startOffset: 6, endOffset: 22,
-            }),
-            offset: 0,
-            length: 13,
-            label: 'Annotation 1',
-            clipboardText: 'Annotation 1',
+            index: 1,
+            messageId: 'assistant-message-1' as MessageId,
+            text: 'selected passage',
+            startOffset: 6,
+            endOffset: 22,
           }]}
           inputActions={inputActions}
           t={(key, values) => key === 'annotation.sourceMarker'
@@ -119,14 +115,9 @@ describe('response selection actions', () => {
           messageId={'assistant-message-1' as MessageId}
           occurrences={[{
             occurrenceId: 8,
-            source: 'response-annotation',
-            ref: JSON.stringify({
-              index: 2, messageId: 'assistant-message-1', text: 'repeated passage',
-            }),
-            offset: 0,
-            length: 13,
-            label: 'Annotation 2',
-            clipboardText: 'Annotation 2',
+            index: 2,
+            messageId: 'assistant-message-1' as MessageId,
+            text: 'repeated passage',
           }]}
           inputActions={inputActions}
           t={key => key}

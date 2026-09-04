@@ -18,7 +18,7 @@ The assembled product and model-facing product context identify the application 
 
 ### Response annotations
 
-A response selection records optional start and end offsets alongside the selected text and response identity. Complete safe offsets render a numbered source highlight and marker, while incomplete or legacy payloads retain the text-only behavior. The composer renders annotations as compact numbered controls with hover and focus previews plus source navigation; sent user messages project the same annotations as compact numbered bubbles. Structured payloads remain backward compatible and no second annotation store is introduced.
+A response selection records optional start and end offsets alongside the selected text and response identity. Complete safe offsets render a numbered source highlight and marker, while incomplete or legacy payloads retain the text-only behavior. The composer renders annotations as compact numbered controls with hover and focus previews plus source navigation; sent user messages derive the same compact numbered bubbles from the durable submitted envelope rather than reparsing display prose. Exact message offsets own navigation. A legacy text-only payload may navigate only when its selected text occurs uniquely in the source response; ambiguous matches do nothing. Structured payloads remain backward compatible and no second annotation store is introduced.
 
 ### Reasoning presentation
 
@@ -32,6 +32,12 @@ The ask-question composer provides microphone start, stop, transcription, retry,
 
 The main composer waveform uses a fixed 72-bar history and advances one sample about every 97 milliseconds, producing one full traversal in about seven seconds. Its animation rate is time-based rather than tied to render frequency or model throughput.
 
+### Copy and desktop notifications
+
+Message, terminal, and search copy controls report success only after the Clipboard API or the owned fallback has accepted the write. A refused or failed write shows a bounded failure state instead of displaying false success.
+
+When the application is unattended, durable completion, failure, approval, and question events may produce a desktop notification. The native desktop bridge is preferred; an already-granted browser Notification permission is a fallback, but the application never requests permission without an explicit user action. Delivered event keys persist for at-most-once behavior, failed delivery remains retryable, private payloads stay out of the notification body, and a native notification click delegates the exact session identifier to the canonical session opener.
+
 ### Route and launcher guards
 
 A forced R5300 speech route persists only after the returned route state reports ready. An unavailable or failed route restores Automatic, prevents immediate reselection until status refresh, and explains the failure without claiming R5300 is active. Automatic routing continues to report the ready route selected by the existing compute authority.
@@ -40,7 +46,7 @@ The GianaOS Putri ACP launcher applies one pinned SSH host identity and strict k
 
 ## Verification
 
-Focused component and contract suites cover product awareness, offset and legacy annotation payloads, source navigation, collapsed reasoning and final-answer separation, Queue and Steer selection, the seven-second waveform, ask-question dictation lifecycle, R5300 rollback, and ACP launch diagnostics. Client package verification proves the ask-question package declares its conversation dependency rather than reaching through another package's source tree. Repository type checking and the production build pass for the isolated staging worktree.
+Focused component and contract suites cover product awareness, durable submitted annotation projection, exact-offset and unique-only legacy navigation, collapsed reasoning and final-answer separation, Queue and Steer selection, the seven-second waveform, ask-question dictation lifecycle, truthful copy feedback, at-most-once desktop notifications with exact-session opening, R5300 rollback, and ACP launch diagnostics. Client package verification proves the ask-question package declares its conversation dependency rather than reaching through another package's source tree. Repository type checking and the production build remain required for the exact isolated staging revision.
 
 The existing application is not restarted or replaced by this source change. Packaged-candidate Human Experience QA, session compatibility against a read-consistent copy, controlled promotion, rollback proof, and production smoke remain release gates for the exact immutable candidate.
 
@@ -76,7 +82,7 @@ It partially supersedes [Frame-coalesced reasoning-chunk publication and browser
 
 ## Consequences
 
-Giana Code Putri presents a coherent interaction layer without changing existing session identities, durable history, model/provider routes, tool authorities, or internal package provenance. Users gain compact source-linked annotations, optional reasoning visibility, question dictation, explicit busy-turn delivery choice, a calmer waveform, and truthful compute selection.
+Giana Code Putri presents a coherent interaction layer without changing existing session identities, durable history, model/provider routes, tool authorities, or internal package provenance. Users gain compact source-linked annotations, optional reasoning visibility, question dictation, explicit busy-turn delivery choice, a calmer waveform, truthful copy feedback, and desktop attention notices that return to the correct session.
 
 The collapsed reasoning row no longer conveys token cadence through a moving text preview. It conveys only running or completed state until the user expands it; this trades passive throughput detail for a quieter answer surface and stronger separation between reasoning and the final answer.
 

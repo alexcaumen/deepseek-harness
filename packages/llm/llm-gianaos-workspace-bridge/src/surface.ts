@@ -46,7 +46,7 @@ export function renderSurfaceEnvelope(fence: TurnFence, capability: SurfaceCapab
 
   const lines = [
     '<giana-surface>',
-    'This message reached you through the DeepSeek Harness workbench surface on the PRDG host.',
+    'This message reached you through the Giana CoWork workbench surface on the PRDG host.',
     'The surface can run these bounded operations on that host and return the evidence to you.',
     `tools: ${tools.join(', ')}`,
     'workspaces:',

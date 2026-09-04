@@ -28,6 +28,7 @@ import type { DraftDecorations } from '../input/decorations.ts'
 import type { EditRange } from '../input/contract.ts'
 import {
   parseResponseAnnotationPayload, RESPONSE_ANNOTATION_SOURCE,
+  type ResponseAnnotationPayload,
 } from '../input/response-annotation.ts'
 import { attachmentErrorText, imageSizeText } from '../image-labels.ts'
 import { ReferenceIcon } from '../reference/ReferenceIcon.tsx'
@@ -321,19 +322,26 @@ export function InputBar({
         element.dataset.waveformTravelMs = String(DICTATION_WAVEFORM_TRAVEL_MS)
       }
       const cadence = reducedMotion ? 250 : DICTATION_WAVEFORM_STEP_MS
-      if (timestamp - lastPaint >= cadence) {
-        const amplitude = audio === null
-          ? fallbackWaveformAmplitude(frame)
-          : analyserWaveformAmplitude(audio.analyser, audio.values)
-        if (reducedMotion) {
-          samples.fill(amplitude)
-        } else {
-          samples.shift()
-          samples.push(amplitude)
+      const elapsedSteps = Number.isFinite(lastPaint)
+        ? Math.max(0, Math.floor((timestamp - lastPaint) / cadence))
+        : 1
+      if (elapsedSteps > 0) {
+        const paintSteps = reducedMotion ? 1 : Math.min(elapsedSteps, samples.length)
+        frame += elapsedSteps - paintSteps
+        for (let step = 0; step < paintSteps; step += 1) {
+          const amplitude = audio === null
+            ? fallbackWaveformAmplitude(frame)
+            : analyserWaveformAmplitude(audio.analyser, audio.values)
+          if (reducedMotion) {
+            samples.fill(amplitude)
+          } else {
+            samples.shift()
+            samples.push(amplitude)
+          }
+          frame += 1
         }
         paintWaveform(element, samples)
-        lastPaint = timestamp
-        frame += 1
+        lastPaint = Number.isFinite(lastPaint) ? lastPaint + elapsedSteps * cadence : timestamp
       }
       waveformFrameRef.current = requestAnimationFrame(advance)
     }
@@ -968,9 +976,15 @@ export function InputBar({
       return []
     }
   }) ?? []
-  const navigateToAnnotation = (index: number): void => {
-    const marker = document.querySelector<HTMLElement>(`[data-response-annotation-marker="${index}"]`)
-    if (marker === null) return
+  const navigateToAnnotation = (annotation: ResponseAnnotationPayload): void => {
+    const markers = [...document.querySelectorAll<HTMLElement>(
+      `[data-response-annotation-marker="${annotation.index}"]`,
+    )]
+    const marker = markers.find(candidate => candidate
+      .closest<HTMLElement>('[data-response-annotation-source-message-id]')
+      ?.dataset.responseAnnotationSourceMessageId === annotation.messageId)
+      ?? markers.find(candidate => candidate.closest('[data-response-annotation-source-message-id]') === null)
+    if (marker === undefined) return
     marker.scrollIntoView({ behavior: 'smooth', block: 'center' })
     marker.focus({ preventScroll: true })
   }
@@ -1139,16 +1153,18 @@ export function InputBar({
           >
             {responseAnnotations.map(annotation => (
               <span key={annotation.occurrenceId} role="listitem">
-                <button
-                  type="button"
-                  className={css.annotationBubble}
-                  aria-label={t('annotation.item', { index: annotation.index, text: annotation.text })}
-                  title={annotation.text}
-                  onMouseDown={(event) => { event.preventDefault() }}
-                  onClick={() => { navigateToAnnotation(annotation.index) }}
-                >
-                  {annotation.index}
-                </button>
+                <Tooltip label={annotation.text} side="top" maxWidth={320}>
+                  <button
+                    type="button"
+                    className={css.annotationBubble}
+                    aria-label={t('annotation.item', { index: annotation.index, text: annotation.text })}
+                    title={annotation.text}
+                    onMouseDown={(event) => { event.preventDefault() }}
+                    onClick={() => { navigateToAnnotation(annotation) }}
+                  >
+                    {annotation.index}
+                  </button>
+                </Tooltip>
               </span>
             ))}
           </div>

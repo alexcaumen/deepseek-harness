@@ -30,6 +30,7 @@ export function terminalBlockLabels(t: TranslateNS<'conversation'>): TerminalBlo
     done: t('terminal.done'),
     copy: t('copy'),
     copied: t('copied'),
+    copyFailed: t('copyFailed'),
     noOutput: t('terminal.noOutput'),
     collapseAria: t('terminal.collapseAria'),
     collapse: t('collapse'),

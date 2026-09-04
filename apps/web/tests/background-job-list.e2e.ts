@@ -27,7 +27,8 @@ const MODE = webSnapshotMode()
 const SEED_ID = 'background-job-list-web-e2e'
 // Long enough that the running assertions never race the process exiting on
 // their own; the test kills it explicitly to reach the settled state.
-const COMMAND = 'sleep 45'
+const SHELL_TOOL = process.platform === 'win32' ? 'pwsh' : 'bash'
+const COMMAND = process.platform === 'win32' ? 'Start-Sleep -Seconds 45' : 'sleep 45'
 
 /**
  * Wait for the Host to publish the live Agent that opening a session resumes.
@@ -91,13 +92,13 @@ describe.skipIf(MODE === 'record')('web e2e: background job list', () => {
     const started = await scaffold.ctx.tools.execute({
       signal: new AbortController().signal,
       callId: CallId('background-job-list-e2e'),
-      name: 'bash',
+      name: SHELL_TOOL,
       arguments: { command: COMMAND, description: 'Hold a background slot open', run_in_background: true },
       agent,
     })
     const reported = started.content.map(block => block.type === 'text' ? block.text : '').join('')
-    const matched = /\bbash-\d+\b/.exec(reported)
-    if (matched === null) throw new Error(`background bash reported no job id: ${reported}`)
+    const matched = new RegExp(`\\b${SHELL_TOOL}-\\d+\\b`).exec(reported)
+    if (matched === null) throw new Error(`background ${SHELL_TOOL} reported no job id: ${reported}`)
     jobId = JobId(matched[0])
 
     await trigger.waitFor({ timeout: 15_000 })

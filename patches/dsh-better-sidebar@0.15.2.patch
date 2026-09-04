@@ -1,0 +1,30 @@
+diff --git a/lib/client.js b/lib/client.js
+index d6528cd0d9e708246d79c89bb99533747b3975aa..2ab6946852499d1483fc6edadcf769e64eb295eb 100644
+--- a/lib/client.js
++++ b/lib/client.js
+@@ -2431,7 +2431,8 @@ window.__ModuleLoader__.load({
+ 		function wrapOpenPath(workspaces, deps) {
+ 			const original = workspaces.openPath;
+ 			workspaces.openPath = (path) => {
+-				if (deps.takeoverEnabled()) {
++				const directoryTarget = /(?:^|[/\\])\.{1,2}$|[/\\]$/.test(path);
++				if (!directoryTarget && deps.takeoverEnabled()) {
+ 					const sessionId = deps.currentSessionId();
+ 					if (sessionId !== void 0) {
+ 						deps.openInSidebar(path, sessionId);
+diff --git a/src/client/openpath-intercept.ts b/src/client/openpath-intercept.ts
+index 708e8971bf19d3e815d2662efc9a5f268173532b..7e34ad522678fa77c8f03ddf8010ff28f414a9ba 100644
+--- a/src/client/openpath-intercept.ts
++++ b/src/client/openpath-intercept.ts
+@@ -47,7 +47,10 @@ export function wrapOpenPath(workspaces: OpenPathService, deps: OpenPathIntercep
+   // method) keeps working across disposals in any order.
+   const original = workspaces.openPath
+   workspaces.openPath = (path: string): Promise<void> => {
+-    if (deps.takeoverEnabled()) {
++    // Trailing separators and dot segments explicitly request a directory,
++    // including the host application's Show in folder `${cwd}/.` target.
++    const directoryTarget = /(?:^|[/\\])\.{1,2}$|[/\\]$/.test(path)
++    if (!directoryTarget && deps.takeoverEnabled()) {
+       const sessionId = deps.currentSessionId()
+       if (sessionId !== undefined) {
+         deps.openInSidebar(path, sessionId)

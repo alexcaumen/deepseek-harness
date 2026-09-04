@@ -887,6 +887,53 @@ stream(options: GenerateOptions): AsyncIterable<StreamChunk>
 
 Source: [`packages/llm/llm/src/index.ts`](../../packages/llm/llm/src/index.ts)
 
+<a id="ctxmodellifecycle--modellifecycleruntime"></a>
+
+### `ctx.modelLifecycle` — `ModelLifecycleRuntime`
+
+One in-process transaction coordinator for every governed local route. Registrations supply mechanics; this service owns serialization, target precedence, inference leases, and rollback ordering.
+
+```ts cordis-catalog
+/**
+ * Read the current durable routing intent; actual placement remains a
+ * preflight decision.
+ * @returns The persisted Automatic, R5300, or PRDG preference.
+ */
+currentPreference(): ModelComputePreference
+
+/**
+ * Install the sole classifier, scope resolver, and audit sink.
+ * @param authority - Canonical governance adapter for this runtime instance.
+ * @returns A release function for orderly plugin disposal.
+ */
+installAuthority(authority: ModelLifecycleAuthority): () => void
+
+/**
+ * Register one immutable route/driver pair for the lifetime of its owner.
+ * @param route - Externally admitted route identity and target manifest.
+ * @param driver - Host-specific resource and process mechanism.
+ * @returns An async release function that stops an active route before removal.
+ */
+register(route: GovernedModelRoute, driver: ModelLifecycleDriver): () => Promise<void>
+
+/**
+ * Acquire a governed route for one complete inference, or return an inert
+ * lease for an ordinary provider. The lease must remain held until the model
+ * stream settles so another request cannot unload the active model mid-turn.
+ * @param request - Complete provider/model selection and optional cancellation signal.
+ * @returns A lease that the caller must release exactly once.
+ */
+async acquireRoute(request: AcquireModelRouteRequest): Promise<ModelRouteLease>
+
+/**
+ * Read detached runtime state without resource paths or private payloads.
+ * @returns A sanitized snapshot of phase and active route.
+ */
+snapshot(): ModelLifecycleSnapshot
+```
+
+Source: [`packages/llm/model-lifecycle/src/index.ts`](../../packages/llm/model-lifecycle/src/index.ts)
+
 <a id="llm-events"></a>
 
 ### `llm/*` events
@@ -911,6 +958,26 @@ The provider topology changed: an adapter registered or unregistered routes, or 
 ```
 
 Source: [`packages/llm/llm/src/types.ts`](../../packages/llm/llm/src/types.ts)
+
+<a id="llmdispatch-signal--waterfall"></a>
+
+#### `llm/dispatch-signal` — waterfall
+
+Add transport cancellation without changing an immutable model request. Called after stream middleware admission, before adapter resolution and dispatch. Listeners must preserve cancellation returned by `next()`. This signal does not change logged content or prepared adapter identity.
+
+```ts cordis-catalog
+/**
+ * Add transport cancellation without changing an immutable model request.
+ * Called after stream middleware admission, before adapter resolution and
+ * dispatch. Listeners must preserve cancellation returned by `next()`.
+ * This signal does not change logged content or prepared adapter identity.
+ * @param options - Original immutable request observed during stream admission.
+ * @mode waterfall
+ */
+'llm/dispatch-signal'(this: LlmRuntime, options: GenerateOptions, next: () => AbortSignal | undefined): AbortSignal | undefined
+```
+
+Source: [`packages/llm/llm/src/index.ts`](../../packages/llm/llm/src/index.ts)
 
 <a id="llmstream--waterfall"></a>
 

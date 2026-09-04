@@ -74,4 +74,4 @@
       - /url: dsh-auth://codex
     - link "打开 Claude Code 登录":
       - /url: dsh-auth://claude
-    - paragraph: 身份验证保留在原生客户端中；Giana Code 不会复制浏览器 Cookie 或 OAuth 令牌。
+    - paragraph: 身份验证保留在原生客户端中；Giana CoWork 不会复制浏览器 Cookie 或 OAuth 令牌。

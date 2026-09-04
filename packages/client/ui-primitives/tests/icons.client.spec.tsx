@@ -60,15 +60,15 @@ describe('FishLogo', () => {
     const image = container.querySelector('img')!
     expect(image.getAttribute('width')).toBe('24')
     expect(image.getAttribute('height')).toBe('24')
-    expect(image.getAttribute('src')).toBe('/giana-os-logo.png')
+    expect(image.getAttribute('src')).toBe('/giana-cowork-logo.png')
   })
 })
 
 describe('BrandWordmark', () => {
   it('can render the name artwork with or without its leading mark', () => {
     const view = render(<primitives.BrandWordmark />)
-    expect(view.getByLabelText('Giana Code Putri')).toBeTruthy()
-    expect(view.container.querySelector('img')?.getAttribute('src')).toBe('/giana-os-logo.png')
+    expect(view.getByLabelText('Giana CoWork')).toBeTruthy()
+    expect(view.container.querySelector('img')?.getAttribute('src')).toBe('/giana-cowork-logo.png')
 
     view.rerender(<primitives.BrandWordmark includeMark={false} />)
     expect(view.container.querySelector('img')).toBeNull()

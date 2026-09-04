@@ -8,13 +8,17 @@ dsh 浏览器表层组合包。[`cordis.patch.yml`](cordis.patch.yml) 叠加在 
 
 Web 使用共享的有界 normal 默认值，在首次请求后最多再重试五次符合条件的失败。`deepseek-official` 与由 settings 新增的 pi-ai 路由在省略 `retryPolicy` 时使用该默认值；显式提供方策略仍然优先。Web 不再增加重试专用的组合覆盖，因此非 Web profile 的省略行为与之相同。
 
+## 侧栏目录交接
+
+锁定的侧栏依赖通过[版本化补丁](../../../patches/dsh-better-sidebar@0.15.2.patch)保留显式目录打开，包括生成文件列表的 `Show in folder` 操作。文件打开仍由编辑器接管。补丁只识别目录语法（末尾分隔符或点路径段），不通过文件系统元数据判断任意路径的类型。
+
 ## 模型体验
 
 ### 产品源码与 Web 表层上下文
 
 #### 模型看到的内容
 
-当 `surfaceContext` 为 true 时，`harness:source` 段落标明磁盘上的 Giana Code Putri 实现，但不会声称它就是工作目录；全局段落 `app:web-surface`（顺序 −98）则向模型说明 GUI：规范的本地 URL、「this page」指代什么、更新约定（重载接收端始终开启；无刷新重载还需要 `pnpm run dev:web` watcher），以及不要启动替代服务器的指令。`DSH_WEB_URL` 还会连同描述出现在受管 bash 环境中，每次调用时从运行中的服务器解析。当它为 false 时，这两个段落和该变量都不会注册。
+当 `surfaceContext` 为 true 时，`harness:source` 段落标明磁盘上的 Giana CoWork 实现，但不会声称它就是工作目录；全局段落 `app:web-surface`（顺序 −98）则向模型说明 GUI：规范的本地 URL、「this page」指代什么、更新约定（重载接收端始终开启；无刷新重载还需要 `pnpm run dev:web` watcher），以及不要启动替代服务器的指令。`DSH_WEB_URL` 还会连同描述出现在受管 bash 环境中，每次调用时从运行中的服务器解析。当它为 false 时，这两个段落和该变量都不会注册。
 
 #### Token 影响
 

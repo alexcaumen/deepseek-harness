@@ -8,6 +8,9 @@
 
 *.pdf binary
 
+# Unified diffs prefix unchanged tab-indented lines with one context space.
+patches/*.patch whitespace=-space-before-tab
+
 # Pairing records are generated from the three confirmed owner-blob pairs.
 # The worktree-local installer registers the fail-closed driver command.
 *.i18n.yaml merge=dsh-translation-pairing

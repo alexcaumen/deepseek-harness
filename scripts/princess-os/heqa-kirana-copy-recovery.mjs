@@ -40,7 +40,7 @@ page.on('pageerror', error => { result.pageErrors.push(String(error)) })
 
 try {
   await page.goto(baseURL, { waitUntil: 'domcontentloaded', timeout: 120_000 })
-  await page.getByText('Giana Code Putri', { exact: true }).first().waitFor({ state: 'visible', timeout: 120_000 })
+  await page.getByText('Giana CoWork', { exact: true }).first().waitFor({ state: 'visible', timeout: 120_000 })
   const moreSessions = page.getByRole('button', { name: /Show \d+ more sessions/ }).first()
   await moreSessions.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {})
   if (await moreSessions.isVisible().catch(() => false)) {

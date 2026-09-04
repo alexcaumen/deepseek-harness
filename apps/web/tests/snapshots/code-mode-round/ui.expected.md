@@ -12,10 +12,10 @@
 - text: "Using ONE run_code program: run bash `echo CODE_ROUND_OK`, then read the file missing.txt catching its error in the program. Return an object with both outcomes. Then reply DONE and stop. {{clock}}"
 - button "Copy":
   - img
-- button "Context injection Giana Code Putri":
+- button "Context injection Giana CoWork":
   - img
   - img
-  - text: Context injection Giana Code Putri
+  - text: Context injection Giana CoWork
 - 'button "Think The user wants me to write a single `run_code` program that:"':
   - img
   - img

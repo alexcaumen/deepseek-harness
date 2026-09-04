@@ -868,6 +868,8 @@ export interface Config {
   host: '127.0.0.1' | '0.0.0.0'
   /** Listen port; zero requests an OS-assigned port. */
   port: number
+  /** Optional immutable release revision exposed for trusted launchers. */
+  releaseRevision?: string
 }
 ```
 
@@ -1418,6 +1420,8 @@ export interface StreamableHttpConfig {
   url: string
   /** Additional headers attached to MCP requests. */
   headers: Record<string, string>
+  /** Header names mapped to process environment variables resolved at connect time. */
+  headersFromEnv: Record<string, string>
   /** Per-tool-call timeout in milliseconds. */
   toolCallTimeoutMs: number
   /** Fail plugin activation when the initial connection or tool synchronization fails. */
@@ -1439,7 +1443,30 @@ export interface ReconnectConfig {
 }
 ```
 
-来源：[`packages/mcp/mcp-client/src/index.ts:98`](../packages/mcp/mcp-client/src/index.ts)
+来源：[`packages/mcp/mcp-client/src/index.ts:100`](../packages/mcp/mcp-client/src/index.ts)
+
+<a id="deepseek-aidsh-mcp-server-tool-runtime"></a>
+
+## `@deepseek-ai/dsh-mcp-server-tool-runtime`
+
+需要：`tools` · `agents` · `sessions`
+
+```ts config-catalog
+/** Loopback listener configuration. */
+export interface Config {
+  /** Numeric loopback address. Public and wildcard binds are rejected. */
+  host?: LoopbackHost
+  /** TCP port, or zero for an OS-assigned port. */
+  port?: number
+  /** Exact MCP endpoint path. */
+  path?: string
+}
+
+/** The only addresses this service may bind. */
+export type LoopbackHost = '127.0.0.1' | '::1'
+```
+
+来源：[`packages/mcp/mcp-server-tool-runtime/src/index.ts:57`](../packages/mcp/mcp-server-tool-runtime/src/index.ts)
 
 <a id="deepseek-aidsh-message-feedback"></a>
 
@@ -1456,6 +1483,29 @@ export interface Config {
 ```
 
 来源：[`packages/feedback/message-feedback/src/index.ts:49`](../packages/feedback/message-feedback/src/index.ts)
+
+<a id="deepseek-aidsh-model-lifecycle"></a>
+
+## `@deepseek-ai/dsh-model-lifecycle`
+
+```ts config-catalog
+/** Durable local-model routing preference. */
+export interface ModelLifecycleConfig {
+  /** Preferred compute target; Automatic performs the admitted fallback order. */
+  readonly preference?: ModelComputePreference
+  /** Minimum time an activated model remains resident before an idle unload. */
+  readonly minimumDwellMs?: number
+  /** Idle time after the last inference lease before unloading; zero disables it. */
+  readonly idleUnloadMs?: number
+  /** Maximum duration of one host-driver stage before it is cancelled. */
+  readonly stageTimeoutMs?: number
+}
+
+/** User-visible routing intent for a governed local model. */
+export type ModelComputePreference = typeof MODEL_COMPUTE_PREFERENCES[number]
+```
+
+来源：[`packages/llm/model-lifecycle/src/index.ts:31`](../packages/llm/model-lifecycle/src/index.ts)
 
 <a id="deepseek-aidsh-permission-presets"></a>
 
@@ -1477,6 +1527,12 @@ export interface Config {
    * sandbox and approval defaults is used.
    */
   defaultPreset?: string
+  /**
+   * Named presets whose durable selection should follow a changed deployment
+   * definition when an existing session is loaded. Empty by default: most
+   * deployments preserve historical knob values exactly.
+   */
+  reconcileExistingPresets?: string[]
 }
 
 /** One preset's sandbox/approval bundle and optional client presentation. */
@@ -2392,7 +2448,7 @@ export interface Config {
 ```ts config-catalog
 /** Plugin config: the deployment-authored fragment of the system prompt (see {@link Config.persona} for its contract). */
 export interface Config {
-  /** Include the fixed DeepSeek Harness identity before the deployment persona (default true). */
+  /** Include the fixed Giana CoWork identity before the deployment persona (default true). */
   includeHarnessIdentity?: boolean
   /** Include dynamic runtime-context snapshots in model history (default true). */
   includeRuntimeContext?: boolean
@@ -2761,6 +2817,12 @@ export interface Config {
 export interface Config {
   /** Maximum normalized description length rendered in the session catalog; minimum 3. */
   catalogDescriptionMaxLength?: number
+  /** Maximum entries rendered in the durable session catalog; all entries remain searchable. */
+  catalogMaxEntries?: number
+  /** Maximum entries returned by one model-facing skill search. */
+  searchResultLimit?: number
+  /** Names that should be rendered first when the catalog is bounded. */
+  catalogPinnedNames?: string[]
 }
 ```
 
@@ -3220,6 +3282,192 @@ export interface Config {
 
 来源：[`packages/workflow/workflow-worker-thread/src/index.ts:32`](../packages/workflow/workflow-worker-thread/src/index.ts)
 
+<a id="grinvirodsh-llm-gianaos-acp"></a>
+
+## `@grinviro/dsh-llm-gianaos-acp`
+
+需要：`llm` · `subprocess` · `agents` · `sessions` · `mcpToolRuntime`
+
+```ts config-catalog
+export interface Config {
+  /** Stable provider identifier exposed to model selection and session history. */
+  providerId: string
+  /** Human-readable provider label shown in the model selector. */
+  providerName: string
+  /** Stable model identifier used by the GianaOS ACP route. */
+  modelId: string
+  /** Human-readable model label shown in the model selector. */
+  modelName: string
+  /** Short description of the canonical GianaOS participant binding. */
+  description: string
+  /** Canonical GianaOS principal represented by the remote ACP session. */
+  principalId: string
+  /** Versioned adapter contract used to create and validate the binding. */
+  routeRevision: string
+  /** Executable used to launch the remote ACP bridge. */
+  launchCommand: string
+  /** Arguments passed to the remote ACP bridge executable. */
+  launchArguments: string[]
+  /** Script that resolves and starts the canonical remote ACP runtime. */
+  launchScript: string
+  /** Local workspace associated with the ACP launch context. */
+  localWorkspace: string
+  /** Remote workspace exposed to the canonical GianaOS runtime. */
+  remoteWorkspace: string
+  /** Loopback MCP endpoint used for the remote tool-runtime capability. */
+  remoteToolRuntimeUrl: string
+  /** Permission disposition applied when the ACP bridge requests access. */
+  permission: 'allow' | 'reject'
+  /** Maximum input context accepted by the bound model route. */
+  contextWindow: number
+  /** Maximum output tokens requested from the bound model route. */
+  maxTokens: number
+}
+```
+
+来源：[`packages/llm/llm-gianaos-acp/src/index.ts:62`](../packages/llm/llm-gianaos-acp/src/index.ts)
+
+<a id="grinvirodsh-llm-gianaos-telephone"></a>
+
+## `@grinviro/dsh-llm-gianaos-telephone`
+
+需要：`llm` · `credentials`
+
+```ts config-catalog
+export interface Config {
+  /** Stable provider identifier exposed to DSH. */
+  providerId: string
+  /** Human-readable provider group name. */
+  providerName: string
+  /** Stable model identifier exposed by the telephone route. */
+  modelId: string
+  /** Human-readable model name shown in the selector. */
+  modelName: string
+  /** Model capability description shown by DSH. */
+  description: string
+  /** Canonical non-secret GianaOS telephone base URL. */
+  baseURL: string
+  /** Remote model identifier sent through the telephone route. */
+  remoteModel: string
+  /** Environment-variable name used for no-export credential lookup. */
+  credentialEnv: string
+  /** Prefix used when projecting DSH session identities. */
+  sessionPrefix: string
+  /** Canonical GianaOS principal required by this route. */
+  principalId: string
+  /** Enables the bounded PRDG workspace bridge. */
+  bridgeEnabled: boolean
+  /** Coding tool classes allowed through the bounded bridge. */
+  bridgeTools: CodingTool[]
+  /** Exact workspace grants available to the bridge. */
+  bridgeWorkspaces: WorkspaceGrantConfig[]
+  /** Exact named test and build scripts available to the bridge. */
+  bridgeScripts: ScriptGrantConfig[]
+  /** Maximum bridge hops allowed for one model turn. */
+  bridgeMaxHops: number
+  /** Maximum combined output bytes returned by one bridge hop. */
+  bridgeMaxOutputBytes: number
+  /** Maximum bytes accepted by one bounded edit operation. */
+  bridgeMaxEditBytes: number
+  /** Timeout applied to each bounded command invocation. */
+  bridgeCommandTimeoutMs: number
+  /** Monotonic authorization epoch used to reject stale grants. */
+  authorizationEpoch: number
+  /** Header name that binds requests to the canonical route. */
+  canonicalRouteHeader: string
+}
+
+/** One operator-granted PRDG workspace. */
+export interface WorkspaceGrantConfig {
+  /** Stable identifier used by bounded bridge requests. */
+  id: string
+  /** Absolute workspace root authorized for this grant. */
+  root: string
+  /** SHA-256 identity binding for the authorized workspace. */
+  identitySha256: string
+  /** Whether bounded edit operations are permitted in this workspace. */
+  writable: boolean
+}
+
+/** One operator-granted named script selectable by `test` or `build`. */
+export interface ScriptGrantConfig {
+  /** Stable identifier exposed to bounded test or build requests. */
+  id: string
+  /** Exact executable or command selected by this grant. */
+  command: string
+  /** Fixed arguments appended to the granted command. */
+  args: string[]
+  /** Tool class allowed to invoke this script. */
+  tool: 'test' | 'build'
+  /** Workspace grant that owns this script. */
+  workspaceId: string
+}
+```
+
+依赖：[`CodingTool`](../packages/llm/llm-gianaos-workspace-bridge/src/index.ts)
+
+来源：[`packages/llm/llm-gianaos-telephone/src/index.ts:82`](../packages/llm/llm-gianaos-telephone/src/index.ts)
+
+<a id="grinvirodsh-llm-princess-os"></a>
+
+## `@grinviro/dsh-llm-princess-os`
+
+需要：`llm` · `subprocess`
+
+```ts config-catalog
+export interface Config {
+  /** Stable provider identifier exposed to DSH. */
+  providerId: string
+  /** Human-readable provider group name. */
+  providerName: string
+  /** Capability description shown for Princess OS agents. */
+  agentDescription: string
+  /** Route-level instruction preserving Princess OS isolation. */
+  systemInstruction: string
+  /** Python executable used to start the ACP compatibility process. */
+  pythonCommand: string
+  /** Absolute Hermes Agent source root used by the ACP launcher. */
+  hermesSource: string
+  /** Default isolated workspace presented to Princess OS agents. */
+  workspace: string
+  /** Environment-variable name used for no-export provider credential lookup. */
+  credentialEnv: string
+  /** Launch permission for the isolated ACP child process. */
+  permission: 'allow' | 'reject'
+  /** Princess OS agents available through this provider. */
+  agents: AgentRouteConfig[]
+}
+
+export interface AgentRouteConfig {
+  /** Stable Princess OS agent identifier exposed in DSH. */
+  id: string
+  /** Human-readable Princess OS agent name. */
+  name: string
+  /** Isolated Hermes home used only by this private agent. */
+  hermesHome: string
+  /** SHA-256 owner-private Windows binding asserted by the route. */
+  ownerPrivateWindowsBindingSha256: string
+}
+```
+
+来源：[`packages/llm/llm-princess-os/src/index.ts:58`](../packages/llm/llm-princess-os/src/index.ts)
+
+<a id="grinvirodsh-tool-access-policy"></a>
+
+## `@grinviro/dsh-tool-access-policy`
+
+```ts config-catalog
+/** Tool-name patterns evaluated in order-independent deny-before-ask policy. */
+export interface Config {
+  /** `*`-wildcard patterns that are always denied before tool dispatch. */
+  denyPatterns?: string[]
+  /** `*`-wildcard patterns that require a one-shot human decision through the DSH approval service. */
+  askPatterns?: string[]
+}
+```
+
+来源：[`packages/guard/access-policy/src/index.ts:14`](../packages/guard/access-policy/src/index.ts)
+
 ## 无配置的可加载插件
 
 这些插件通过 `cordis.yml` 中不含 `config:` 块的条目加载；它们未声明任何配置接口。
@@ -3351,3 +3599,5 @@ export interface Config {
 - `@deepseek-ai/dsh-typert-generator`（[`packages/typert/generator/src/index.ts`](../packages/typert/generator/src/index.ts)）
 - `@deepseek-ai/dsh-typert-protocol`（[`packages/typert/protocol/src/index.ts`](../packages/typert/protocol/src/index.ts)）
 - `@deepseek-ai/dsh-typert-registry`（[`packages/typert/registry/src/index.ts`](../packages/typert/registry/src/index.ts)）
+- `@grinviro/dsh-gianaos-catalog`（[`packages/llm/llm-gianaos-catalog/src/index.ts`](../packages/llm/llm-gianaos-catalog/src/index.ts)）
+- `@grinviro/dsh-llm-gianaos-workspace-bridge`（[`packages/llm/llm-gianaos-workspace-bridge/src/index.ts`](../packages/llm/llm-gianaos-workspace-bridge/src/index.ts)）

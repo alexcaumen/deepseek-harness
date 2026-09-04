@@ -27,7 +27,23 @@ const PLUGINS_EXPECTED = join(SNAPSHOT_DIR, 'plugins.expected.md')
 // The English fallback surface: a browser naming no shipped language.
 const DIALOG_EN_EXPECTED = join(SNAPSHOT_DIR, 'dialog-en.expected.md')
 const PLUGIN_ROW_SELECTOR = '[data-plugin-entry$="ui-settings"]'
+const SPEECH_COMPUTE_CONFIG_URL = 'http://127.0.0.1:17302/v1/compute/config'
 const MODE = webSnapshotMode()
+
+async function stubSpeechCompute(page: Page): Promise<void> {
+  await page.route(SPEECH_COMPUTE_CONFIG_URL, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        mode: 'automatic',
+        priority: ['r5300', 'prdg'],
+        probeOrder: ['r5300', 'prdg'],
+        selectedRoute: { id: 'r5300', state: 'ready', device: 'cuda' },
+      }),
+    })
+  })
+}
 
 describe('web e2e: settings modal and General preferences', () => {
   let scaffold: WebScaffold
@@ -41,6 +57,7 @@ describe('web e2e: settings modal and General preferences', () => {
     // Chinese browser: the shared page asserts the localized settings surface
     // the client derives from it (the English default has its own spec below).
     page = await browser.newPage({ viewport: { width: 1680, height: 1000 }, locale: ZH_BROWSER_LOCALE })
+    await stubSpeechCompute(page)
     tripwire = watchConsole(page)
     await page.goto(scaffold.baseUrl, { waitUntil: 'load' })
     await page.waitForSelector('[class*="frame"]', { timeout: 30_000 })
@@ -359,9 +376,20 @@ describe('web e2e: settings modal and General preferences', () => {
     await page.getByRole('button', { name: '设置', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: '设置' })
     await dialog.waitFor({ timeout: 10_000 })
+    const steerMutate = vi.spyOn(scaffold.ctx.apiProxy.settings, 'mutate')
     await dialog.getByRole('button', { name: '排队发送' }).click()
     await page.getByRole('menuitem', { name: '插话发送' }).click()
     await dialog.getByRole('button', { name: '插话发送' }).waitFor({ timeout: 10_000 })
+    await expect.poll(() => steerMutate.mock.calls.find(([request]) => (
+      request.payload.ns === 'ui-conversation'
+      && request.payload.ops.some(op => op.op === 'set' && op.path[0] === 'busyEnter' && op.value === 'steer')
+    )), { timeout: 10_000 }).toBeDefined()
+    const steerWrite = steerMutate.mock.results.find(result => result.type === 'return')
+    expect(steerWrite?.type).toBe('return')
+    if (steerWrite?.type === 'return') {
+      expect(await Promise.resolve(steerWrite.value as unknown)).toMatchObject({ result: { ok: true } })
+    }
+    steerMutate.mockRestore()
     expect(await page.evaluate(() => localStorage.getItem('dsh.conversation.busyEnter'))).toBeNull()
     await expect.poll(async () => readFile(join(scaffold.harnessHome, 'settings.yaml'), 'utf8'), { timeout: 5_000 })
       .toMatch(/ui-conversation:\n\s+busyEnter: steer/)
@@ -393,9 +421,20 @@ describe('web e2e: settings modal and General preferences', () => {
       await second.close()
     }
 
+    const mutate = vi.spyOn(scaffold.ctx.apiProxy.settings, 'mutate')
     await reloaded.getByRole('button', { name: '插话发送' }).click()
     await page.getByRole('menuitem', { name: '排队发送' }).click()
     await reloaded.getByRole('button', { name: '排队发送' }).waitFor({ timeout: 10_000 })
+    await expect.poll(() => mutate.mock.calls.find(([request]) => (
+      request.payload.ns === 'ui-conversation'
+      && request.payload.ops.some(op => op.op === 'set' && op.path[0] === 'busyEnter' && op.value === 'queue')
+    )), { timeout: 10_000 }).toBeDefined()
+    const queueWrite = mutate.mock.results.find(result => result.type === 'return')
+    expect(queueWrite?.type).toBe('return')
+    if (queueWrite?.type === 'return') {
+      expect(await Promise.resolve(queueWrite.value as unknown)).toMatchObject({ result: { ok: true } })
+    }
+    mutate.mockRestore()
     expect(await page.evaluate(() => localStorage.getItem('dsh.conversation.busyEnter'))).toBeNull()
     await expect.poll(async () => readFile(join(scaffold.harnessHome, 'settings.yaml'), 'utf8'), { timeout: 5_000 })
       .toMatch(/ui-conversation:\n\s+busyEnter: queue/)
@@ -503,6 +542,7 @@ describe('web e2e: settings modal and General preferences', () => {
     // than to Chinese.
     const fresh = await launchWebScaffold({})
     const frPage = await browser.newPage({ viewport: { width: 1680, height: 1000 }, locale: 'fr-FR' })
+    await stubSpeechCompute(frPage)
     const frTripwire = watchConsole(frPage)
     onTestFailed(() => saveFailureShot(frPage, 'web-e2e-settings-unshipped-language'))
     try {

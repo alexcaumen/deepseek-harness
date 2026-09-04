@@ -1,2 +1,2 @@
 - list "Background jobs":
-  - listitem: "bash sleep 45 signal: SIGTERM {{duration}}"
+  - listitem: pwsh Start-Sleep -Seconds 45 killed before exit {{duration}}

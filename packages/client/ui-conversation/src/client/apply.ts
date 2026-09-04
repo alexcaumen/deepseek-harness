@@ -31,6 +31,8 @@ import { InputBar } from './skeleton/InputBar.tsx'
 import { EnterBehaviorRow } from './settings/EnterBehaviorRow.tsx'
 import type { EnterBehaviorRowInjected } from './settings/EnterBehaviorRow.tsx'
 import { ComputeRoutingRow } from './settings/ComputeRoutingRow.tsx'
+import { ModelComputeRoutingRow } from './settings/ModelComputeRoutingRow.tsx'
+import type { ModelComputeRoutingRowInjected } from './settings/ModelComputeRoutingRow.tsx'
 import { ChatView } from './chat/ChatView.tsx'
 import { StatsLine } from './chat/StatsLine.tsx'
 import { ApprovalPanel } from './skeleton/ApprovalPanel.tsx'
@@ -46,6 +48,9 @@ import { en, NS, zh, type ConversationKey } from './locales.ts'
 import { registerConversationNodes } from './conversation-nodes/register.ts'
 import { registerChatNodeRenderers } from './chat/register-node-renderers.ts'
 import { CONVERSATION_SETTINGS_NAMESPACE, type ConversationSettings } from '../submission-settings.ts'
+import {
+  decodeModelLifecycleSettings, MODEL_LIFECYCLE_SETTINGS_NAMESPACE, type ModelLifecycleSettings,
+} from './model-compute-settings.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -156,6 +161,10 @@ export function apply(ctx: Context): void {
   const submissionPolicy = new ComposerSubmissionPolicy(
     ctx.settingsScope.bind<ConversationSettings>({ namespace: CONVERSATION_SETTINGS_NAMESPACE }),
   )
+  const modelComputeSettings = ctx.settingsScope.bind<ModelLifecycleSettings>({
+    namespace: MODEL_LIFECYCLE_SETTINGS_NAMESPACE,
+    decode: decodeModelLifecycleSettings,
+  })
 
   ctx.slots.inject('settings.general.item', () => ctx.slots.register({
     name: 'settings.general.item',
@@ -174,6 +183,14 @@ export function apply(ctx: Context): void {
     order: 30,
     locale: NS,
   }, ComputeRoutingRow))
+
+  ctx.slots.inject('settings.general.item', () => ctx.slots.register({
+    name: 'settings.general.item',
+    id: 'model-compute-routing',
+    order: 40,
+    locale: NS,
+    inject: (): ModelComputeRoutingRowInjected => ({ settings: modelComputeSettings }),
+  }, ModelComputeRoutingRow))
 
   // Chat semantic reader positions by session, surviving view switches and
   // width reflow when the tab ring remounts the view. Deliberately not

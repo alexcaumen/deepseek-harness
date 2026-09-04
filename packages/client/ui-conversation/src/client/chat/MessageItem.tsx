@@ -8,7 +8,7 @@ import type { ReactNode } from 'react'
 import type {
   ModelRetryNode, TurnErrorNode, UserMessageNode,
 } from '@deepseek-ai/dsh-client-runtime/client'
-import { JsonBlock, MessageText, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
+import { JsonBlock, MessageText, StateDot, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ChatNodeOwnerProps, ChatNodeViewProps, ChatViewSlotProps } from '../contract/slots.ts'
 import type { ResponseAnnotationPresentation } from '../response-annotation.ts'
 import { ReferenceIcon } from '../reference/ReferenceIcon.tsx'
@@ -248,21 +248,22 @@ function projectUserText(
         </span>
       )
       : (
-        <button
-          key={tokenStart}
-          type="button"
-          className={`${css.refChip} ${css.annotationButton}`}
-          data-ref-chip="annotation"
-          data-response-annotation-index={annotationData.index}
-          data-response-annotation-message-id={annotationData.messageId}
-          data-response-annotation-start={annotationData.startOffset}
-          data-response-annotation-end={annotationData.endOffset}
-          aria-label={t('annotation.item', { index: annotationData.index, text: annotationData.text })}
-          title={annotationData.text}
-          onClick={(event) => { navigateToResponseAnnotation(event.currentTarget, annotationData) }}
-        >
-          {displayLabel}
-        </button>
+        <Tooltip key={tokenStart} label={annotationData.text} side="top" maxWidth={320}>
+          <button
+            type="button"
+            className={`${css.refChip} ${css.annotationButton}`}
+            data-ref-chip="annotation"
+            data-response-annotation-index={annotationData.index}
+            data-response-annotation-message-id={annotationData.messageId}
+            data-response-annotation-start={annotationData.startOffset}
+            data-response-annotation-end={annotationData.endOffset}
+            aria-label={t('annotation.item', { index: annotationData.index, text: annotationData.text })}
+            title={annotationData.text}
+            onClick={(event) => { navigateToResponseAnnotation(event.currentTarget, annotationData) }}
+          >
+            {displayLabel}
+          </button>
+        </Tooltip>
       ))
     cursor = end
   }

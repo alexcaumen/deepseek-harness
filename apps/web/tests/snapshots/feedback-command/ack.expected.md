@@ -12,14 +12,15 @@
 - text: Reply with the single word LIGHTHOUSE and stop. {{clock}}
 - button "Copy":
   - img
-- button "Context injection Giana Code Putri":
+- button "Context injection Giana CoWork":
   - img
   - img
-  - text: Context injection Giana Code Putri
-- button "Think The user wants me to reply with a single word. Let me comply.":
+  - text: Context injection Giana CoWork
+- status: Thinking Completed
+- button "Thinking":
   - img
   - img
-  - text: Think The user wants me to reply with a single word. Let me comply.
+  - text: Thinking
 - paragraph: LIGHTHOUSE
 - button "Copy":
   - img
@@ -42,5 +43,7 @@
   - text: DeepSeek-V4-Flash
   - img
 - button "6% of context used"
+- button "Start automatic-language dictation":
+  - img
 - button "Send message" [disabled]
 - text: 1 turns · 1 steps LLM {{duration}} TTFT avg {{duration}} · {{throughput}} tok/s Cache hit 99% Input 7.8K tok · Output 21 tok

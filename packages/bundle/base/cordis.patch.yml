@@ -170,7 +170,7 @@
       name: '@deepseek-ai/dsh-mcp-server-tool-runtime'
       config:
         host: 127.0.0.1
-        port: 18643
+        port: !!js "Number(process.env.DSH_MCP_TOOL_RUNTIME_PORT ?? 18643)"
         path: /mcp/tool-runtime
 
     # Every shipped CLI mode starts with the same file-effect boundary.

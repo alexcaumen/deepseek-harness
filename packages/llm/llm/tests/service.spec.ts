@@ -1113,6 +1113,89 @@ describe('LlmRuntime', () => {
     expect(chunks[0]).toMatchObject({ index: 99 })
   })
 
+  it.each([false, true])('adds transport cancellation to a frozen request without changing prepared identity (prepared=%s)', async (prepared) => {
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const original = new AbortController()
+    const additional = new AbortController()
+    const adapter = new RecordingAdapter(SCRIPT)
+    const unregister = ctx.llm.registerAdapter(['test'], adapter)
+    const call = prepared ? await ctx.llm.prepareCall({ provider: 'test', model: 'm' }) : undefined
+    const request = Object.freeze({
+      ...call?.config, provider: 'test', model: 'm', messages: [], signal: original.signal,
+    })
+    let admitted = false
+    ctx.on('llm/stream', async function* (_options, next) {
+      admitted = true
+      yield* next()
+    })
+    ctx.on('llm/dispatch-signal', (options, next) => {
+      expect(admitted).toBe(true)
+      expect(options).toBe(request)
+      const inherited = next()
+      expect(inherited).toBe(original.signal)
+      return AbortSignal.any([inherited!, additional.signal])
+    })
+    const replacement = new RecordingAdapter(SCRIPT)
+    if (prepared) {
+      unregister()
+      ctx.llm.registerAdapter(['test'], replacement)
+    }
+    expect(await collect(call === undefined ? ctx.llm.stream(request) : call.stream(request))).toEqual(SCRIPT)
+    expect(replacement.lastOptions).toBeUndefined()
+    expect(request.signal).toBe(original.signal)
+    expect(adapter.lastOptions).not.toBe(request)
+    expect(Object.isFrozen(adapter.lastOptions)).toBe(true)
+    expect(adapter.lastOptions?.messages).toBe(request.messages)
+    expect(adapter.lastOptions?.signal?.aborted).toBe(false)
+    additional.abort()
+    expect(adapter.lastOptions?.signal?.aborted).toBe(true)
+    expect(original.signal.aborted).toBe(false)
+    await ctx.fiber.dispose()
+  })
+
+  it('cancels pending direct-call metadata resolution without dispatching inference', async () => {
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const additional = new AbortController()
+    const started = Promise.withResolvers<undefined>()
+    const adapter = new class extends RecordingAdapter {
+      override resolveModel(_provider: string, _model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
+        return new Promise((_resolve, reject) => {
+          if (signal === undefined) throw new Error('missing transport cancellation')
+          const abort = () => { reject(new LlmError('resource lease lost', 'ABORTED')) }
+          signal.addEventListener('abort', abort, { once: true })
+          started.resolve(undefined)
+        })
+      }
+    }(SCRIPT)
+    ctx.llm.registerAdapter(['test'], adapter)
+    ctx.on('llm/dispatch-signal', (_options, next) => {
+      next()
+      return additional.signal
+    })
+    const request = Object.freeze({ provider: 'test', model: 'm', messages: [] })
+    const pending = collect(ctx.llm.stream(request))
+    await started.promise
+    additional.abort()
+    expect(await pending).toMatchObject([{ type: 'finish', reason: { kind: 'aborted' } }])
+    expect(adapter.lastOptions).toBeUndefined()
+    expect(request).not.toHaveProperty('signal')
+    await ctx.fiber.dispose()
+  })
+
+  it('leaves a transport cancellation listener error as a middleware failure', async () => {
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    const error = new Error('cancellation middleware failed')
+    ctx.on('llm/dispatch-signal', (_options, next) => {
+      next()
+      throw error
+    })
+    await expect(collect(ctx.llm.stream({ provider: 'test', model: 'm', messages: [] }))).rejects.toBe(error)
+    await ctx.fiber.dispose()
+  })
+
   it('resolves the provider after llm/stream listeners have had a chance to route it', async () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)

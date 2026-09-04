@@ -410,14 +410,35 @@ describe('BashRow terminal card', () => {
     expect(view.getByText('List files')).toBeTruthy()
   })
 
-  it('a non-terminal bash call (background start) renders the summary row alone', () => {
+  it('keeps a successful non-terminal shell result expandable without error styling', () => {
     const view = render(<BashRow {...rowProps(settled({
       callView: { card: 'generic', title: 'sleep 30', kind: 'execute' },
       resultView: { card: 'generic' },
     }))} />)
     expect(view.getByText('List files')).toBeTruthy()
     expect(view.queryByText(/a\.ts/)).toBeNull()
-    expect(view.container.querySelector('[data-sample="bash"]')?.getAttribute('role')).toBeNull()
+    const row = view.container.querySelector('[data-sample="bash"]')!
+    expect(row.getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(row)
+    expect(row.getAttribute('aria-expanded')).toBe('true')
+    expect(view.getByText('a.ts  b.ts\nc.ts  d.ts\n', RAW)).toBeTruthy()
+    expect(view.container.querySelector('[data-error]')).toBeNull()
+    expect(view.container.querySelector('[data-terminal]')).toBeNull()
+  })
+
+  it.each(['bash', 'pwsh'])('retains %s output when its original presenter is unavailable', (toolName) => {
+    const view = render(<BashRow {...rowProps(settled({
+      call: { name: toolName, argsRaw: '{"command":"historic-command"}' },
+      callView: null,
+      resultView: null,
+    }))} toolName={toolName} />)
+    const row = view.container.querySelector('[data-sample="bash"]')!
+    fireEvent.keyDown(row, { key: 'Enter' })
+    expect(view.getByText('a.ts  b.ts\nc.ts  d.ts\n', RAW)).toBeTruthy()
+    expect(view.getByText(/"command": "historic-command"/)).toBeTruthy()
+    expect(view.container.querySelector('[data-error]')).toBeNull()
+    fireEvent.keyDown(row, { key: ' ' })
+    expect(view.queryByText(/a\.ts/)).toBeNull()
   })
 
   it('expands a generic execution error to its original args and full output', () => {

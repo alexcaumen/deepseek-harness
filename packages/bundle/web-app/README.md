@@ -8,13 +8,17 @@ The dsh browser-surface bundle. [`cordis.patch.yml`](cordis.patch.yml) rides ove
 
 Web uses the shared bounded normal default of five eligible retries after the initial request. The `deepseek-official` route and settings-added pi-ai routes use that default when they omit `retryPolicy`; explicit provider policies still win. Web adds no retry-specific composition override, so the same omission behavior applies to non-Web profiles.
 
+## Sidebar directory handoff
+
+The pinned sidebar dependency preserves explicit directory opens, including the produced-files `Show in folder` action, through a [versioned patch](../../../patches/dsh-better-sidebar@0.15.2.patch). File opens retain editor interception. This patch recognizes directory syntax (trailing separators or dot segments); it does not classify arbitrary paths through filesystem metadata.
+
 ## Model Experience
 
 ### Product-source and Web-surface context
 
 #### What the model sees
 
-When `surfaceContext` is true, the `harness:source` section identifies the on-disk Giana Code Putri implementation without claiming it is the working directory, and the `app:web-surface` global section (order −98) orients the model to the GUI: the canonical local URL, the "this page" referent, the update contract (the reload receiver is always on; no-refresh reloads additionally need the `pnpm run dev:web` watcher), and the instruction not to start replacement servers. `DSH_WEB_URL` additionally appears in the managed bash environment with its description, resolved per invocation from the live server. When it is false, neither section nor the variable is registered.
+When `surfaceContext` is true, the `harness:source` section identifies the on-disk Giana CoWork implementation without claiming it is the working directory, and the `app:web-surface` global section (order −98) orients the model to the GUI: the canonical local URL, the "this page" referent, the update contract (the reload receiver is always on; no-refresh reloads additionally need the `pnpm run dev:web` watcher), and the instruction not to start replacement servers. `DSH_WEB_URL` additionally appears in the managed bash environment with its description, resolved per invocation from the live server. When it is false, neither section nor the variable is registered.
 
 #### Token effect
 

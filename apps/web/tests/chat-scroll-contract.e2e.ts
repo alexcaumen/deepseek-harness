@@ -40,6 +40,7 @@ const LIVE_TOOL_FIRST = 'CHAT_SCROLL_TOOL_STREAM_FIRST'
 const LIVE_TOOL_DONE = 'CHAT_SCROLL_TOOL_STREAM_DONE'
 const TOOL_READY_FILE = '.chat-scroll-tool-ready'
 const TOOL_RELEASE_FILE = '.chat-scroll-tool-release'
+const SHELL_TOOL = process.platform === 'win32' ? 'pwsh' : 'bash'
 const INPUTS_SESSION_ID = 'chat-scroll-inputs-e2e'
 const FLING_SESSION_ID = 'chat-scroll-fling-e2e'
 const LIVE_FLING_PROMPT = 'CHAT_SCROLL_FLING_USER Keep streaming while I fling back through older output.'
@@ -112,12 +113,16 @@ function textStream(first: string, done: string, deltaCount: number): StreamChun
 }
 
 function toolStream(): StreamChunk[] {
-  const command = [
+  const command = (process.platform === 'win32' ? [
+    `Set-Content -LiteralPath '${TOOL_READY_FILE}' -Value ready`,
+    `while (-not (Test-Path -LiteralPath '${TOOL_RELEASE_FILE}')) { Start-Sleep -Milliseconds 20 }`,
+    `1..64 | ForEach-Object { '${LIVE_TOOL_RESULT} line {0:D2}' -f $_ }`,
+  ] : [
     `: > ${TOOL_READY_FILE}`,
     `while [ ! -f ${TOOL_RELEASE_FILE} ]; do sleep 0.02; done`,
     'line=1',
     `while [ "$line" -le 64 ]; do printf '${LIVE_TOOL_RESULT} line %02d\\n' "$line"; line=$((line + 1)); done`,
-  ].join('; ')
+  ]).join('; ')
   const args = JSON.stringify({ command, description: LIVE_TOOL_RESULT })
   return [
     { type: 'block-start', index: 0, blockType: 'tool-call' },
@@ -125,13 +130,13 @@ function toolStream(): StreamChunk[] {
       type: 'tool-call-delta',
       index: 0,
       id: LIVE_TOOL_CALL_ID,
-      name: 'bash',
+      name: SHELL_TOOL,
       argumentsDelta: args,
     },
     {
       type: 'block-end',
       index: 0,
-      block: { type: 'tool-call', id: LIVE_TOOL_CALL_ID, name: 'bash', arguments: args },
+      block: { type: 'tool-call', id: LIVE_TOOL_CALL_ID, name: SHELL_TOOL, arguments: args },
     },
     { type: 'usage', usage: { inputTokens: 256, outputTokens: 48 } },
     { type: 'finish', reason: { kind: 'tool-calls' } },
@@ -563,6 +568,7 @@ describe('web e2e: long Chat scroll contract', () => {
         await composer.fill(LIVE_TOOL_PROMPT)
         await world.page.getByRole('button', { name: 'Send message', exact: true }).click()
         await expect.poll(() => fileExists(readyPath), { timeout: 15_000 }).toBe(true)
+        // Both shell tools use the shared terminal renderer's bash sample.
         const liveRow = world.page.locator(`[data-chat-call-id="${LIVE_TOOL_CALL_ID}"] [data-sample="bash"]`)
         await liveRow.waitFor({ timeout: 15_000 })
         expect(await liveRow.getAttribute('data-state')).toBe('running')
@@ -749,13 +755,9 @@ describe('web e2e: long Chat scroll contract', () => {
       await expectBottom(world.page)
       const backToBottom = world.page.getByRole('button', { name: 'Back to bottom', exact: true })
 
-      // Focus rides the last seeded tool row (a tabbable button whose keydown
-      // handler passes scrolling keys through). End first normalizes the
-      // focus-driven scrollIntoView back to the floor.
-      const lastToolRow = world.page.locator(
-        `[data-chat-call-id="chat-scroll-${String(INPUTS_FIXTURE.turns).padStart(3, '0')}-1"] [data-sample="bash"]`,
-      )
-      await lastToolRow.focus()
+      // Target the resident scrollport's gutter. A virtualized row can unmount
+      // after PageUp, taking the keyboard scrolling target with it on Windows.
+      await world.page.locator('[data-conversation-scroll]').click({ position: { x: 5, y: 5 } })
       await world.page.keyboard.press('End')
       await expectBottom(world.page)
       await expect.poll(() => backToBottom.count(), { timeout: 10_000 }).toBe(0)

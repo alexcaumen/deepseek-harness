@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
   IconBranchOutline16, IconCheckOutline16, IconCopyOutline16, Tooltip, writeClipboard,
+  type CopyFeedbackStatus,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ChatViewSlotProps } from '../contract/slots.ts'
 import { formatLatencySeconds, formatMessageClock, formatRunDuration, formatTokensPerSecond } from './message-chrome.ts'
@@ -49,9 +50,9 @@ export function MessageIconActions({
 }: MessageIconActionsProps) {
   const day = useCalendarDay()
   const reasonId = useId()
-  // Same success chrome as CodeBlock: a short check swap after the write,
-  // gated so re-clicks during the window neither re-copy nor stack timers.
-  const [copied, setCopied] = useState(false)
+  // Same three-state feedback as the shared block-primitives hook, with the
+  // message control's pending-write gate and unmount cleanup kept intact.
+  const [copyStatus, setCopyStatus] = useState<CopyFeedbackStatus>('idle')
   const copyPending = useRef(false)
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const copyEpoch = useRef(0)
@@ -61,20 +62,22 @@ export function MessageIconActions({
     if (copyTimer.current !== null) clearTimeout(copyTimer.current)
   }, [])
   const onCopy = useCallback(() => {
-    if (copied || copyPending.current) return
+    if (copyStatus !== 'idle' || copyPending.current) return
     const epoch = copyEpoch.current
     copyPending.current = true
     void writeClipboard(text).then((ok) => {
       if (epoch !== copyEpoch.current) return
       copyPending.current = false
-      if (!ok) return
-      setCopied(true)
+      setCopyStatus(ok ? 'copied' : 'failed')
       copyTimer.current = window.setTimeout(() => {
         copyTimer.current = null
-        setCopied(false)
+        setCopyStatus('idle')
       }, 1000)
     })
-  }, [copied, text])
+  }, [copyStatus, text])
+  const copyLabel = copyStatus === 'copied'
+    ? t('copied')
+    : copyStatus === 'failed' ? t('copyFailed') : t('copy')
   // The dot is decorative and stays hidden, but its margins separate the
   // readings only on screen: without the flanking spaces a reader hears one
   // run-on string ("Ran for 13sTTFT 0.2s12 tok/s") instead of three facts.
@@ -110,9 +113,9 @@ export function MessageIconActions({
   return (
     <div className={className === undefined ? css.actions : `${css.actions} ${className}`}>
       {clock === 'start' ? clockEl : null}
-      <Tooltip label={copied ? t('copied') : t('copy')} side="bottom">
-        <button type="button" className={css.action} aria-label={copied ? t('copied') : t('copy')} onClick={onCopy}>
-          {copied ? <IconCheckOutline16 /> : <IconCopyOutline16 />}
+      <Tooltip label={copyLabel} side="bottom">
+        <button type="button" className={css.action} aria-label={copyLabel} onClick={onCopy}>
+          {copyStatus === 'copied' ? <IconCheckOutline16 /> : <IconCopyOutline16 />}
         </button>
       </Tooltip>
       {extraActions}

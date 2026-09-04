@@ -1,14 +1,14 @@
 {
   "id": "/",
-  "name": "Giana Code Putri",
+  "name": "Giana CoWork",
   "short_name": "Giana",
   "start_url": "/",
   "scope": "/",
   "display": "fullscreen",
   "icons": [
     {
-      "src": "/giana-os-logo.png",
-      "sizes": "1254x1254",
+      "src": "/giana-cowork-logo.png",
+      "sizes": "1024x1024",
       "type": "image/png",
       "purpose": "any"
     }

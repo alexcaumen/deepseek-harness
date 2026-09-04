@@ -63,6 +63,7 @@
     "@deepseek-ai/dsh-llm": "workspace:^",
     "@deepseek-ai/dsh-llm-deepseek": "workspace:^",
     "@deepseek-ai/dsh-llm-pi-ai": "workspace:^",
+    "@deepseek-ai/dsh-model-lifecycle": "workspace:^",
     "@grinviro/dsh-llm-gianaos-acp": "workspace:^",
     "@grinviro/dsh-llm-princess-os": "workspace:^",
     "@deepseek-ai/dsh-llm-retry": "workspace:^",

@@ -216,10 +216,12 @@ describe('MessageItem arms', () => {
     expect(screen.getByRole('button', { name: '复制成功' })).toBeTruthy()
   })
 
-  it('user copy never claims success when the host rejects the write', async () => {
+  it('user copy shows localized failure feedback, gates re-clicks, and reverts after a second', async () => {
+    vi.useFakeTimers()
+    const writeText = vi.fn().mockRejectedValue(new Error('denied'))
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
-      value: { writeText: vi.fn().mockRejectedValue(new Error('denied')) },
+      value: { writeText },
     })
     Object.defineProperty(document, 'execCommand', { configurable: true, value: vi.fn(() => false) })
     render(
@@ -235,8 +237,12 @@ describe('MessageItem arms', () => {
       await Promise.resolve()
       await Promise.resolve()
     })
-    expect(screen.getByRole('button', { name: '复制' })).toBeTruthy()
+    const failed = screen.getByRole('button', { name: '复制失败' })
+    fireEvent.click(failed)
+    expect(writeText).toHaveBeenCalledTimes(1)
     expect(screen.queryByRole('button', { name: '复制成功' })).toBeNull()
+    act(() => { vi.advanceTimersByTime(1000) })
+    expect(screen.getByRole('button', { name: '复制' })).toBeTruthy()
   })
 
   it('copy swaps to the check success chrome, gates re-clicks, and reverts after a second', async () => {
@@ -692,7 +698,7 @@ describe('MessageItem arms', () => {
       } as never}
       />,
     )
-    fireEvent.click(view.getByRole('button', { name: /^上下文注入\s*Giana Code Putri$/ }))
+    fireEvent.click(view.getByRole('button', { name: /^上下文注入\s*Giana CoWork$/ }))
     const rows = [...view.container.querySelectorAll('[data-context-sections] div')].map(node => node.textContent)
     expect(rows).toEqual(['sandbox:policyworkspace-write', 'workspace/repo'])
   })
