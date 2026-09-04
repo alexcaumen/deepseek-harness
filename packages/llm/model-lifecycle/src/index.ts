@@ -41,6 +41,10 @@ export interface ModelLifecycleConfig {
   readonly idleUnloadMs?: number
   /** Maximum duration of one host-driver stage before it is cancelled. */
   readonly stageTimeoutMs?: number
+  /** Maximum queued inference requests, excluding the current lease. */
+  readonly maxPendingRequests?: number
+  /** Maximum wait for the inference slot, separate from host-stage deadlines. */
+  readonly queueTimeoutMs?: number
 }
 
 interface ResolvedModelLifecycleConfig {
@@ -48,6 +52,8 @@ interface ResolvedModelLifecycleConfig {
   readonly minimumDwellMs: number
   readonly idleUnloadMs: number
   readonly stageTimeoutMs: number
+  readonly maxPendingRequests: number
+  readonly queueTimeoutMs: number
 }
 
 /** Loader and Settings schema for the provider-neutral lifecycle controller. */
@@ -56,6 +62,8 @@ export const Config: z<ModelLifecycleConfig> = z.object({
   minimumDwellMs: z.number().min(0).default(30_000),
   idleUnloadMs: z.number().min(0).default(300_000),
   stageTimeoutMs: z.number().min(1).default(120_000),
+  maxPendingRequests: z.number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(32),
+  queueTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(120_000),
 })
 
 const SETTINGS_NAMESPACE = settingsNamespace(MODEL_LIFECYCLE_SETTINGS_NAMESPACE)
@@ -86,6 +94,8 @@ export type ModelLifecycleErrorCode =
   | 'RESIDENCY_UNVERIFIED'
   | 'RESOURCE_LEASE_UNAVAILABLE'
   | 'RESOURCE_LEASE_LOST'
+  | 'QUEUE_FULL'
+  | 'QUEUE_TIMEOUT'
   | 'ABORTED'
 
 /** Complete provider/model pair. Provider and model are never updated independently. */
@@ -410,7 +420,8 @@ export class ModelLifecycleRuntime extends Service {
   private readonly byRoute = new Map<string, Registration>()
   private active: ActiveRoute | undefined
   private phase: ModelLifecycleSnapshot['phase'] = 'IDLE'
-  private tail: Promise<void> = Promise.resolve()
+  private slotLocked = false
+  private readonly waiters: Array<() => void> = []
   private settings: () => ResolvedModelLifecycleConfig
   private authority: ModelLifecycleAuthority | undefined
   private idleTimer: ReturnType<typeof setTimeout> | undefined
@@ -546,7 +557,7 @@ export class ModelLifecycleRuntime extends Service {
       }
       return unmanagedLease()
     }
-    const release = await this.acquire(request.signal)
+    const release = await this.acquire(request.signal, true)
     this.cancelIdleUnload()
     let registration: Registration | undefined
     let scope: Readonly<ModelExecutionScope> | undefined
@@ -1557,42 +1568,62 @@ export class ModelLifecycleRuntime extends Service {
     }
   }
 
-  private async acquire(signal: AbortSignal | undefined): Promise<() => void> {
+  private async acquire(signal: AbortSignal | undefined, inference = false): Promise<() => void> {
     abortIfRequested(signal)
-    const before = this.tail
-    let unlock!: () => void
-    const gate = new Promise<void>((resolve) => { unlock = resolve })
-    this.tail = before.then(() => gate)
-    if (signal === undefined) {
-      await before
+    if (!this.slotLocked) {
+      this.slotLocked = true
     } else {
-      let onAbort!: () => void
-      const aborted = new Promise<never>((_resolve, reject) => {
-        onAbort = () =>{  reject(new ModelLifecycleError('ABORTED', 'Local model inference was cancelled')) }
-        signal.addEventListener('abort', onAbort, { once: true })
-        if (signal.aborted) onAbort()
-      })
-      try {
-        await Promise.race([before, aborted])
-      } catch (error: unknown) {
-        void before.then(() =>{  unlock() })
-        throw error
-      } finally {
-        signal.removeEventListener('abort', onAbort)
+      const { maxPendingRequests, queueTimeoutMs } = this.settings()
+      if (inference && this.waiters.length >= maxPendingRequests) {
+        throw new ModelLifecycleError('QUEUE_FULL', 'Local model queue is full; retry after a request completes')
       }
+      // Remove cancelled/expired entries immediately; chained promises retain them until the active stream ends.
+      await new Promise<void>((resolve, reject) => {
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const cleanup = (): void => {
+          clearTimeout(timer)
+          signal?.removeEventListener('abort', onAbort)
+        }
+        const grant = (): void => {
+          cleanup()
+          resolve()
+        }
+        const cancel = (error: ModelLifecycleError): void => {
+          const index = this.waiters.indexOf(grant)
+          if (index < 0) return
+          this.waiters.splice(index, 1)
+          cleanup()
+          reject(error)
+        }
+        const onAbort = (): void => {
+          cancel(new ModelLifecycleError('ABORTED', 'Local model inference was cancelled'))
+        }
+        this.waiters.push(grant)
+        if (inference) timer = setTimeout(() => {
+          cancel(new ModelLifecycleError('QUEUE_TIMEOUT', 'Local model queue wait timed out; the active request was not stopped'))
+        }, queueTimeoutMs)
+        signal?.addEventListener('abort', onAbort, { once: true })
+        if (signal?.aborted === true) onAbort()
+      })
     }
     try {
       abortIfRequested(signal)
     } catch (error: unknown) {
-      unlock()
+      this.releaseSlot()
       throw error
     }
     let released = false
     return () => {
       if (released) return
       released = true
-      unlock()
+      this.releaseSlot()
     }
+  }
+
+  private releaseSlot(): void {
+    const next = this.waiters.shift()
+    if (next === undefined) this.slotLocked = false
+    else next()
   }
 }
 

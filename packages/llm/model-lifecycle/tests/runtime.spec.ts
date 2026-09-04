@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, { LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
-import ModelLifecycleRuntime, { createModelExecutionScopeDigest } from '../src/index.ts'
+import ModelLifecycleRuntime, { Config, createModelExecutionScopeDigest } from '../src/index.ts'
 import { fixtureResources } from './resource-fixture.ts'
 import type {
   AcquireModelRouteRequest,
@@ -1255,8 +1255,69 @@ describe('governed local-model lifecycle', () => {
     await second.release()
   })
 
+  it('bounds pending inference without stopping the active route or blocking external models', async () => {
+    const ctx = await lifecycle({ maxPendingRequests: 1 })
+    const qwen = route('qwen', 'qwen', ['r5300'])
+    const log: string[] = []
+    ctx.modelLifecycle.register(qwen, driver(log))
+    const authority = installRouteAuthority(ctx, [qwen])
+    const request = { sessionId: 'session-1', selection: qwen.selection }
+    const first = await ctx.modelLifecycle.acquireRoute(request)
+    const pending = ctx.modelLifecycle.acquireRoute(request)
+    await expect(ctx.modelLifecycle.acquireRoute(request)).rejects.toMatchObject({ code: 'QUEUE_FULL' })
+    expect(authority.resolve).toHaveBeenCalledTimes(1)
+    expect(log).not.toContain('stop:qwen:r5300')
+    const external = await ctx.modelLifecycle.acquireRoute({ selection: { provider: 'external', model: 'remote' } })
+    expect(external.managed).toBe(false)
+    await external.release()
+    await first.release()
+    const second = await pending
+    expect(authority.resolve).toHaveBeenCalledTimes(2)
+    await second.release()
+  })
+
+  it('expires a queued request and immediately admits its replacement without touching active inference', async () => {
+    vi.useFakeTimers()
+    const ctx = await lifecycle({ maxPendingRequests: 1, queueTimeoutMs: 50, idleUnloadMs: 0 })
+    const qwen = route('qwen', 'qwen', ['r5300'])
+    const log: string[] = []
+    ctx.modelLifecycle.register(qwen, driver(log))
+    const authority = installRouteAuthority(ctx, [qwen])
+    const request = { sessionId: 'session-1', selection: qwen.selection }
+    const first = await ctx.modelLifecycle.acquireRoute(request)
+    const expired = expect(ctx.modelLifecycle.acquireRoute(request)).rejects.toMatchObject({ code: 'QUEUE_TIMEOUT' })
+    await vi.advanceTimersByTimeAsync(50)
+    await expired
+    expect(authority.resolve).toHaveBeenCalledTimes(1)
+    expect(ctx.modelLifecycle.snapshot().phase).toBe('IN_USE')
+    expect(log).not.toContain('stop:qwen:r5300')
+    const replacement = ctx.modelLifecycle.acquireRoute(request)
+    await first.release()
+    const next = await replacement
+    await next.release()
+    expect(authority.resolve).toHaveBeenCalledTimes(2)
+  })
+
+  it('allows zero pending requests and validates queue count and timer bounds', async () => {
+    for (const config of [
+      { maxPendingRequests: -1 }, { maxPendingRequests: 1.5 },
+      { queueTimeoutMs: 0 }, { queueTimeoutMs: 1.5 }, { queueTimeoutMs: 2_147_483_648 },
+    ]) expect(() => Config(config)).toThrow()
+    const ctx = await lifecycle({ maxPendingRequests: 0 })
+    const qwen = route('qwen', 'qwen', ['r5300'])
+    ctx.modelLifecycle.register(qwen, driver([]))
+    installRouteAuthority(ctx, [qwen])
+    const request = { sessionId: 'session-1', selection: qwen.selection }
+    const first = await ctx.modelLifecycle.acquireRoute(request)
+    await expect(ctx.modelLifecycle.acquireRoute(request)).rejects.toMatchObject({ code: 'QUEUE_FULL' })
+    // Orderly disposal still waits for the current stream even when inference queue admission is disabled.
+    const disposed = ctx.fiber.dispose()
+    await first.release()
+    await disposed
+  })
+
   it('releases an aborted queued acquisition so the next waiter proceeds', async () => {
-    const ctx = await lifecycle()
+    const ctx = await lifecycle({ maxPendingRequests: 1 })
     const qwen = route('qwen', 'qwen', ['r5300'])
     const glm = route('glm', 'glm', ['r5300'])
     const log: string[] = []
@@ -1299,6 +1360,37 @@ describe('governed local-model lifecycle', () => {
 
     const lease = await following
     expect(lease).toMatchObject({ managed: true, routeId: 'glm' })
+    await lease.release()
+  })
+
+  it('passes the slot once when a waiter is cancelled during grant before its continuation resumes', async () => {
+    vi.useFakeTimers()
+    const ctx = await lifecycle({ maxPendingRequests: 2, queueTimeoutMs: 20, idleUnloadMs: 0 })
+    const qwen = route('qwen', 'qwen', ['r5300'])
+    const glm = route('glm', 'glm', ['r5300'])
+    const log: string[] = []
+    ctx.modelLifecycle.register(qwen, driver(log))
+    ctx.modelLifecycle.register(glm, driver(log))
+    const authority = installRouteAuthority(ctx, [qwen, glm])
+    const first = await ctx.modelLifecycle.acquireRoute({ selection: qwen.selection })
+    const controller = new AbortController()
+    const remove = controller.signal.removeEventListener.bind(controller.signal)
+    const removal = vi.spyOn(controller.signal, 'removeEventListener').mockImplementation((type, listener, options) => {
+      remove(type, listener, options)
+      controller.abort()
+    })
+    const cancelled = expect(ctx.modelLifecycle.acquireRoute({
+      selection: glm.selection, signal: controller.signal,
+    })).rejects.toMatchObject({ code: 'ABORTED' })
+    const following = ctx.modelLifecycle.acquireRoute({ selection: qwen.selection })
+    await first.release()
+    await cancelled
+    const lease = await following
+    await vi.advanceTimersByTimeAsync(20)
+    expect(removal).toHaveBeenCalledTimes(1)
+    expect(authority.resolve).toHaveBeenCalledTimes(2)
+    expect(log.some(entry => entry.includes(':glm:'))).toBe(false)
+    expect(ctx.modelLifecycle.snapshot().phase).toBe('IN_USE')
     await lease.release()
   })
 

@@ -1,4 +1,4 @@
-/** General Settings control for the Giana Code speech compute route. */
+/** General Settings control for the Giana CoWork dictation compute route. */
 import { useCallback, useEffect, useState } from 'react'
 import type { PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ConversationKey } from '../locales.ts'

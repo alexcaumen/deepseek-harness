@@ -24,7 +24,7 @@ const WINDOWS = process.platform === 'win32'
 const SHELL_TOOL = WINDOWS ? 'pwsh' : 'bash'
 // Both shell tools intentionally share the bash-family toolview registrant;
 // the wire name above remains the platform-specific dispatch identity.
-const SHELL_ROW = WINDOWS ? `[data-tool="${SHELL_TOOL}"]` : '[data-sample="bash"]'
+const SHELL_ROW = '[data-sample="bash"]'
 const FIXTURE = fileURLToPath(new URL(
   WINDOWS ? './snapshots/code-mode-round/session.windows.jsonl' : './snapshots/code-mode-round/session.jsonl',
   import.meta.url,

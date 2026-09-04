@@ -1,4 +1,4 @@
-/** Browser route id owned by the Giana Code Indonesian speech surface. */
+/** Browser route id owned by the Giana CoWork Indonesian speech surface. */
 export const INDONESIAN_TRANSCRIPTION_ROUTE = 'speech.transcribe.id-ID' as const
 
 /** Local speech service used when the Windows runtime publishes no usable route. */
@@ -17,7 +17,7 @@ export interface GianaWindowsRuntimeGlobal {
 }
 
 /**
- * Discover the speech route published by Giana Code. Invalid configuration
+ * Discover the speech route published by Giana CoWork. Invalid configuration
  * fails closed to the loopback service; credentials are never accepted in a
  * route URL and the request itself carries no authorization material.
  */

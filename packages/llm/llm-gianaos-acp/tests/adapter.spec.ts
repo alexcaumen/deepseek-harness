@@ -137,9 +137,9 @@ describe('GianaOS ACP adapter helpers', () => {
 
   it('projects one tool label per ACP call without arguments or result payloads', () => {
     const seen = new Set<string>()
-    expect(projectToolActivity('tool_call', 'call-1', seen)).toBe('Giana Code tool started.\n')
+    expect(projectToolActivity('tool_call', 'call-1', seen)).toBe('Giana CoWork tool started.\n')
     expect(projectToolActivity('tool_call_update', 'call-1', seen)).toBe('')
-    expect(projectToolActivity('tool_call_update', 'call-2', seen)).toBe('Giana Code tool activity updated.\n')
+    expect(projectToolActivity('tool_call_update', 'call-2', seen)).toBe('Giana CoWork tool activity updated.\n')
     expect(projectToolActivity('tool_call', 'call-2', seen)).toBe('')
   })
 

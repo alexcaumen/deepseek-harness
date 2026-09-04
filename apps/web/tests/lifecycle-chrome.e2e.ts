@@ -163,7 +163,7 @@ describe('web e2e: lifecycle & chrome (workspace flow / reload / dark mode)', ()
     }
     // The blank frame renders the hero, not the resident composer: the
     // headline plus the guidance placeholder are the empty state's anchors.
-    const heroHeadline = page.getByText('Preview', { exact: true }).locator('..')
+    const heroHeadline = page.locator('div[data-phase="hero"]')
       .getByText('Giana CoWork', { exact: true })
     await expect.poll(() => heroHeadline.count(), { timeout: 15_000 }).toBe(1)
     const input = page.locator('textarea').first()

@@ -34,6 +34,30 @@ describe('theme bootstrap row', () => {
     expect(document.body.hasAttribute(DARK_ATTRIBUTE)).toBe(true)
   })
 
+  it('defers only the body attribute when an intermediary host runs the body row before body exists', () => {
+    const row = bootThemeInjection('dark')
+    if (row.kind !== 'script') throw new Error('theme bootstrap row is not a script')
+    let domReady: (() => void) | undefined
+    const body = { toggleAttribute: vi.fn() }
+    const earlyDocument = {
+      documentElement: { style: {} as { colorScheme?: string } },
+      body: null as typeof body | null,
+      addEventListener: (type: string, listener: () => void, options?: AddEventListenerOptions) => {
+        expect(type).toBe('DOMContentLoaded')
+        expect(options).toEqual({ once: true })
+        domReady = listener
+      },
+    }
+
+    runInNewContext(row.text, { document: earlyDocument, matchMedia: undefined })
+    expect(earlyDocument.documentElement.style.colorScheme).toBe('dark')
+    expect(body.toggleAttribute).not.toHaveBeenCalled()
+
+    earlyDocument.body = body
+    domReady?.()
+    expect(body.toggleAttribute).toHaveBeenCalledExactlyOnceWith(DARK_ATTRIBUTE, true)
+  })
+
   it('lets durable light override a dark OS and clears stale dark state', () => {
     document.body.setAttribute(DARK_ATTRIBUTE, '')
     mockSystemDark(true)

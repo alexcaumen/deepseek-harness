@@ -20,7 +20,7 @@
 - button "Settings":
   - img
   - text: Settings
-- text: Giana CoWork Preview
+- text: Giana CoWork
 - button "Choose workspace":
   - img
   - text: workspace

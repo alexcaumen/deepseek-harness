@@ -1,6 +1,6 @@
 {
   "name": "@grinviro/dsh-llm-gianaos-acp",
-  "description": "Canonical GianaOS ACP participant with scoped Giana Code tool access",
+  "description": "Canonical GianaOS ACP participant with scoped Giana CoWork tool access",
   "version": "0.1.0",
   "private": true,
   "type": "module",

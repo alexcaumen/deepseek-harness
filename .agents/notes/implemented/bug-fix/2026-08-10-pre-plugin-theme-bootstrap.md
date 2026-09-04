@@ -16,7 +16,7 @@ ui-theme's host half answers every `webserver/index-inject` collection with one 
 
 The host half registers the [`ui-theme.preference` settings section](2026-08-06-host-backed-web-preferences.md) when a settings provider exists. For each index response, it embeds that schema-validated built-in preference in the inline script; without a settings provider or active registration, it embeds the `system` default. The browser resolves `system` through `prefers-color-scheme`, falling back to light when `matchMedia` is unavailable. It writes only the two pieces of DOM state that ThemePresenter later owns: `document.documentElement.style.colorScheme` and `body[data-ds-dark-theme]`.
 
-The bootstrap logic recognizes only the built-in `light`, `dark`, and `system` semantics. It registers no listeners and does not resolve third-party themes or token overrides. After the browser-side plugin tree activates, ThemeRuntime remains authoritative for theme state, and ThemePresenter writes the complete resolved result back to the same DOM state and owns subsequent updates and disposal.
+The bootstrap logic recognizes only the built-in `light`, `dark`, and `system` semantics. For a body-less fragment, it sets the root color scheme immediately and defers the body attribute to a one-shot DOMContentLoaded listener. Normal full HTML applies both synchronously. It does not resolve third-party themes or token overrides. After the browser-side plugin tree activates, ThemeRuntime remains authoritative for theme state, and ThemePresenter writes the complete resolved result back to the same DOM state and owns subsequent updates and disposal.
 
 ## Verification
 

@@ -17,7 +17,12 @@ function bootThemeScript(preference: ThemePreference): string {
     && matchMedia('(prefers-color-scheme: dark)').matches
   const dark = preference === 'dark' || systemDark
   document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
-  document.body.toggleAttribute('data-ds-dark-theme', dark)
+  const applyBodyTheme = () => document.body?.toggleAttribute('data-ds-dark-theme', dark)
+  if (document.body === null) {
+    document.addEventListener('DOMContentLoaded', applyBodyTheme, { once: true })
+  } else {
+    applyBodyTheme()
+  }
 })()`
 }
 

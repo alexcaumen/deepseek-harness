@@ -44,16 +44,16 @@
   - button "Queue":
     - text: Queue
     - img
-  - text: Compute routing Automatic checks R5300 first, then falls back to this PRDG. Dictation uses Faster Whisper; DOTS remains text-to-speech only.
+  - text: Dictation compute routing Automatic checks R5300 first, then falls back to this PRDG. Dictation uses Faster Whisper; DOTS remains text-to-speech only.
   - status: Using R5300 · cuda · ready
-  - group "Compute routing":
+  - group "Dictation compute routing":
     - button "Automatic" [pressed]
     - button "R5300"
     - button "PRDG"
   - button "Refresh status"
-  - text: Model compute routing Automatic checks R5300, then PRDG, then RAM/CPU only when the model manifest permits it. Manual targets fail without silent fallback.
+  - text: Local model compute routing Automatic checks R5300, then PRDG, then RAM/CPU only when the model manifest permits it. Manual targets fail without silent fallback.
   - status: This deployment does not expose model lifecycle settings.
-  - group "Model compute routing":
+  - group "Local model compute routing":
     - button "Automatic" [disabled] [pressed]
     - button "R5300" [disabled]
     - button "PRDG" [disabled]

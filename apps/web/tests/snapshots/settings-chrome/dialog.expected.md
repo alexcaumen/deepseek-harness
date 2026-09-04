@@ -44,16 +44,16 @@
   - button "排队发送":
     - text: 排队发送
     - img
-  - text: 语音计算路由 自动优先检查 R5300，再回退到本机 PRDG。听写使用 Faster Whisper；DOTS 仅用于语音合成。
+  - text: 听写计算路由 自动优先检查 R5300，再回退到本机 PRDG。听写使用 Faster Whisper；DOTS 仅用于语音合成。
   - status: 当前：R5300 · cuda · ready
-  - group "语音计算路由":
+  - group "听写计算路由":
     - button "自动" [pressed]
     - button "R5300"
     - button "PRDG"
   - button "刷新状态"
-  - text: 模型计算路由 自动模式在每次本地模型切换前依次检查 R5300、PRDG，以及仅在模型清单允许时使用内存/CPU。手动选择不可用时不会静默回退。
+  - text: 本地模型计算路由 自动模式在每次本地模型切换前依次检查 R5300、PRDG，以及仅在模型清单允许时使用内存/CPU。手动选择不可用时不会静默回退。
   - status: 此部署未提供模型生命周期设置。
-  - group "模型计算路由":
+  - group "本地模型计算路由":
     - button "自动" [disabled] [pressed]
     - button "R5300" [disabled]
     - button "PRDG" [disabled]

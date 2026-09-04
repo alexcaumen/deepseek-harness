@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
@@ -18,6 +18,7 @@ import { fixtureResources } from './resource-fixture.ts'
 import type {
   GovernedModelRoute,
   ModelLifecycleAuditRecord,
+  ModelLifecycleConfig,
   ModelLifecyclePrestateReceipt,
   ModelLifecycleStage,
   ModelLifecycleStageContext,
@@ -46,7 +47,11 @@ afterEach(async () => {
   }
 })
 
-async function boot(residency: ModelLifecyclePrestateReceipt['residency']) {
+async function boot(
+  residency: ModelLifecyclePrestateReceipt['residency'],
+  config: ModelLifecycleConfig = {},
+  beforeReply?: () => Promise<void>,
+) {
   const stages: string[] = []
   const records: ModelLifecycleAuditRecord[] = []
   let requests = 0
@@ -62,6 +67,7 @@ async function boot(residency: ModelLifecyclePrestateReceipt['residency']) {
   class FixtureAdapter extends LlmAdapter {
     async * stream(_options: GenerateOptions): AsyncIterable<StreamChunk> {
       requests++
+      await beforeReply?.()
       yield { type: 'block-start', index: 0, blockType: 'text' }
       yield { type: 'text-delta', index: 0, text: 'LOCAL_INFERENCE_OK' }
       yield { type: 'block-end', index: 0, block: { type: 'text', text: 'LOCAL_INFERENCE_OK' } }
@@ -113,7 +119,9 @@ async function boot(residency: ModelLifecyclePrestateReceipt['residency']) {
     ['test-only-local-host', hostFixture],
     ['@deepseek-ai/dsh-agent-loop', AgentLoop],
   ])
-  await writeFile(configPath, [...modules.keys()].map(name => `- name: '${name}'`).join('\n') + '\n')
+  await writeFile(configPath, [...modules.keys()].map(name =>
+    `- name: '${name}'${name === '@deepseek-ai/dsh-model-lifecycle' ? `\n  config: ${JSON.stringify(config)}` : ''}`,
+  ).join('\n') + '\n')
   ctx = new Context()
   ctx.baseUrl = pathToFileURL(root).href + '/'
   await ctx.plugin(Loader)
@@ -131,6 +139,32 @@ async function boot(residency: ModelLifecyclePrestateReceipt['residency']) {
   const agent = ctx.agentLoop.create(SessionId('isolated-lifecycle-fixture'), route.selection)
   return { agent, stages, records, requests: () => requests }
 }
+
+it.each([
+  { config: { maxPendingRequests: 0 }, code: 'QUEUE_FULL', message: 'Local model queue is full; retry after a request completes' },
+  { config: { queueTimeoutMs: 20 }, code: 'QUEUE_TIMEOUT', message: 'Local model queue wait timed out; the active request was not stopped' },
+])('records $code through the assembled loop while the original inference completes', async ({ config, code, message }) => {
+  let finish!: () => void
+  const gate = new Promise<void>((resolve) => { finish = resolve })
+  const fixture = await boot({ kind: 'EMPTY' }, config, () => gate)
+  try {
+    fixture.agent.followup(createUserMessage({ content: [{ type: 'text', text: 'First request.' }], source: { kind: 'user' } }))
+    await vi.waitFor(() => { expect(fixture.requests()).toBe(1) })
+    const second = ctx!.agentLoop.create(SessionId('isolated-lifecycle-second'), route.selection)
+    second.followup(createUserMessage({ content: [{ type: 'text', text: 'Second request.' }], source: { kind: 'user' } }))
+    await second.whenIdle()
+    expect(second.session.events.filter(event => event.type === 'turn/end').map(event => event.data.reason))
+      .toEqual([{ kind: 'error', error: { code, message } }])
+    expect(fixture.requests()).toBe(1)
+    expect(fixture.stages).not.toContain('stop')
+  } finally {
+    finish()
+    await fixture.agent.whenIdle()
+  }
+  expect(fixture.agent.session.deriveMessages().at(-1)).toMatchObject({
+    role: 'assistant', content: [{ type: 'text', text: 'LOCAL_INFERENCE_OK' }],
+  })
+})
 
 it('runs a recorded turn through the YAML-mounted lifecycle and releases after inference', async () => {
   const fixture = await boot({ kind: 'EMPTY' })

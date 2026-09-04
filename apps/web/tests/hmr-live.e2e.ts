@@ -1,9 +1,9 @@
 /** Published dsh web + pnpm dev:web → browser HMR, with no page reload. */
 
-import { existsSync, globSync } from 'node:fs'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { existsSync, globSync, statSync } from 'node:fs'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { chromium } from 'playwright'
 import { expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
@@ -76,16 +76,28 @@ async function stopTree(child: SubprocessHandle): Promise<void> {
   await child.done
 }
 
+function artifactPaths(): string[] {
+  // dev:web runs tsc, both tsdown faces, and Vite. Preserve their intermediate
+  // outputs too: restoring only client.js leaves the next build on HMR inputs.
+  return globSync([
+    'packages/*/*/lib/**/*',
+    'vendor/*/lib/**/*',
+    'apps/web/lib/**/*',
+    'apps/web/dist/**/*',
+    'tsconfig.client.tsbuildinfo',
+  ], { cwd: REPO_ROOT })
+    .map(path => join(REPO_ROOT, path))
+    .filter(path => statSync(path).isFile())
+}
+
 it('hot-reloads a real client-plugin source edit without refreshing the page', async () => {
-  const world = await mkdtemp(join(tmpdir(), 'dsh-web-hmr-world-'))
   const sourcePath = join(REPO_ROOT, 'packages/client/ui-conversation/src/client/locales.ts')
   const binPath = join(REPO_ROOT, 'apps/cli/lib/bin.js')
   const buildRecordPath = join(REPO_ROOT, CLIENT_BUILD_RECORD_PATH)
   if (!existsSync(binPath)) throw new Error('HMR browser test needs the built dsh bin; run pnpm run build first')
   const clientBuildEnvironment = readClientBuildRecord(REPO_ROOT).environment
-  const clientBundlePaths = globSync('packages/*/*/lib/client.js{,.map}', { cwd: REPO_ROOT })
-    .map(path => join(REPO_ROOT, path))
-  const originalClientBundles = await Promise.all(clientBundlePaths.map(async path => [path, await readFile(path)] as const))
+  const originalArtifacts = new Map<string, Buffer>()
+  for (const path of artifactPaths()) originalArtifacts.set(path, await readFile(path))
   const originalBuildRecord = await readFile(buildRecordPath)
   const originalSource = await readFile(sourcePath)
   const oldText = 'Giana CoWork'
@@ -96,6 +108,7 @@ it('hot-reloads a real client-plugin source edit without refreshing the page', a
   if (sourceIndex === -1) throw new Error(`HMR source lacks ${JSON.stringify(sourceNeedle)}`)
   const updatedSource = `${sourceText.slice(0, sourceIndex)}'hero.headline': '${newText}'${sourceText.slice(sourceIndex + sourceNeedle.length)}`
 
+  const world = await mkdtemp(join(tmpdir(), 'dsh-web-hmr-world-'))
   const subprocessCtx = new Context()
   let subprocessFiber: Fiber | undefined
   let watcher: SubprocessHandle | undefined
@@ -141,15 +154,37 @@ it('hot-reloads a real client-plugin source edit without refreshing the page', a
   } catch (error) {
     failures.push(error)
   } finally {
-    await writeFile(sourcePath, originalSource).catch((error: unknown) => failures.push(error))
+    // Stop every writer before restoring source; a live watcher would rebuild
+    // again on that write and could be terminated halfway through dist/index.html.
     if (watcher !== undefined) await stopTree(watcher).catch((error: unknown) => failures.push(error))
-    await Promise.all(originalClientBundles.map(async ([path, content]) => {
-      await writeFile(path, content).catch((error: unknown) => failures.push(error))
-    }))
-    await writeFile(buildRecordPath, originalBuildRecord).catch((error: unknown) => failures.push(error))
-    if (host !== undefined) await stopTree(host).catch((error: unknown) => failures.push(error))
     await browser?.close().catch((error: unknown) => failures.push(error))
+    if (host !== undefined) await stopTree(host).catch((error: unknown) => failures.push(error))
     await subprocessFiber?.dispose().catch((error: unknown) => failures.push(error))
+    await writeFile(sourcePath, originalSource).catch((error: unknown) => failures.push(error))
+    // Vite watch uses --no-emptyOutDir, so copying old files back alone leaves
+    // newly hashed chunks in the digest. Remove only files absent at entry.
+    try {
+      for (const path of artifactPaths()) {
+        if (!originalArtifacts.has(path)) await rm(path).catch((error: unknown) => failures.push(error))
+      }
+    } catch (error) {
+      failures.push(error)
+    }
+    for (const [path, content] of originalArtifacts) {
+      try {
+        if (existsSync(path) && (await readFile(path)).equals(content)) continue
+        await mkdir(dirname(path), { recursive: true })
+        await writeFile(path, content)
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+    await writeFile(buildRecordPath, originalBuildRecord).catch((error: unknown) => failures.push(error))
+    try {
+      readClientBuildRecord(REPO_ROOT)
+    } catch (error) {
+      failures.push(error)
+    }
     await rm(world, { recursive: true, force: true }).catch((error: unknown) => failures.push(error))
   }
   if (failures.length > 0) throw new AggregateError(failures, 'HMR browser test or cleanup failed')

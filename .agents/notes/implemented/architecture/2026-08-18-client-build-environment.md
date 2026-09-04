@@ -32,6 +32,8 @@ The root build wrapper supplies one exact public environment to both bundlers. I
 
 ## Consequences
 
+The workspace-mutating HMR test snapshots the complete watcher output chain, including the static shell, dynamic bundles, linked libraries and incremental compiler state. It stops writers before restoring source and output bytes, removes only newly generated files, and revalidates the original digest. Restoring only dynamic bundles or restoring source while the watcher remains active can leave the next consumer with a mismatched or incomplete shell. The regression belongs to the Host test lane because it imports the real HMR runner; it must not enter the Client compiler.
+
 The Vite static shell and shared tsdown dynamic bundles receive the same string for a given `DSH_CLIENT_*` build-process variable. An unset static property read evaluates to `undefined`; non-`DSH_CLIENT_*` values cannot enter browser artifacts through this mechanism, and business code cannot enumerate the build process environment. Every complete build carries its short source revision as public display metadata. CI build gates select the official profile without exposing its public values to source tests or unrelated workflow steps. npm packing and built Web tests verify the recorded environment and current artifact digest, so a default build followed by an official pack request, a partial rebuild, or modified output fails before consumption.
 
 Every `DSH_CLIENT_*` value referenced by business code becomes public artifact content, so a misnamed value can disclose information. Build choices are fixed when the artifact is generated; a setting that must change after deployment requires a validated, transported, and documented runtime configuration mechanism.

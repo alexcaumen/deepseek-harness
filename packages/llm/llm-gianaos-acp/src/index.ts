@@ -1,5 +1,5 @@
 /**
- * Canonical GianaOS participants with native Giana Code tool access over ACP.
+ * Canonical GianaOS participants with native Giana CoWork tool access over ACP.
  * @module @grinviro/dsh-llm-gianaos-acp
  */
 
@@ -99,7 +99,7 @@ export const Config: z<Config> = z.object({
   providerName: z.string().default('GianaOS'),
   modelId: z.string().default('putri'),
   modelName: z.string().default('Putri'),
-  description: z.string().default('Canonical GianaOS participant with native Giana Code capabilities'),
+  description: z.string().default('Canonical GianaOS participant with native Giana CoWork capabilities'),
   principalId: z.string().default('giana.putri'),
   routeRevision: z.string().default('giana-code-acp-native-v1'),
   launchCommand: z.string().required(),
@@ -282,7 +282,7 @@ export async function latestUserPromptContent(
     }
     if (block.type !== 'image') continue
     if (attachments === undefined) {
-      throw new LlmError('Putri image input requires the Giana Code attachment store', 'MISSING_ATTACHMENT_STORE')
+      throw new LlmError('Putri image input requires the Giana CoWork attachment store', 'MISSING_ATTACHMENT_STORE')
     }
     const stored = await attachments.readImage(block.attachment, signal)
     content.push({
@@ -339,8 +339,8 @@ export function projectToolActivity(
   if (seenToolCalls.has(toolCallId)) return ''
   seenToolCalls.add(toolCallId)
   return kind === 'tool_call'
-    ? 'Giana Code tool started.\n'
-    : 'Giana Code tool activity updated.\n'
+    ? 'Giana CoWork tool started.\n'
+    : 'Giana CoWork tool activity updated.\n'
 }
 
 /** Convert one ACP turn's delta stream into one durable block per content kind. */
@@ -467,13 +467,13 @@ class GianaOsAcpAdapter extends LlmAdapter {
       return
     }
     if (options.sessionId === undefined) {
-      throw new LlmError('Putri requires an exact live Giana Code session', 'MISSING_GIANA_CODE_SESSION')
+      throw new LlmError('Putri requires an exact live Giana CoWork session', 'MISSING_GIANA_CODE_SESSION')
     }
 
     const agent = this.ctx.agents.get(options.sessionId)
     const localSession = this.ctx.sessions.get(options.sessionId)
     if (agent === undefined || localSession === undefined || agent.session !== localSession || agent.id !== localSession.id) {
-      throw new LlmError('Putri requires one exact live Giana Code agent/session identity', 'STALE_GIANA_CODE_SESSION')
+      throw new LlmError('Putri requires one exact live Giana CoWork agent/session identity', 'STALE_GIANA_CODE_SESSION')
     }
 
     const key = String(options.sessionId)
@@ -664,7 +664,7 @@ class GianaOsAcpAdapter extends LlmAdapter {
       const initialized = await connection.initialize({
         protocolVersion: PROTOCOL_VERSION,
         clientCapabilities: {},
-        clientInfo: { name: 'Giana Code', version: '0.1.1-rc.2' },
+        clientInfo: { name: 'Giana CoWork', version: '0.1.1-rc.2' },
       })
       // GianaOS R2.004 already accepts and registers HTTP MCP servers in
       // newSession/loadSession, but its current initialize response omits the

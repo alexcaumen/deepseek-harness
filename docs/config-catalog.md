@@ -1464,7 +1464,7 @@ export interface Config {
 export type LoopbackHost = '127.0.0.1' | '::1'
 ```
 
-Source: [`packages/mcp/mcp-server-tool-runtime/src/index.ts:57`](../packages/mcp/mcp-server-tool-runtime/src/index.ts)
+Source: [`packages/mcp/mcp-server-tool-runtime/src/index.ts:58`](../packages/mcp/mcp-server-tool-runtime/src/index.ts)
 
 <a id="deepseek-aidsh-message-feedback"></a>
 
@@ -1497,13 +1497,17 @@ export interface ModelLifecycleConfig {
   readonly idleUnloadMs?: number
   /** Maximum duration of one host-driver stage before it is cancelled. */
   readonly stageTimeoutMs?: number
+  /** Maximum queued inference requests, excluding the current lease. */
+  readonly maxPendingRequests?: number
+  /** Maximum wait for the inference slot, separate from host-stage deadlines. */
+  readonly queueTimeoutMs?: number
 }
 
 /** User-visible routing intent for a governed local model. */
 export type ModelComputePreference = typeof MODEL_COMPUTE_PREFERENCES[number]
 ```
 
-Source: [`packages/llm/model-lifecycle/src/index.ts:31`](../packages/llm/model-lifecycle/src/index.ts)
+Source: [`packages/llm/model-lifecycle/src/index.ts:35`](../packages/llm/model-lifecycle/src/index.ts)
 
 <a id="deepseek-aidsh-permission-presets"></a>
 

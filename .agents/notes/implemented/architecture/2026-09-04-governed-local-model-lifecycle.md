@@ -18,7 +18,7 @@ At the head of the FIFO, the runtime rejects a tainted slot before asking the au
 
 Automatic target selection considers only targets declared by the admitted route, in fixed R5300, PRDG, then RAM/CPU order. RAM/CPU is considered only when the route both declares `ram-cpu` and sets `allowRamCpuOffload`; each candidate must return a successful capacity preflight. An explicit unavailable decision advances Automatic to the next admitted candidate, while a preflight error or timeout terminates the request. Manual `r5300` or `prdg` intent probes only that target and returns `MANUAL_TARGET_UNAVAILABLE` instead of falling back.
 
-After target preflight succeeds, the runtime captures prestate. A real switch then drains the previous route, stops it, verifies it stopped, starts the selected target, verifies health, and performs a capability probe. The runtime persists a `READY` audit record before adapter iteration begins. Reusing the same registered route and target performs preflight, prestate capture, and health verification without stop, start, or capability probe. The managed lease remains held through the complete asynchronous `llm/stream`; `finally` attempts to record `RELEASED` and releases the FIFO position so another managed request cannot unload the active model mid-inference. Cancellation while queued releases its eventual lock position and does not starve later requests.
+After target preflight succeeds, the runtime captures prestate. A real switch then drains the previous route, stops it, verifies it stopped, starts the selected target, verifies health, and performs a capability probe. The runtime persists a `READY` audit record before adapter iteration begins. Reusing the same registered route and target performs preflight, prestate capture, and health verification without stop, start, or capability probe. The managed lease remains held through the complete asynchronous `llm/stream`; `finally` attempts to record `RELEASED` and releases the FIFO position so another managed request cannot unload the active model mid-inference. Cancellation while queued removes its waiting entry immediately and does not starve later requests.
 
 Every host-driver invocation receives its own absolute `deadlineAt` and an owned cancellation signal bounded by `stageTimeoutMs`. Successful `prestate`, `preflight`, `drain`, `stop`, `verify-stopped`, `start`, `health`, and `probe` results carry a structured `ModelLifecycleStageReceipt`. The runtime requires each receipt to name the expected stage, route id, target, revision digest, scope digest, and transaction digest and to include a lowercase SHA-256 receipt digest. A parent abort cancels the bounded signal; expiration aborts it and returns `STAGE_TIMEOUT` even if the driver has not settled.
 
@@ -30,6 +30,8 @@ The package exports the authority, route, scope, receipt, driver, and runtime in
 
 ## Verification
 
+The inference FIFO bounds both pending count and waiting time. Cancelled or expired waiters are removed immediately rather than retained as promise-chain nodes behind a long-running stream. Admission failure never aborts the active model. Internal teardown keeps FIFO ordering without inference admission limits, because overload cannot authorize skipping cleanup.
+
 Fresh target occupancy is required before activation, reuse, idle unload, and shutdown; cross-target switches inspect the previous host too. A new process cannot assume the GPU is empty merely because its in-memory active route is absent. Mismatched or unknown occupancy returns `RESIDENCY_UNVERIFIED` and suppresses speculative cleanup, including teardown. This is conservative rejection, not automatic adoption or distributed exclusion. The deployment owner still supplies fencing and authoritative reconciliation.
 
 Per-route `stageTimeoutsMs` budgets are immutable and part of authority/registration equality. A cold model may need a substantially longer start than ordinary health or scope-resolution operations; a single enlarged global timeout would delay unrelated failures. Only explicitly overridden stages use the route budget, including rollback starts. Defaults remain unchanged.
@@ -39,6 +41,8 @@ Focused runtime tests cover provider classification before FIFO admission, order
 Additional fixtures cover two independent app contexts observing existing residency, changed occupancy before unload, failed shutdown inspection, both targets in a switch, and long-start budget isolation. A real YAML Loader composition drives the shipping agent loop and pins both successful assistant output and a sanitized residency failure in the session log. Its model and host are deterministic fixtures, not live inference or global-controller evidence.
 
 ## Alternatives considered
+
+**Retain cancelled promise-chain waiters.** Rejected because repeated cancellation behind a long-running inference retains unbounded closures even when the apparent pending count is capped. An explicit removable FIFO bounds retained waiters and permits immediate replacement after timeout or cancellation.
 
 **Reuse speech compute routing.** Rejected because STT and TTS availability does not establish LLM payload, memory, runtime, scope, or admission readiness. A shared controller would combine unrelated resource and governance responsibilities.
 
