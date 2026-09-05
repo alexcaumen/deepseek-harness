@@ -18,7 +18,7 @@ import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-sett
 import { ResourceLeaseError, ResourceLeaseSession, type ResourceLeaseGrant, type ResourceLeaseProvider } from './resource-lease.ts'
 
 export { ResourceLeaseError, ResourceLeaseSession, ResourceLeaseRef, ResourceLeaseIssuerRef, ResourceLeaseHolderRef } from './resource-lease.ts'
-export type { ResourceLeaseGrant, ResourceLeaseProvider } from './resource-lease.ts'
+export type { ResourceLeaseGrant, ResourceLeaseOperationObserver, ResourceLeaseProvider, ResourceLeaseTarget } from './resource-lease.ts'
 
 /** Settings namespace shared with the browser preference mirror. */
 export const MODEL_LIFECYCLE_SETTINGS_NAMESPACE = 'model-lifecycle'
@@ -172,17 +172,30 @@ declare module '@deepseek-ai/dsh-session/types' {
 
 /** Canonical classifier, scope resolver, and sanitized audit sink. */
 export interface ModelLifecycleAuthority {
-  /** Deployment-owned shared resource leases; no local-model mutation is allowed without this binding. */
-  readonly resources?: ResourceLeaseProvider
   classifyProvider(provider: string): ModelProviderClassification
-  resolve(request: AcquireModelRouteRequest): Promise<ModelRouteResolution> | ModelRouteResolution
-  record(record: ModelLifecycleAuditRecord): Promise<void>
+  /**
+   * Resolve one exact governed request within the runtime-owned deadline.
+   * @param request - Complete provider, model, session, and cancellation intent.
+   * @param signal - Runtime-owned cancellation for the authority operation.
+   * @returns The externally governed route decision.
+   */
+  resolve(request: AcquireModelRouteRequest, signal: AbortSignal): Promise<ModelRouteResolution> | ModelRouteResolution
+  /**
+   * Persist one sanitized lifecycle outcome within the runtime-owned deadline.
+   * @param record - Digest-only lifecycle outcome.
+   * @param signal - Runtime-owned cancellation for the authority operation.
+   * @returns Completion after durable settlement.
+   */
+  record(record: ModelLifecycleAuditRecord, signal: AbortSignal): Promise<void>
 }
 
 const lifecycleStages = ['prestate', 'preflight', 'drain', 'stop', 'verify-stopped', 'start', 'health', 'probe'] as const
 
 /** Lifecycle stages whose receipts must bind the exact transaction. */
 export type ModelLifecycleStage = typeof lifecycleStages[number]
+
+/** Server-owned lifecycle state-machine branch selected by the runtime. */
+export type ModelLifecycleTransactionKind = 'MODEL_ROUTE' | 'IDLE_UNLOAD' | 'SHUTDOWN'
 
 /** One sanitized, hash-bound stage receipt. */
 export interface ModelLifecycleStageReceipt {
@@ -219,12 +232,13 @@ export interface ModelLifecycleStageContext {
   readonly route: GovernedModelRoute
   readonly target: ModelComputeTarget
   readonly scope: ModelExecutionScope
+  readonly transactionKind: ModelLifecycleTransactionKind
   readonly transactionDigest: string
   /** Externally issued resource grant; drivers must validate its fence at the execution endpoint. */
   readonly resourceLease: ResourceLeaseGrant
   /** Absolute deadline for this individual host-driver stage. */
   readonly deadlineAt: number
-  readonly signal?: AbortSignal
+  readonly signal: AbortSignal
 }
 
 /** Previous and next route data required for a bounded queue drain. */
@@ -310,6 +324,23 @@ export class ModelLifecycleError extends LlmError {
   ) {
     super(message, code)
     this.name = 'ModelLifecycleError'
+  }
+}
+
+class AuthorityOperationTimeout extends Error {
+  constructor(label: string) {
+    super(`model-lifecycle: ${label} exceeded its deadline`)
+    this.name = 'AuthorityOperationTimeout'
+  }
+}
+
+class AuditPersistenceFailure extends ModelLifecycleError {
+  constructor(
+    routeId: string,
+    readonly settlementUnknown: boolean,
+  ) {
+    super('AUDIT_FAILED', `Could not persist lifecycle audit for ${routeId}`)
+    this.name = 'AuditPersistenceFailure'
   }
 }
 
@@ -455,6 +486,9 @@ export class ModelLifecycleRuntime extends Service {
   private readonly waiters: Array<() => void> = []
   private settings: () => ResolvedModelLifecycleConfig
   private authority: ModelLifecycleAuthority | undefined
+  private resources: ResourceLeaseProvider | undefined
+  private readonly authorityOperations = new Set<Promise<unknown>>()
+  private readonly resourceOperations = new Set<Promise<unknown>>()
   private idleTimer: ReturnType<typeof setTimeout> | undefined
   private transactionCounter = 0
   private tainted = false
@@ -499,10 +533,31 @@ export class ModelLifecycleRuntime extends Service {
     if (this.authority !== undefined) throw new Error('model-lifecycle: authority is already installed')
     this.authority = authority
     return () => {
-      if (this.active !== undefined || this.byRoute.size > 0 || this.resourceLease !== undefined) {
+      if (this.active !== undefined || this.byRoute.size > 0 || this.resourceLease !== undefined
+        || this.authorityOperations.size > 0) {
         throw new Error('model-lifecycle: authority remains in use')
       }
       if (this.authority === authority) this.authority = undefined
+    }
+  }
+
+  /**
+   * Install the sole deployment-owned shared resource lease provider without
+   * granting it route classification, scope resolution, or audit authority.
+   * @param resources - Verified external resource lease mechanics.
+   * @returns A release function for orderly plugin disposal.
+   */
+  installResources(resources: ResourceLeaseProvider): () => void {
+    if (this.resources !== undefined) {
+      throw new Error('model-lifecycle: resources are already installed')
+    }
+    this.resources = resources
+    return () => {
+      if (this.byRoute.size > 0 || this.active !== undefined || this.resourceLease !== undefined
+        || this.resourceOperations.size > 0) {
+        throw new Error('model-lifecycle: resources remain in use')
+      }
+      if (this.resources === resources) this.resources = undefined
     }
   }
 
@@ -599,6 +654,7 @@ export class ModelLifecycleRuntime extends Service {
     let registration: Registration | undefined
     let scope: Readonly<ModelExecutionScope> | undefined
     let transactionDigest: string | undefined
+    const activation = { started: false }
     const receipts: ModelLifecycleStageReceipt[] = []
     try {
       if (this.tainted) {
@@ -612,7 +668,7 @@ export class ModelLifecycleRuntime extends Service {
         resolution = await this.runAuthorityOperation(
           'route resolution',
           request.signal,
-          () => authority.resolve(request),
+          signal => authority.resolve(request, signal),
         )
       } catch (error: unknown) {
         throw lifecycleError('GOVERNANCE_UNAVAILABLE', 'Could not resolve the selected local-model route', error)
@@ -664,7 +720,7 @@ export class ModelLifecycleRuntime extends Service {
         String(Date.now()),
         String(++this.transactionCounter),
       ])
-      await this.ensureResourceLease(authority, registration.route.targets)
+      await this.ensureResourceLease(registration.route.targets, request.signal)
       abortIfRequested(request.signal)
       return await this.activateLocked(
         registration,
@@ -674,6 +730,7 @@ export class ModelLifecycleRuntime extends Service {
         receipts,
         authority,
         release,
+        () => { activation.started = true },
       )
     } catch (error: unknown) {
       const rolledBack = error instanceof RolledBackLifecycleFailure
@@ -684,7 +741,7 @@ export class ModelLifecycleRuntime extends Service {
         registration !== undefined
         && scope !== undefined
         && transactionDigest !== undefined
-        && !(tainted && failure instanceof ModelLifecycleError && failure.code === 'AUDIT_FAILED')
+        && !(failure instanceof AuditPersistenceFailure && failure.settlementUnknown)
       ) {
         await this.recordBestEffort(authority, {
           transactionDigest,
@@ -695,7 +752,9 @@ export class ModelLifecycleRuntime extends Service {
           errorCode: failure instanceof ModelLifecycleError ? failure.code : 'PREFLIGHT_FAILED',
         })
       }
-      if (this.tainted || this.active === undefined) await this.releaseResources('UNCERTAIN')
+      if (this.tainted || this.active === undefined) {
+        await this.releaseResources(tainted || activation.started ? 'UNCERTAIN' : 'SETTLED')
+      }
       release()
       if (!this.tainted && this.active !== undefined) this.scheduleIdleUnload()
       throw lifecycleError('PREFLIGHT_FAILED', 'Local model acquisition failed', failure)
@@ -765,6 +824,7 @@ export class ModelLifecycleRuntime extends Service {
     receipts: ModelLifecycleStageReceipt[],
     authority: ModelLifecycleAuthority,
     release: () => void,
+    onActivationStart: () => void,
   ): Promise<ModelRouteLease> {
     abortIfRequested(request.signal)
     const target = await this.selectTarget(registration, request, scope, transactionDigest, receipts)
@@ -821,7 +881,7 @@ export class ModelLifecycleRuntime extends Service {
           previous.registration,
           previous.target,
           detachedRequest,
-          previous.scope,
+          scope,
           transactionDigest,
         )
         const drainContext: ModelDrainContext = {
@@ -840,6 +900,7 @@ export class ModelLifecycleRuntime extends Service {
             throw lifecycleError('PREFLIGHT_FAILED', 'Could not verify the previous host model residency', error)
           }
         }
+        onActivationStart()
         try {
           const receipt = await this.runStage('drain', drainContext, bounded =>
             previous.registration.driver.drain(bounded))
@@ -875,6 +936,7 @@ export class ModelLifecycleRuntime extends Service {
       }
 
       abortIfRequested(request.signal)
+      if (previous === undefined) onActivationStart()
       this.phase = 'LOADING'
       targetStartAttempted = true
       const detachedContext = this.stageContext(registration, target, {
@@ -932,6 +994,14 @@ export class ModelLifecycleRuntime extends Service {
       this.publishEffectiveRoute(registration, request, target, scope, transactionDigest, receipts)
       return this.routeLease(registration, target, scope, transactionDigest, receipts, authority, release)
     } catch (error: unknown) {
+      if (error instanceof AuditPersistenceFailure && error.settlementUnknown) {
+        // The READY write may still settle after its local deadline. Preserve the
+        // physically ready route under quarantine instead of creating a false
+        // durable READY record by rolling the host back underneath it.
+        this.tainted = true
+        this.phase = 'TAINTED'
+        throw error
+      }
       if (this.resourceLease?.signal.aborted === true || (error instanceof ModelLifecycleError && error.code === 'STAGE_TIMEOUT')) {
         this.active = undefined
         this.tainted = true
@@ -1113,15 +1183,17 @@ export class ModelLifecycleRuntime extends Service {
     request: AcquireModelRouteRequest,
     scope: ModelExecutionScope,
     transactionDigest: string,
+    transactionKind: ModelLifecycleTransactionKind = 'MODEL_ROUTE',
   ): ModelLifecycleStageContext {
     return {
       route: registration.route,
       target,
       scope,
+      transactionKind,
       transactionDigest,
       resourceLease: this.currentResourceGrant(target),
       deadlineAt: Date.now() + this.settings().stageTimeoutMs,
-      ...request.signal === undefined ? {} : { signal: request.signal },
+      signal: request.signal ?? new AbortController().signal,
     }
   }
 
@@ -1147,7 +1219,7 @@ export class ModelLifecycleRuntime extends Service {
       const timer: { current?: ReturnType<typeof setTimeout> } = {}
       const cleanup = () => {
         if (timer.current !== undefined) clearTimeout(timer.current)
-        context.signal?.removeEventListener('abort', onAbort)
+        context.signal.removeEventListener('abort', onAbort)
         resourceLease?.signal.removeEventListener('abort', onResourceLost)
       }
       const rejectOnce = (error: unknown) => {
@@ -1157,7 +1229,7 @@ export class ModelLifecycleRuntime extends Service {
         reject(error instanceof Error ? error : new Error(`model-lifecycle: ${stage} failed`))
       }
       const onAbort = () => {
-        controller.abort(context.signal?.reason)
+        controller.abort(context.signal.reason)
         rejectOnce(new ModelLifecycleError('ABORTED', 'Local model inference was cancelled'))
       }
       const onResourceLost = () => {
@@ -1166,13 +1238,13 @@ export class ModelLifecycleRuntime extends Service {
         rejectOnce(error)
       }
 
-      context.signal?.addEventListener('abort', onAbort, { once: true })
+      context.signal.addEventListener('abort', onAbort, { once: true })
       resourceLease?.signal.addEventListener('abort', onResourceLost, { once: true })
       if (resourceLease?.signal.aborted === true) {
         onResourceLost()
         return
       }
-      if (context.signal?.aborted === true) {
+      if (context.signal.aborted) {
         onAbort()
         return
       }
@@ -1202,19 +1274,26 @@ export class ModelLifecycleRuntime extends Service {
     })
   }
 
-  private async ensureResourceLease(authority: ModelLifecycleAuthority, targets: readonly ModelComputeTarget[]): Promise<void> {
+  private async ensureResourceLease(targets: readonly ModelComputeTarget[], signal?: AbortSignal): Promise<void> {
     if (this.resourceLease !== undefined) {
       for (const target of targets) this.currentResourceGrant(target)
       return
     }
-    if (authority.resources === undefined) {
+    const resources = this.resources
+    if (resources === undefined) {
       throw new ModelLifecycleError('RESOURCE_LEASE_UNAVAILABLE', 'Shared local-model resource authority is unavailable')
     }
     const candidates = [...new Set([...this.byRoute.values()]
       .filter(registration => registration.route.disposition === 'AVAILABLE')
       .flatMap(registration => [...registration.route.targets]))]
     try {
-      const lease = await ResourceLeaseSession.acquire(authority.resources, candidates, this.settings().stageTimeoutMs)
+      const lease = await ResourceLeaseSession.acquire(
+        resources,
+        candidates,
+        this.settings().stageTimeoutMs,
+        signal,
+        (operation) => { this.trackOperation(this.resourceOperations, operation) },
+      )
       this.resourceLease = lease
       lease.signal.addEventListener('abort', () => {
         if (this.resourceLease !== lease) return
@@ -1310,7 +1389,7 @@ export class ModelLifecycleRuntime extends Service {
         previous.registration,
         previous.target,
         cleanupRequest,
-        previous.scope,
+        scope,
         transactionDigest,
       )
       try {
@@ -1337,16 +1416,46 @@ export class ModelLifecycleRuntime extends Service {
   }
 
   private async record(authority: ModelLifecycleAuthority, record: ModelLifecycleAuditRecord): Promise<void> {
+    const immutableRecord = Object.freeze({
+      ...record,
+      receiptDigests: Object.freeze([...record.receiptDigests]),
+    })
+    const compensationRecord = record.outcome === 'READY'
+      ? Object.freeze({
+        ...immutableRecord,
+        outcome: 'TAINTED' as const,
+        errorCode: 'AUDIT_FAILED' as const,
+      })
+      : undefined
     try {
-      await this.runAuthorityOperation('audit persistence', undefined, () => authority.record(Object.freeze({
-        ...record,
-        receiptDigests: Object.freeze([...record.receiptDigests]),
-      })))
+      await this.runAuthorityOperation(
+        'audit persistence',
+        undefined,
+        signal => authority.record(immutableRecord, signal),
+        compensationRecord === undefined
+          ? undefined
+          : () => this.recordCompensationBestEffort(authority, compensationRecord),
+      )
     } catch (error: unknown) {
       this.tainted = true
       this.cancelIdleUnload()
       this.phase = 'TAINTED'
-      throw lifecycleError('AUDIT_FAILED', `Could not persist lifecycle audit for ${record.routeId}`, error)
+      throw new AuditPersistenceFailure(record.routeId, error instanceof AuthorityOperationTimeout)
+    }
+  }
+
+  private async recordCompensationBestEffort(
+    authority: ModelLifecycleAuthority,
+    record: ModelLifecycleAuditRecord,
+  ): Promise<void> {
+    try {
+      await this.runAuthorityOperation(
+        'audit compensation',
+        undefined,
+        signal => authority.record(record, signal),
+      )
+    } catch {
+      // The slot is already quarantined; deployment reconciliation owns a failed audit sink.
     }
   }
 
@@ -1363,6 +1472,7 @@ export class ModelLifecycleRuntime extends Service {
     label: string,
     signal: AbortSignal | undefined,
     operation: (boundedSignal: AbortSignal) => Promise<T> | T,
+    onLateSettle?: () => Promise<void> | void,
   ): Promise<T> {
     abortIfRequested(signal)
     const timeoutMs = this.settings().stageTimeoutMs
@@ -1391,16 +1501,44 @@ export class ModelLifecycleRuntime extends Service {
       }
       timer.current = setTimeout(() => {
         controller.abort(new Error(`model-lifecycle: ${label} timed out`))
-        settle(() => { reject(new Error(`model-lifecycle: ${label} exceeded its deadline`)) })
+        settle(() => { reject(new AuthorityOperationTimeout(label)) })
       }, timeoutMs)
       ;(timer.current as { unref?: () => void }).unref?.()
-      void Promise.resolve()
-        .then(() => operation(controller.signal))
+      const actual = Promise.resolve().then(() => {
+        if (settled) throw new Error(`model-lifecycle: ${label} was cancelled before invocation`)
+        return operation(controller.signal)
+      })
+      this.trackOperation(this.authorityOperations, actual)
+      void actual
         .then(
-          (value) => { settle(() => { resolve(value) }) },
-          (error: unknown) => { settle(() => { reject(error instanceof Error ? error : new Error(`model-lifecycle: ${label} failed`)) }) },
+          (value) => {
+            if (settled) {
+              const compensation = Promise.resolve().then(() => onLateSettle?.())
+              this.trackOperation(this.authorityOperations, compensation)
+              void compensation.catch(() => {})
+              return
+            }
+            settle(() => { resolve(value) })
+          },
+          (error: unknown) => {
+            if (settled) {
+              const compensation = Promise.resolve().then(() => onLateSettle?.())
+              this.trackOperation(this.authorityOperations, compensation)
+              void compensation.catch(() => {})
+              return
+            }
+            settle(() => { reject(error instanceof Error ? error : new Error(`model-lifecycle: ${label} failed`)) })
+          },
         )
     })
+  }
+
+  private trackOperation(set: Set<Promise<unknown>>, operation: Promise<unknown>): void {
+    set.add(operation)
+    void operation.then(
+      () => { set.delete(operation) },
+      () => { set.delete(operation) },
+    )
   }
 
   private cancelIdleUnload(): void {
@@ -1440,7 +1578,14 @@ export class ModelLifecycleRuntime extends Service {
     const failures: unknown[] = []
 
     try {
-      const context = this.stageContext(active.registration, active.target, request, active.scope, transactionDigest)
+      const context = this.stageContext(
+        active.registration,
+        active.target,
+        request,
+        active.scope,
+        transactionDigest,
+        'SHUTDOWN',
+      )
       try {
         const prestate = await this.runStage('prestate', context, bounded =>
           active.registration.driver.capturePrestate(bounded))
@@ -1566,7 +1711,14 @@ export class ModelLifecycleRuntime extends Service {
     let stoppedVerified = false
     let unloadVerified = false
     try {
-      context = this.stageContext(expected.registration, expected.target, request, expected.scope, transactionDigest)
+      context = this.stageContext(
+        expected.registration,
+        expected.target,
+        request,
+        expected.scope,
+        transactionDigest,
+        'IDLE_UNLOAD',
+      )
       const prestate = await this.runStage('prestate', context, bounded =>
         expected.registration.driver.capturePrestate(bounded))
       assertStageReceipt('prestate', prestate, context)

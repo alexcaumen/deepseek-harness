@@ -79,8 +79,8 @@ async function boot(
     inject: ['llm', 'modelLifecycle'],
     apply(context: Context) {
       context.llm.registerAdapter(['fixture-local'], new FixtureAdapter())
+      context.modelLifecycle.installResources(fixtureResources())
       context.modelLifecycle.installAuthority({
-        resources: fixtureResources(),
         classifyProvider: provider => provider === 'fixture-local' ? 'GOVERNED_LOCAL' : 'UNMANAGED_EXTERNAL',
         resolve: (request) => {
           const scope = { workId: 'fixture-work', principalId: 'fixture-user', tenantId: 'fixture-tenant',

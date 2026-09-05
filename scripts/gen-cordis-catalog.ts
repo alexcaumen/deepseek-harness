@@ -253,6 +253,7 @@ export const LINK_MAP: Readonly<Record<string, string>> = {
   AcquireModelRouteRequest: 'llm-streaming.md',
   ModelComputePreference: 'llm-streaming.md',
   ModelLifecycleAuthority: 'llm-streaming.md',
+  ResourceLeaseProvider: 'llm-streaming.md',
   ModelLifecycleDriver: 'llm-streaming.md',
   ModelLifecycleSnapshot: 'llm-streaming.md',
   ModelRouteLease: 'llm-streaming.md',

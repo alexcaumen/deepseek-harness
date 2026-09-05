@@ -915,6 +915,14 @@ currentPreference(): ModelComputePreference
 installAuthority(authority: ModelLifecycleAuthority): () => void
 
 /**
+ * Install the sole deployment-owned shared resource lease provider without
+ * granting it route classification, scope resolution, or audit authority.
+ * @param resources - Verified external resource lease mechanics.
+ * @returns A release function for orderly plugin disposal.
+ */
+installResources(resources: ResourceLeaseProvider): () => void
+
+/**
  * Register one immutable route/driver pair for the lifetime of its owner.
  * @param route - Externally admitted route identity and target manifest.
  * @param driver - Host-specific resource and process mechanism.

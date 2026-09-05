@@ -1108,6 +1108,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'A release function for orderly plugin disposal.',
       },
       {
+        signature: 'installResources(resources: ResourceLeaseProvider): () => void',
+        description: 'Install the sole deployment-owned shared resource lease provider without granting it route classification, scope resolution, or audit authority.',
+        parameters: [{ name: 'resources', description: 'Verified external resource lease mechanics.' }],
+        returns: 'A release function for orderly plugin disposal.',
+      },
+      {
         signature: 'register(route: GovernedModelRoute, driver: ModelLifecycleDriver): () => Promise<void>',
         description: 'Register one immutable route/driver pair for the lifetime of its owner.',
         parameters: [{ name: 'route', description: 'Externally admitted route identity and target manifest.' }, { name: 'driver', description: 'Host-specific resource and process mechanism.' }],
@@ -3893,7 +3899,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ModelLifecycleAuthority',
-    declaration: 'export interface ModelLifecycleAuthority {\n    readonly resources?: ResourceLeaseProvider;\n    classifyProvider(provider: string): ModelProviderClassification;\n    resolve(request: AcquireModelRouteRequest): Promise<ModelRouteResolution> | ModelRouteResolution;\n    record(record: ModelLifecycleAuditRecord): Promise<void>;\n}',
+    declaration: 'export interface ModelLifecycleAuthority {\n    classifyProvider(provider: string): ModelProviderClassification;\n    resolve(request: AcquireModelRouteRequest, signal: AbortSignal): Promise<ModelRouteResolution> | ModelRouteResolution;\n    record(record: ModelLifecycleAuditRecord, signal: AbortSignal): Promise<void>;\n}',
   },
   {
     name: 'ModelLifecycleDriver',
@@ -3917,11 +3923,15 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ModelLifecycleStageContext',
-    declaration: 'export interface ModelLifecycleStageContext {\n    readonly route: GovernedModelRoute;\n    readonly target: ModelComputeTarget;\n    readonly scope: ModelExecutionScope;\n    readonly transactionDigest: string;\n    readonly resourceLease: ResourceLeaseGrant;\n    readonly deadlineAt: number;\n    readonly signal?: AbortSignal;\n}',
+    declaration: 'export interface ModelLifecycleStageContext {\n    readonly route: GovernedModelRoute;\n    readonly target: ModelComputeTarget;\n    readonly scope: ModelExecutionScope;\n    readonly transactionKind: ModelLifecycleTransactionKind;\n    readonly transactionDigest: string;\n    readonly resourceLease: ResourceLeaseGrant;\n    readonly deadlineAt: number;\n    readonly signal: AbortSignal;\n}',
   },
   {
     name: 'ModelLifecycleStageReceipt',
     declaration: 'export interface ModelLifecycleStageReceipt {\n    readonly stage: ModelLifecycleStage;\n    readonly routeId: string;\n    readonly target: ModelComputeTarget;\n    readonly revisionDigest: string;\n    readonly scopeDigest: string;\n    readonly transactionDigest: string;\n    readonly fencingDigest: string;\n    readonly digest: string;\n}',
+  },
+  {
+    name: 'ModelLifecycleTransactionKind',
+    declaration: 'export type ModelLifecycleTransactionKind = \'MODEL_ROUTE\' | \'IDLE_UNLOAD\' | \'SHUTDOWN\';',
   },
   {
     name: 'ModelMessageSource',

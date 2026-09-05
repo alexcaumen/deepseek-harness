@@ -78,6 +78,9 @@ export interface ResourceLeaseProvider {
   release(grant: ResourceLeaseGrant, outcome: 'SETTLED' | 'UNCERTAIN', signal: AbortSignal): Promise<void>
 }
 
+/** Observe the actual settlement of one provider call, including late results. */
+export type ResourceLeaseOperationObserver = (operation: Promise<unknown>) => void
+
 /** Sanitized failure without provider messages, causes, references, or digests. */
 export class ResourceLeaseError extends Error {
   constructor(readonly code: 'RESOURCE_LEASE_UNAVAILABLE' | 'RESOURCE_LEASE_LOST') {
@@ -144,9 +147,11 @@ function boundedCall<T>(
   code: ResourceLeaseError['code'],
   signal?: AbortSignal,
   onLateValue?: (value: T) => Promise<void>,
+  observe?: ResourceLeaseOperationObserver,
 ): Promise<T> {
-  const controller = new AbortController()
   const error = new ResourceLeaseError(code)
+  if (signal?.aborted === true) return Promise.reject(error)
+  const controller = new AbortController()
   const deadline = Date.now() + timeoutMs
   return new Promise<T>((resolve, reject) => {
     let settled = false
@@ -166,7 +171,9 @@ function boundedCall<T>(
     // Both late resolutions and rejections remain observed after local timeout.
     void Promise.resolve().then(() => {
       if (settled) throw error
-      return operation(controller.signal)
+      const actual = Promise.resolve().then(() => operation(controller.signal))
+      observe?.(actual)
+      return actual
     }).then(async (value) => {
       if (Date.now() >= deadline) cancel()
       if (settled) {
@@ -185,9 +192,17 @@ async function releaseBestEffort(
   grant: ResourceLeaseGrant,
   outcome: 'SETTLED' | 'UNCERTAIN',
   timeoutMs: number,
+  observe?: ResourceLeaseOperationObserver,
 ): Promise<void> {
   try {
-    await boundedCall(signal => provider.release(copyGrant(grant), outcome, signal), timeoutMs, 'RESOURCE_LEASE_LOST')
+    await boundedCall(
+      signal => provider.release(copyGrant(grant), outcome, signal),
+      timeoutMs,
+      'RESOURCE_LEASE_LOST',
+      undefined,
+      undefined,
+      observe,
+    )
   } catch {
     // Release failures and timeouts are contained; remote cleanup is unproven.
   }
@@ -204,12 +219,14 @@ export class ResourceLeaseSession {
   private renewalTimer: ReturnType<typeof setTimeout> | undefined
   private expiryTimer: ReturnType<typeof setTimeout> | undefined
   private renewal: Promise<void> | undefined
+  private renewalMayBeInFlight = false
   private closing: Promise<void> | undefined
 
   private constructor(
     private readonly provider: ResourceLeaseProvider,
     private grant: ResourceLeaseGrant,
     private readonly operationTimeoutMs: number,
+    private readonly observe?: ResourceLeaseOperationObserver,
   ) {
     this.schedule()
   }
@@ -219,12 +236,16 @@ export class ResourceLeaseSession {
    * @param provider - External authorization and lease mechanics adapter.
    * @param targets - Exact nonempty, duplicate-free coverage required locally.
    * @param operationTimeoutMs - Positive timer-safe bound for each provider call.
+   * @param signal - Optional caller cancellation propagated to acquisition.
+   * @param observe - Optional observer for the provider call's actual settlement.
    * @returns An immutable-grant session, or a sanitized UNAVAILABLE rejection.
    */
   static async acquire(
     provider: ResourceLeaseProvider,
     targets: readonly ResourceLeaseTarget[],
     operationTimeoutMs: number,
+    signal?: AbortSignal,
+    observe?: ResourceLeaseOperationObserver,
   ): Promise<ResourceLeaseSession> {
     if (!validTargets(targets) || !timerSafe(operationTimeoutMs)) {
       throw new ResourceLeaseError('RESOURCE_LEASE_UNAVAILABLE')
@@ -234,17 +255,18 @@ export class ResourceLeaseSession {
       signal => provider.acquire(request, signal),
       operationTimeoutMs,
       'RESOURCE_LEASE_UNAVAILABLE',
-      undefined,
-      late => releaseBestEffort(provider, late, 'UNCERTAIN', operationTimeoutMs),
+      signal,
+      late => releaseBestEffort(provider, late, 'UNCERTAIN', operationTimeoutMs, observe),
+      observe,
     )
     try {
       const grant = validateGrant(value, request.targets)
-      const session = new ResourceLeaseSession(provider, grant, operationTimeoutMs)
+      const session = new ResourceLeaseSession(provider, grant, operationTimeoutMs, observe)
       session.current()
       return session
     } catch {
       // An unusable acquisition result can still own a remote reservation.
-      await releaseBestEffort(provider, value, 'UNCERTAIN', operationTimeoutMs)
+      await releaseBestEffort(provider, value, 'UNCERTAIN', operationTimeoutMs, observe)
       throw new ResourceLeaseError('RESOURCE_LEASE_UNAVAILABLE')
     }
   }
@@ -271,10 +293,12 @@ export class ResourceLeaseSession {
    */
   close(outcome: 'SETTLED' | 'UNCERTAIN'): Promise<void> {
     if (this.closing !== undefined) return this.closing
-    const releaseOutcome = this.signal.aborted || Date.now() >= this.grant.expiresAt ? 'UNCERTAIN' : outcome
+    const releaseOutcome = this.signal.aborted || Date.now() >= this.grant.expiresAt || this.renewalMayBeInFlight
+      ? 'UNCERTAIN'
+      : outcome
     this.closing = Promise.resolve().then(async () => {
       await this.renewal
-      await releaseBestEffort(this.provider, this.grant, releaseOutcome, this.operationTimeoutMs)
+      await releaseBestEffort(this.provider, this.grant, releaseOutcome, this.operationTimeoutMs, this.observe)
     })
     this.lose()
     return this.closing
@@ -289,6 +313,7 @@ export class ResourceLeaseSession {
   private schedule(): void {
     clearTimeout(this.renewalTimer)
     clearTimeout(this.expiryTimer)
+    this.renewalMayBeInFlight = false
     const remaining = this.grant.expiresAt - Date.now()
     if (!timerSafe(remaining) || remaining <= this.grant.renewAfterMs) {
       this.lose()
@@ -296,6 +321,7 @@ export class ResourceLeaseSession {
     }
     this.expiryTimer = setTimeout(() => { this.lose() }, Math.ceil(remaining))
     this.renewalTimer = setTimeout(() => {
+      this.renewalMayBeInFlight = true
       this.renewal = this.renew()
     }, Math.ceil(this.grant.renewAfterMs))
   }
@@ -308,6 +334,14 @@ export class ResourceLeaseSession {
         this.operationTimeoutMs,
         'RESOURCE_LEASE_LOST',
         this.signal,
+        late => releaseBestEffort(
+          this.provider,
+          late,
+          'UNCERTAIN',
+          this.operationTimeoutMs,
+          this.observe,
+        ),
+        this.observe,
       )
       this.current()
       this.grant = validateGrant(value, previous.targets, previous)

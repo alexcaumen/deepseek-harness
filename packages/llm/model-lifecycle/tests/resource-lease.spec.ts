@@ -49,8 +49,9 @@ async function acquire(
   adapter: ResourceLeaseProvider,
   targets: readonly ResourceLeaseTarget[] = ['r5300', 'ram-cpu'],
   timeoutMs = TIMEOUT,
+  signal?: AbortSignal,
 ): Promise<ResourceLeaseSession> {
-  const session = await ResourceLeaseSession.acquire(adapter, targets, timeoutMs)
+  const session = await ResourceLeaseSession.acquire(adapter, targets, timeoutMs, signal)
   sessions.push(session)
   return session
 }
@@ -78,6 +79,20 @@ afterEach(async () => {
 })
 
 describe('staging resource lease consumer', () => {
+  it('does not invoke the provider when acquisition is already cancelled', async () => {
+    const adapter = provider()
+    const controller = new AbortController()
+    controller.abort(new Error('cancelled-before-acquire'))
+
+    await expect(ResourceLeaseSession.acquire(
+      adapter,
+      ['r5300', 'ram-cpu'],
+      TIMEOUT,
+      controller.signal,
+    )).rejects.toMatchObject({ code: 'RESOURCE_LEASE_UNAVAILABLE' })
+    expect(adapter.acquire).not.toHaveBeenCalled()
+  })
+
   it('freezes detached grants and requests, renews at provider intervals, and replaces the expiry watchdog', async () => {
     const targets: ResourceLeaseTarget[] = ['r5300', 'ram-cpu']
     const original = { ...grant(), targets: [...targets] }
@@ -137,10 +152,12 @@ describe('staging resource lease consumer', () => {
     expect(vi.getTimerCount()).toBe(0)
     await session.close('SETTLED')
     expect(adapter.release).toHaveBeenCalledWith(accepted, 'UNCERTAIN', expect.any(AbortSignal))
-    pending.resolve(grant({ expiresAt: START + 5_000, receiptDigest: digest('c') }))
+    const late = grant({ expiresAt: START + 5_000, receiptDigest: digest('c') })
+    pending.resolve(late)
     await vi.advanceTimersByTimeAsync(0)
     expectLost(session)
-    expect(adapter.release).toHaveBeenCalledTimes(1)
+    expect(adapter.release).toHaveBeenCalledTimes(2)
+    expect(adapter.release).toHaveBeenLastCalledWith(late, 'UNCERTAIN', expect.any(AbortSignal))
     expect(adapter.renew).toHaveBeenCalledTimes(1)
   })
 
@@ -237,7 +254,7 @@ describe('staging resource lease consumer', () => {
     expectLost(session)
   })
 
-  it('closes once, cancels renewal, awaits release and ignores a late renewal result', async () => {
+  it('closes once and releases a late renewal result as uncertain', async () => {
     const renewal = deferred<ResourceLeaseGrant>()
     const release = deferred<undefined>()
     const adapter = provider()
@@ -254,16 +271,18 @@ describe('staging resource lease consumer', () => {
     expect(adapter.renew.mock.calls[0]![1].aborted).toBe(true)
     await vi.advanceTimersByTimeAsync(0)
     expect(done).toBe(false)
-    expect(adapter.release).toHaveBeenCalledWith(accepted, 'SETTLED', expect.any(AbortSignal))
+    expect(adapter.release).toHaveBeenCalledWith(accepted, 'UNCERTAIN', expect.any(AbortSignal))
     expect(vi.getTimerCount()).toBe(1)
-    renewal.resolve(grant({ expiresAt: START + 2_000, receiptDigest: digest('c') }))
+    const renewed = grant({ expiresAt: START + 2_000, receiptDigest: digest('c') })
+    renewal.resolve(renewed)
     await vi.advanceTimersByTimeAsync(0)
     release.resolve(undefined)
     await closing
     expect(done).toBe(true)
     await vi.advanceTimersByTimeAsync(2_000)
     expect(adapter.renew).toHaveBeenCalledTimes(1)
-    expect(adapter.release).toHaveBeenCalledTimes(1)
+    expect(adapter.release).toHaveBeenCalledTimes(2)
+    expect(adapter.release).toHaveBeenLastCalledWith(renewed, 'UNCERTAIN', expect.any(AbortSignal))
     expect(vi.getTimerCount()).toBe(0)
   })
 
@@ -419,6 +438,25 @@ describe('staging resource lease consumer', () => {
     release.reject(new Error('private-late-release-error'))
     await vi.advanceTimersByTimeAsync(0)
     expect(adapter.release).toHaveBeenCalledTimes(1)
+  })
+
+  it('forwards caller cancellation and releases a late grant as uncertain', async () => {
+    const pending = deferred<ResourceLeaseGrant>()
+    const adapter = provider()
+    const controller = new AbortController()
+    adapter.acquire.mockReturnValue(pending.promise)
+    const acquiring = expect(acquire(adapter, undefined, TIMEOUT, controller.signal))
+      .rejects.toEqual(new ResourceLeaseError('RESOURCE_LEASE_UNAVAILABLE'))
+    await vi.advanceTimersByTimeAsync(0)
+
+    controller.abort(new Error('private-caller-reason'))
+    await acquiring
+    expect(adapter.acquire.mock.calls[0]![1].aborted).toBe(true)
+
+    const late = grant()
+    pending.resolve(late)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(adapter.release).toHaveBeenCalledWith(late, 'UNCERTAIN', expect.any(AbortSignal))
   })
 
   it('contains a late acquisition rejection', async () => {

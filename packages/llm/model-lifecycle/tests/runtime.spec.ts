@@ -18,6 +18,7 @@ import type {
   ModelLifecycleStageContext,
   ModelLifecycleStageReceipt,
   ModelRouteResolution,
+  ResourceLeaseGrant,
   ResourceLeaseProvider,
 } from '../src/index.ts'
 
@@ -163,14 +164,21 @@ function driver(log: string[], options: DriverOptions = {}): ModelLifecycleDrive
   }
 }
 
-type Resolver = (request: AcquireModelRouteRequest) => ModelRouteResolution | Promise<ModelRouteResolution>
+type Resolver = (
+  request: AcquireModelRouteRequest,
+  signal: AbortSignal,
+) => ModelRouteResolution | Promise<ModelRouteResolution>
 
-function installAuthority(ctx: Context, resolver: Resolver, resources: ResourceLeaseProvider = fixtureResources()) {
+function installAuthority(
+  ctx: Context,
+  resolver: Resolver,
+  resources: ResourceLeaseProvider | undefined = fixtureResources(),
+) {
   const records: ModelLifecycleAuditRecord[] = []
   const resolve = vi.fn(resolver)
   const record = vi.fn(async (entry: ModelLifecycleAuditRecord) => { records.push(entry) })
+  if (resources !== undefined) ctx.modelLifecycle.installResources(resources)
   ctx.modelLifecycle.installAuthority({
-    resources,
     classifyProvider: provider => provider === 'local' ? 'GOVERNED_LOCAL' : 'UNMANAGED_EXTERNAL',
     resolve,
     record,
@@ -263,6 +271,64 @@ describe('governed local-model lifecycle', () => {
     await expect(ctx.modelLifecycle.acquireRoute({ selection: qwen.selection }))
       .rejects.toMatchObject({ code: 'RESOURCE_LEASE_UNAVAILABLE' })
     expect(log).toEqual([])
+  })
+
+  it('installs shared resource mechanics without granting route authority', async () => {
+    const ctx = await lifecycle()
+    const log: string[] = []
+    const admitted = route('qwen', 'qwen', ['r5300'])
+    const unregister = ctx.modelLifecycle.register(admitted, driver(log))
+    const releaseResources = ctx.modelLifecycle.installResources(fixtureResources())
+    ctx.modelLifecycle.installAuthority({
+      classifyProvider: provider => provider === 'local' ? 'GOVERNED_LOCAL' : 'UNMANAGED_EXTERNAL',
+      resolve: request => ({
+        kind: 'GOVERNED',
+        route: admitted,
+        scope: executionScope({ sessionId: request.sessionId ?? 'session-1' }),
+      }),
+      record: () => Promise.resolve(),
+    })
+
+    const lease = await ctx.modelLifecycle.acquireRoute({
+      selection: admitted.selection,
+      sessionId: 'session-1',
+    })
+
+    expect(lease.managed).toBe(true)
+    expect(log).toEqual([
+      'preflight:qwen:r5300',
+      'prestate:qwen:r5300',
+      'start:qwen:r5300',
+      'health:qwen:r5300',
+      'probe:qwen:r5300',
+    ])
+    await lease.release()
+    await unregister()
+    releaseResources()
+  })
+
+  it('rejects duplicate resource ownership', async () => {
+    const ctx = await lifecycle()
+    const resources = fixtureResources()
+    const releaseResources = ctx.modelLifecycle.installResources(resources)
+
+    expect(() => ctx.modelLifecycle.installResources(resources)).toThrow('resources are already installed')
+    releaseResources()
+  })
+
+  it('keeps dedicated resources installed while a registered route can use them', async () => {
+    const ctx = await lifecycle()
+    const resources = fixtureResources()
+    const releaseResources = ctx.modelLifecycle.installResources(resources)
+    const unregister = ctx.modelLifecycle.register(
+      route('qwen', 'qwen', ['r5300']),
+      driver([]),
+    )
+
+    expect(() => { releaseResources() }).toThrow('resources remain in use')
+
+    await unregister()
+    expect(() => { releaseResources() }).not.toThrow()
   })
 
   it('waits for provider arbitration across two app contexts and retains ownership until idle unload', async () => {
@@ -585,7 +651,7 @@ describe('governed local-model lifecycle', () => {
     }
     await expect(ctx.modelLifecycle.acquireRoute(governedRequest)).rejects.toMatchObject({ code: 'ROUTE_HELD' })
     expect(authority.resolve).toHaveBeenCalledOnce()
-    expect(authority.resolve).toHaveBeenCalledWith(governedRequest)
+    expect(authority.resolve).toHaveBeenCalledWith(governedRequest, expect.any(AbortSignal))
     expect(log).toEqual([])
     expect(authority.records).toEqual([])
     expect(ctx.modelLifecycle.snapshot()).toEqual({ phase: 'IDLE' })
@@ -649,12 +715,13 @@ describe('governed local-model lifecycle', () => {
 
     const lease = await ctx.modelLifecycle.acquireRoute(request)
 
-    expect(authority.resolve).toHaveBeenCalledWith(request)
+    expect(authority.resolve).toHaveBeenCalledWith(request, expect.any(AbortSignal))
     expect(seen.map(entry => entry.stage)).toEqual(['preflight', 'prestate', 'start', 'health', 'probe'])
     expect(seen.every(entry => entry.context.scope !== exactScope)).toBe(true)
     expect(seen.every(entry => Object.isFrozen(entry.context.scope))).toBe(true)
     expect(seen.every(entry => JSON.stringify(entry.context.scope) === JSON.stringify(exactScope))).toBe(true)
     expect(seen.every(entry => entry.context.scope.sessionId === request.sessionId)).toBe(true)
+    expect(seen.every(entry => entry.context.transactionKind === 'MODEL_ROUTE')).toBe(true)
     expect(new Set(seen.map(entry => entry.context.transactionDigest)).size).toBe(1)
     await lease.release()
     expect(authority.records[0]?.scopeDigest).toBe(exactScope.digest)
@@ -848,17 +915,42 @@ describe('governed local-model lifecycle', () => {
     expect(manualLog).toEqual(['preflight:glm:r5300'])
   })
 
+  it('settles shared resources after a clean no-capacity result before activation', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const admitted = route('qwen', 'qwen', ['r5300'])
+    const resources = fixtureResources()
+    const release = vi.spyOn(resources, 'release')
+    ctx.modelLifecycle.register(admitted, driver([], { capacity: { r5300: false } }))
+    installAuthority(ctx, () => ({
+      kind: 'GOVERNED',
+      route: admitted,
+      scope: executionScope(),
+    }), resources)
+
+    await expect(ctx.modelLifecycle.acquireRoute({ selection: admitted.selection }))
+      .rejects.toMatchObject({ code: 'NO_CAPACITY' })
+
+    expect(release).toHaveBeenCalledTimes(1)
+    expect(release.mock.calls[0]?.[1]).toBe('SETTLED')
+    expect(ctx.modelLifecycle.snapshot()).toEqual({ phase: 'IDLE' })
+  })
+
   it('orders preflight, capture, drain, stop, verification, start, health, and probe', async () => {
     const ctx = await lifecycle()
     const qwen = route('qwen', 'qwen', ['r5300'])
     const glm = route('glm', 'glm', ['r5300'])
     const log: string[] = []
-    ctx.modelLifecycle.register(qwen, driver(log))
-    ctx.modelLifecycle.register(glm, driver(log))
+    const scopes: ModelExecutionScope[] = []
+    const observe = (_stage: ModelLifecycleStage, context: ModelLifecycleStageContext) => {
+      scopes.push(context.scope)
+    }
+    ctx.modelLifecycle.register(qwen, driver(log, { observe }))
+    ctx.modelLifecycle.register(glm, driver(log, { observe }))
     installRouteAuthority(ctx, [qwen, glm])
 
     const first = await ctx.modelLifecycle.acquireRoute({
       selection: { provider: 'local', model: 'qwen' },
+      sessionId: 'session-1',
     })
     expect(log).toEqual([
       'preflight:qwen:r5300',
@@ -869,9 +961,11 @@ describe('governed local-model lifecycle', () => {
     ])
     await first.release()
     log.length = 0
+    scopes.length = 0
 
     const second = await ctx.modelLifecycle.acquireRoute({
       selection: { provider: 'local', model: 'glm' },
+      sessionId: 'session-2',
     })
     expect(log).toEqual([
       'preflight:glm:r5300',
@@ -883,6 +977,8 @@ describe('governed local-model lifecycle', () => {
       'health:glm:r5300',
       'probe:glm:r5300',
     ])
+    expect(new Set(scopes.map(scope => scope.digest)).size).toBe(1)
+    expect(scopes.every(scope => scope.sessionId === 'session-2')).toBe(true)
     expect(ctx.modelLifecycle.snapshot()).toMatchObject({
       phase: 'IN_USE', active: { routeId: 'glm', target: 'r5300' },
     })
@@ -927,17 +1023,27 @@ describe('governed local-model lifecycle', () => {
     const startQwen = route('qwen', 'qwen', ['r5300'])
     const startGlm = route('glm', 'glm', ['r5300'])
     const startLog: string[] = []
-    startContext.modelLifecycle.register(startQwen, driver(startLog))
-    startContext.modelLifecycle.register(startGlm, driver(startLog, { failStage: 'start' }))
+    const startScopes: ModelExecutionScope[] = []
+    const observeStart = (_stage: ModelLifecycleStage, context: ModelLifecycleStageContext) => {
+      startScopes.push(context.scope)
+    }
+    startContext.modelLifecycle.register(startQwen, driver(startLog, { observe: observeStart }))
+    startContext.modelLifecycle.register(startGlm, driver(startLog, {
+      failStage: 'start',
+      observe: observeStart,
+    }))
     const startAuthority = installRouteAuthority(startContext, [startQwen, startGlm])
     const startLease = await startContext.modelLifecycle.acquireRoute({
       selection: { provider: 'local', model: 'qwen' },
+      sessionId: 'session-1',
     })
     await startLease.release()
     startLog.length = 0
+    startScopes.length = 0
 
     await expect(startContext.modelLifecycle.acquireRoute({
       selection: { provider: 'local', model: 'glm' },
+      sessionId: 'session-2',
     })).rejects.toMatchObject({ code: 'START_FAILED' })
     expect(startLog).toEqual([
       'preflight:glm:r5300',
@@ -952,6 +1058,8 @@ describe('governed local-model lifecycle', () => {
       'health:qwen:r5300',
       'probe:qwen:r5300',
     ])
+    expect(new Set(startScopes.map(scope => scope.digest)).size).toBe(1)
+    expect(startScopes.every(scope => scope.sessionId === 'session-2')).toBe(true)
     expect(startContext.modelLifecycle.snapshot()).toMatchObject({
       phase: 'FAILED_ROLLED_BACK', active: { routeId: 'qwen' },
     })
@@ -1221,8 +1329,8 @@ describe('governed local-model lifecycle', () => {
     const records: ModelLifecycleAuditRecord[] = []
     let adapterRequests = 0
     ctx.modelLifecycle.register(qwen, driver(log))
+    ctx.modelLifecycle.installResources(fixtureResources())
     ctx.modelLifecycle.installAuthority({
-      resources: fixtureResources(),
       classifyProvider: provider => provider === 'local' ? 'GOVERNED_LOCAL' : 'UNMANAGED_EXTERNAL',
       resolve: request => ({
         kind: 'GOVERNED',
@@ -1652,8 +1760,8 @@ describe('governed local-model lifecycle', () => {
     const log: string[] = []
     ctx.modelLifecycle.register(admitted, driver(log))
     const attempts: ModelLifecycleAuditRecord[] = []
+    ctx.modelLifecycle.installResources(fixtureResources())
     ctx.modelLifecycle.installAuthority({
-      resources: fixtureResources(),
       classifyProvider: provider => provider === 'local' ? 'GOVERNED_LOCAL' : 'UNMANAGED_EXTERNAL',
       resolve: () => ({ kind: 'GOVERNED', route: admitted, scope: executionScope() }),
       record: async (entry) => {
@@ -1682,9 +1790,13 @@ describe('governed local-model lifecycle', () => {
     const admitted = route('qwen', 'qwen', ['r5300'])
     ctx.modelLifecycle.register(admitted, driver([]))
     let attempt = 0
-    installAuthority(ctx, (request) => {
+    let firstSignal: AbortSignal | undefined
+    installAuthority(ctx, (request, signal) => {
       attempt += 1
-      if (attempt === 1) return new Promise<ModelRouteResolution>(() => {})
+      if (attempt === 1) {
+        firstSignal = signal
+        return new Promise<ModelRouteResolution>(() => {})
+      }
       return {
         kind: 'GOVERNED',
         route: admitted,
@@ -1699,6 +1811,7 @@ describe('governed local-model lifecycle', () => {
     await vi.advanceTimersByTimeAsync(50)
 
     expect(await first).toMatchObject({ code: 'GOVERNANCE_UNAVAILABLE' })
+    expect(firstSignal?.aborted).toBe(true)
     expect(ctx.modelLifecycle.snapshot()).toEqual({ phase: 'IDLE' })
     const second = await ctx.modelLifecycle.acquireRoute({
       sessionId: 'session-2', selection: { provider: 'local', model: 'qwen' },
@@ -1707,21 +1820,114 @@ describe('governed local-model lifecycle', () => {
     await second.release()
   })
 
+  it('keeps authority installed until a timed-out resolver actually settles', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-04T00:00:00.000Z'))
+    const ctx = await lifecycle({ stageTimeoutMs: 50 })
+    const admitted = route('qwen', 'qwen', ['r5300'])
+    const unregister = ctx.modelLifecycle.register(admitted, driver([]))
+    let settle!: () => void
+    const resolution = new Promise<ModelRouteResolution>((resolve) => {
+      settle = () => {
+        resolve({
+          kind: 'GOVERNED',
+          route: admitted,
+          scope: executionScope({ sessionId: 'session-1' }),
+        })
+      }
+    })
+    const releaseAuthority = ctx.modelLifecycle.installAuthority({
+      classifyProvider: provider => provider === 'local' ? 'GOVERNED_LOCAL' : 'UNMANAGED_EXTERNAL',
+      resolve: () => resolution,
+      record: () => Promise.resolve(),
+    })
+    const result = ctx.modelLifecycle.acquireRoute({
+      sessionId: 'session-1', selection: admitted.selection,
+    }).then(() => undefined, (error: unknown) => error)
+    await flushMicrotasks()
+    await vi.advanceTimersByTimeAsync(50)
+
+    expect(await result).toMatchObject({ code: 'GOVERNANCE_UNAVAILABLE' })
+    await unregister()
+    expect(() => { releaseAuthority() }).toThrow('authority remains in use')
+
+    settle()
+    await flushMicrotasks()
+    expect(() => { releaseAuthority() }).not.toThrow()
+  })
+
+  it('keeps resources installed until a late timed-out acquisition and cleanup settle', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-04T00:00:00.000Z'))
+    const ctx = await lifecycle({ stageTimeoutMs: 50 })
+    const admitted = route('qwen', 'qwen', ['r5300'])
+    const unregister = ctx.modelLifecycle.register(admitted, driver([]))
+    const base = fixtureResources()
+    let settle!: () => void
+    const release = vi.fn((
+      grant: ResourceLeaseGrant,
+      outcome: 'SETTLED' | 'UNCERTAIN',
+      signal: AbortSignal,
+    ) => base.release(grant, outcome, signal))
+    const resources: ResourceLeaseProvider = {
+      ...base,
+      acquire: request => new Promise<ResourceLeaseGrant>((resolve) => {
+        settle = () => { void base.acquire(request, new AbortController().signal).then(resolve) }
+      }),
+      release,
+    }
+    const releaseResources = ctx.modelLifecycle.installResources(resources)
+    ctx.modelLifecycle.installAuthority({
+      classifyProvider: provider => provider === 'local' ? 'GOVERNED_LOCAL' : 'UNMANAGED_EXTERNAL',
+      resolve: request => ({
+        kind: 'GOVERNED', route: admitted,
+        scope: executionScope({ sessionId: request.sessionId ?? 'session-1' }),
+      }),
+      record: () => Promise.resolve(),
+    })
+    const result = ctx.modelLifecycle.acquireRoute({
+      sessionId: 'session-1', selection: admitted.selection,
+    }).then(() => undefined, (error: unknown) => error)
+    await flushMicrotasks()
+    await vi.advanceTimersByTimeAsync(50)
+
+    expect(await result).toMatchObject({ code: 'RESOURCE_LEASE_UNAVAILABLE' })
+    await unregister()
+    expect(() => { releaseResources() }).toThrow('resources remain in use')
+
+    settle()
+    await flushMicrotasks()
+    expect(release).toHaveBeenCalledWith(
+      expect.objectContaining({ targets: ['r5300'] }),
+      'UNCERTAIN',
+      expect.any(AbortSignal),
+    )
+    expect(() => { releaseResources() }).not.toThrow()
+  })
+
   it('bounds READY audit persistence, preserves TAINTED, and releases the lifecycle queue', async () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-09-04T00:00:00.000Z'))
     const ctx = await lifecycle({ stageTimeoutMs: 50 })
     const admitted = route('qwen', 'qwen', ['r5300'])
     const log: string[] = []
+    let auditSignal: AbortSignal | undefined
+    let settleAudit!: () => void
+    const pendingAudit = new Promise<void>((resolve) => { settleAudit = resolve })
+    const auditRecords: ModelLifecycleAuditRecord[] = []
     ctx.modelLifecycle.register(admitted, driver(log))
+    ctx.modelLifecycle.installResources(fixtureResources())
     ctx.modelLifecycle.installAuthority({
-      resources: fixtureResources(),
       classifyProvider: provider => provider === 'local' ? 'GOVERNED_LOCAL' : 'UNMANAGED_EXTERNAL',
       resolve: request => ({
         kind: 'GOVERNED', route: admitted,
         scope: executionScope({ sessionId: request.sessionId ?? 'session-1' }),
       }),
-      record: () => new Promise<void>(() => {}),
+      record: (record, signal) => {
+        auditRecords.push(record)
+        auditSignal = signal
+        return auditRecords.length === 1 ? pendingAudit : Promise.resolve()
+      },
     })
     const result = ctx.modelLifecycle.acquireRoute({
       sessionId: 'session-1', selection: { provider: 'local', model: 'qwen' },
@@ -1731,11 +1937,100 @@ describe('governed local-model lifecycle', () => {
     await vi.advanceTimersByTimeAsync(50)
 
     expect(await result).toMatchObject({ code: 'AUDIT_FAILED' })
-    expect(ctx.modelLifecycle.snapshot()).toEqual({ phase: 'TAINTED' })
-    expect(log.slice(-2)).toEqual(['stop:qwen:r5300', 'verify-stopped:qwen:r5300'])
+    expect(auditSignal?.aborted).toBe(true)
+    expect(ctx.modelLifecycle.snapshot()).toMatchObject({
+      phase: 'TAINTED',
+      active: { routeId: 'qwen', target: 'r5300' },
+    })
+    expect(log).not.toContain('stop:qwen:r5300')
+    expect(auditRecords.map(record => record.outcome)).toEqual(['READY'])
+    settleAudit()
+    await flushMicrotasks()
+    expect(auditRecords.map(record => record.outcome)).toEqual(['READY', 'TAINTED'])
+    expect(auditRecords[1]).toMatchObject({
+      transactionDigest: auditRecords[0]!.transactionDigest,
+      routeId: 'qwen',
+      errorCode: 'AUDIT_FAILED',
+    })
     await expect(ctx.modelLifecycle.acquireRoute({
       sessionId: 'session-2', selection: { provider: 'local', model: 'qwen' },
     })).rejects.toMatchObject({ code: 'RUNTIME_TAINTED' })
+  })
+
+  it('rolls back after a definite READY audit rejection and attempts a TAINTED record', async () => {
+    const ctx = await lifecycle()
+    const admitted = route('qwen', 'qwen', ['r5300'])
+    const log: string[] = []
+    const auditRecords: ModelLifecycleAuditRecord[] = []
+    ctx.modelLifecycle.register(admitted, driver(log))
+    ctx.modelLifecycle.installResources(fixtureResources())
+    ctx.modelLifecycle.installAuthority({
+      classifyProvider: provider => provider === 'local' ? 'GOVERNED_LOCAL' : 'UNMANAGED_EXTERNAL',
+      resolve: request => ({
+        kind: 'GOVERNED', route: admitted,
+        scope: executionScope({ sessionId: request.sessionId ?? 'session-1' }),
+      }),
+      record: (record) => {
+        auditRecords.push(record)
+        return auditRecords.length === 1
+          ? Promise.reject(new Error('audit-rejected'))
+          : Promise.resolve()
+      },
+    })
+
+    await expect(ctx.modelLifecycle.acquireRoute({
+      sessionId: 'session-1', selection: admitted.selection,
+    })).rejects.toMatchObject({ code: 'AUDIT_FAILED' })
+
+    expect(log.slice(-2)).toEqual(['stop:qwen:r5300', 'verify-stopped:qwen:r5300'])
+    expect(ctx.modelLifecycle.snapshot()).toEqual({ phase: 'TAINTED' })
+    expect(auditRecords.map(record => record.outcome)).toEqual(['READY', 'TAINTED'])
+    expect(auditRecords[1]).toMatchObject({
+      transactionDigest: auditRecords[0]!.transactionDigest,
+      routeId: 'qwen',
+      errorCode: 'AUDIT_FAILED',
+    })
+  })
+
+  it('attempts a bounded TAINTED compensation after a timed-out READY audit rejects late', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-04T00:00:00.000Z'))
+    const ctx = await lifecycle({ stageTimeoutMs: 50 })
+    const admitted = route('qwen', 'qwen', ['r5300'])
+    let rejectAudit!: (reason: unknown) => void
+    const pendingAudit = new Promise<void>((_resolve, reject) => { rejectAudit = reject })
+    const auditRecords: ModelLifecycleAuditRecord[] = []
+    const auditSignals: AbortSignal[] = []
+    ctx.modelLifecycle.register(admitted, driver([]))
+    ctx.modelLifecycle.installResources(fixtureResources())
+    ctx.modelLifecycle.installAuthority({
+      classifyProvider: provider => provider === 'local' ? 'GOVERNED_LOCAL' : 'UNMANAGED_EXTERNAL',
+      resolve: request => ({
+        kind: 'GOVERNED', route: admitted,
+        scope: executionScope({ sessionId: request.sessionId ?? 'session-1' }),
+      }),
+      record: (record, signal) => {
+        auditRecords.push(record)
+        auditSignals.push(signal)
+        return auditRecords.length === 1 ? pendingAudit : new Promise<void>(() => {})
+      },
+    })
+    const result = ctx.modelLifecycle.acquireRoute({
+      sessionId: 'session-1', selection: admitted.selection,
+    }).then(() => undefined, (error: unknown) => error)
+    await flushMicrotasks()
+    await vi.advanceTimersByTimeAsync(50)
+
+    expect(await result).toMatchObject({ code: 'AUDIT_FAILED' })
+    rejectAudit(new Error('late-audit-rejection'))
+    await flushMicrotasks()
+    expect(auditRecords.map(record => record.outcome)).toEqual(['READY', 'TAINTED'])
+    await vi.advanceTimersByTimeAsync(50)
+    expect(auditSignals[1]?.aborted).toBe(true)
+    expect(ctx.modelLifecycle.snapshot()).toMatchObject({
+      phase: 'TAINTED',
+      active: { routeId: 'qwen', target: 'r5300' },
+    })
   })
 
   it('cancels a host stage at its explicit deadline and records a typed rejection', async () => {
@@ -1900,7 +2195,10 @@ describe('governed local-model lifecycle', () => {
     const runtime = ctx.modelLifecycle
     const admitted = route('qwen', 'qwen', ['r5300'])
     const log: string[] = []
-    ctx.modelLifecycle.register(admitted, driver(log))
+    const kinds: string[] = []
+    ctx.modelLifecycle.register(admitted, driver(log, {
+      observe: (_stage, context) => { kinds.push(context.transactionKind) },
+    }))
     installRouteAuthority(ctx, [admitted])
     const lease = await ctx.modelLifecycle.acquireRoute({
       selection: { provider: 'local', model: 'qwen' },
@@ -1912,6 +2210,7 @@ describe('governed local-model lifecycle', () => {
     expect(log).toEqual([])
 
     await lease.release()
+    kinds.length = 0
     await disposed
     contexts.splice(contexts.indexOf(ctx), 1)
 
@@ -1920,6 +2219,7 @@ describe('governed local-model lifecycle', () => {
       'stop:qwen:r5300',
       'verify-stopped:qwen:r5300',
     ])
+    expect(kinds).toEqual(['SHUTDOWN', 'SHUTDOWN', 'SHUTDOWN'])
     expect(runtime.snapshot()).toEqual({ phase: 'IDLE' })
   })
 
@@ -1929,7 +2229,10 @@ describe('governed local-model lifecycle', () => {
     const ctx = await lifecycle({ minimumDwellMs: 1_000, idleUnloadMs: 200 })
     const admitted = route('qwen', 'qwen', ['r5300'])
     const log: string[] = []
-    ctx.modelLifecycle.register(admitted, driver(log))
+    const kinds: string[] = []
+    ctx.modelLifecycle.register(admitted, driver(log, {
+      observe: (_stage, context) => { kinds.push(context.transactionKind) },
+    }))
     const authority = installRouteAuthority(ctx, [admitted])
     const lease = await ctx.modelLifecycle.acquireRoute({
       selection: { provider: 'local', model: 'qwen' },
@@ -1939,6 +2242,7 @@ describe('governed local-model lifecycle', () => {
     expect(ctx.modelLifecycle.snapshot().phase).toBe('IN_USE')
     await lease.release()
     log.length = 0
+    kinds.length = 0
 
     await vi.advanceTimersByTimeAsync(99)
     expect(ctx.modelLifecycle.snapshot()).toMatchObject({ phase: 'READY', active: { routeId: 'qwen' } })
@@ -1955,6 +2259,7 @@ describe('governed local-model lifecycle', () => {
       'stop:qwen:r5300',
       'verify-stopped:qwen:r5300',
     ])
+    expect(kinds).toEqual(['IDLE_UNLOAD', 'IDLE_UNLOAD', 'IDLE_UNLOAD'])
     expect(ctx.modelLifecycle.snapshot()).toEqual({ phase: 'IDLE' })
     expect(authority.records.at(-1)).toMatchObject({
       routeId: 'qwen', target: 'r5300', outcome: 'IDLE_UNLOADED',

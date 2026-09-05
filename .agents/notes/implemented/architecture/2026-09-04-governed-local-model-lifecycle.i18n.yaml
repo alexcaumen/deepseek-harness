@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-09-04-governed-local-model-lifecycle.md
-2026-09-04-governed-local-model-lifecycle.md: 26aa195d9ca02f93cef88ae41e6d6c11fc91465e
-2026-09-04-governed-local-model-lifecycle.zh.md: 572d22a7e35910c28f48c42edfbf9fa52f6068df
+2026-09-04-governed-local-model-lifecycle.md: 4f2b75fcc3b399fa457ea8b76f726b585828bdc2
+2026-09-04-governed-local-model-lifecycle.zh.md: 65a7aa17e2714914c429c31ed4f8125a6829a044
