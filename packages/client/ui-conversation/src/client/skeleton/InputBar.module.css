@@ -457,16 +457,17 @@
   gap: 1px;
   flex: 1 1 auto;
   min-width: 0;
-  height: 22px;
+  height: 36px;
   overflow: hidden;
 }
 
 .dictationBar {
-  width: 100%;
+  width: min(100%, 3px);
+  justify-self: center;
   height: 100%;
   min-width: 1px;
   border-radius: 999px;
-  background: var(--dsw-alias-state-error-primary);
+  background: var(--dsw-alias-dictation-waveform);
   opacity: 0.88;
   transform: scaleY(var(--dictation-amplitude, 0.08));
   transform-origin: center;

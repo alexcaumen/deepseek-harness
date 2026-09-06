@@ -179,6 +179,8 @@ The selected catalog model receives `GenerateOptions.system`, history, tools, an
 
 Provider tokenization governs exact input. Retained images add the stable attachment and coordinate descriptor; the offload placeholder replaces an omitted image's visual tokens. Replay metadata may let a native API reuse provider-side state.
 
+The adapter and SDK bound output by the estimated remaining context, retaining a one-token floor at saturation. The repository's pinned pi-ai patch reserves `min(4096, max(64, floor(contextWindow / 8)))` tokens for estimation uncertainty; windows of 32,768 tokens or more retain the 4,096-token reserve. Declared context capacity and caller output ceilings remain unchanged; an omitted output cap uses the model's `maxTokens`. See the [patch decision](../../../.agents/notes/implemented/bug-fix/2026-09-06-pi-ai-small-context-reserve.md).
+
 #### KV Cache effect
 
 Conversion preserves logical request order without adding text, while the selected provider's serialization and replay state determine reuse. Changing adapter instance, provider, model, or any upstream request token may prevent reuse from the first difference. Crossing the image bound rewrites an early message (the newly offloaded image becomes placeholder text), so reuse ends at that message until the offloaded prefix stabilizes.

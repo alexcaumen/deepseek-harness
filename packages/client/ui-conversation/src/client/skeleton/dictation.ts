@@ -13,6 +13,7 @@ export interface GianaWindowsRuntimeRoutes {
 
 export interface GianaWindowsRuntimeGlobal {
   readonly __GIANA_WINDOWS_RUNTIME__?: GianaWindowsRuntimeRoutes
+  readonly __GIANA_DESKTOP__?: { readonly speechTranscriptionUrl?: string }
   readonly location?: { readonly origin?: string }
 }
 
@@ -29,6 +30,7 @@ export function resolveIndonesianTranscriptionUrl(
   try {
     discovered = runtime?.resolveRoute?.(INDONESIAN_TRANSCRIPTION_ROUTE)
       ?? runtime?.routes?.[INDONESIAN_TRANSCRIPTION_ROUTE]
+      ?? runtimeGlobal.__GIANA_DESKTOP__?.speechTranscriptionUrl
   } catch {
     return LOCAL_INDONESIAN_TRANSCRIPTION_URL
   }

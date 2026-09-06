@@ -180,6 +180,8 @@ pi-ai 会安装多个提供方 SDK，并延迟加载 catalog 模型所选的 SDK
 
 精确输入取决于提供方 tokenization。保留图片会增加稳定的附件与坐标描述；offload 占位文本替代被省略图片的视觉 token。回放元数据可能让原生 API 复用提供方侧状态。
 
+适配器和 SDK 按估算的剩余上下文限制输出，在饱和时保留一个 token 的下限。仓库固定版本的 pi-ai 补丁为估算误差预留 `min(4096, max(64, floor(contextWindow / 8)))` 个 token；32,768 token 及以上的窗口保留 4,096 token 的预留量。声明的上下文容量和调用方输出上限保持不变；省略输出上限时使用模型的 `maxTokens`。参见[补丁决策](../../../.agents/notes/implemented/bug-fix/2026-09-06-pi-ai-small-context-reserve.zh.md)。
+
 #### KV Cache 影响
 
 转换保留逻辑请求顺序，不添加文本；复用取决于所选提供方的序列化与回放状态。更改适配器实例、提供方、模型或任何上游请求 token，都可能使复用从首个出现差异的 token 起失效。跨过图片上限会改写较早的一条消息（新被 offload 的图片变为占位文本），复用在该消息处截止，直到被 offload 的前缀稳定。

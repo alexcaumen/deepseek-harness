@@ -26,6 +26,8 @@ import type { CodeSdkLanguage } from './code-mode.ts'
 import { renderToolsSdk } from './ts-types.ts'
 import type { ToolSdkSchema } from './ts-types.ts'
 import { renderToolsSdkPy } from './py-types.ts'
+import { installOnDemandTools } from './on-demand.ts'
+import type { OnDemandConfig } from './on-demand.ts'
 
 /**
  * Language → SDK-section renderer. The registry looks up the loaded
@@ -671,6 +673,8 @@ export interface Config {
    * restores strictly serial dispatch. Must be a positive integer.
    */
   maxParallelSubCalls?: number
+  /** Opt-in native schema discovery for selected providers; all tools remain registered. */
+  onDemand?: OnDemandConfig
 }
 
 /**
@@ -790,6 +794,12 @@ export class ToolRuntime extends Service {
   static Config: z<Config> = z.object({
     mode: z.union(['native', 'code', 'both'] as const).default('native'),
     maxParallelSubCalls: z.natural().min(1).default(10),
+    onDemand: z.object({
+      providers: z.array(z.string()),
+      alwaysAvailable: z.array(z.string()),
+      maxSearchResults: z.natural().min(1),
+      maxActiveTools: z.natural().min(1),
+    }).default(undefined as unknown as OnDemandConfig),
   })
 
   /** Internal staged view consumed by `dsh-agent-loop`'s parallel scheduler. */
@@ -815,6 +825,7 @@ export class ToolRuntime extends Service {
   /** Presentation for scopes that declare none; {@link presentAs} shadows it per scope. */
   private readonly defaultMode: ToolPresentationMode
   private readonly maxParallelSubCalls: number
+  private readonly projectRequestSchemas: ReturnType<typeof installOnDemandTools> | undefined
   /**
    * Reserved presentation transport, kept outside the filterable registration
    * layers. Built on first need rather than at construction: which agents run
@@ -829,11 +840,22 @@ export class ToolRuntime extends Service {
     // optional-input type for direct (non-Loader) construction in tests.
     this.defaultMode = config.mode ?? 'native'
     this.maxParallelSubCalls = resolveMaxParallelSubCalls(config.maxParallelSubCalls)
+    this.projectRequestSchemas = config.onDemand === undefined ? undefined
+      : installOnDemandTools(ctx, this, config.onDemand, context => this.modeFor(context.scope))
     ctx.systemPrompt.tools(context => this.wireSchemas(context.scope))
     if (this.defaultMode !== 'native') {
       ctx.systemPrompt.section(this.collapseSection())
       ctx.systemPrompt.section(this.sdkSection())
     }
+  }
+
+  /**
+   * Project assembled schemas for the resolved provider, after route selection
+   * and before the caller freezes/logs its request header. Registration and
+   * execution permissions are unchanged; no opt-in returns the original schemas.
+   */
+  schemasForRequest(schemas: ToolSchema[], agent: Agent, provider: string): ToolSchema[] {
+    return this.projectRequestSchemas?.(schemas, agent, provider) ?? schemas
   }
 
   /**

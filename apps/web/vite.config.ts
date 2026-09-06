@@ -8,7 +8,7 @@ const src = (rel: string): string => fileURLToPath(new URL(rel, import.meta.url)
 const STANDALONE_ERROR = 'apps/web is not a standalone application: bare Vite cannot inject window.__DSH_BOOT__. '
   + 'From a repository checkout, run `pnpm dsh web`; an installed package uses `dsh web`. '
   + 'For client-plugin HMR, run `pnpm dsh web` together with `pnpm run dev:web`.'
-const DEFAULT_CLIENT_TITLE = 'Giana CoWork'
+const DEFAULT_CLIENT_TITLE = 'Giana CoWork Preview'
 
 /** Escape build-time text before placing it in the HTML title element. */
 function escapeHtmlText(value: string): string {
@@ -21,7 +21,7 @@ function clientDocumentTitle(): Plugin {
   return {
     name: 'dsh-client-document-title',
     transformIndexHtml(html) {
-      return html.replace('<title>Giana CoWork</title>', `<title>${title}</title>`)
+      return html.replace(`<title>${DEFAULT_CLIENT_TITLE}</title>`, `<title>${title}</title>`)
     },
   }
 }
@@ -101,7 +101,7 @@ const FONT_EXTENSIONS: readonly string[] = ['.woff2', '.woff', '.ttf']
 function npmPackageOf(id: string): string | undefined {
   const parts = id.split('/node_modules/')
   if (parts.length === 1) return undefined
-  const [first, second] = parts[parts.length - 1].split('/')
+  const [first = '', second] = parts[parts.length - 1]!.split('/')
   if (first.startsWith('.')) return undefined // .pnpm store segment, not a package
   if (first.startsWith('@')) return second === undefined ? undefined : `${first}/${second}`
   return first

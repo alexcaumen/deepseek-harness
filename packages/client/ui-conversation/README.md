@@ -48,7 +48,11 @@ A finished turn materializes one ordered `turn-tail` Conversation Node. Its engi
 
 Submitted reference chips and their surrounding literal text share one inline flow. Annotation badges wrap only with available width or authored newlines; display layout never rewrites the stored annotation payload, source offsets, or user text.
 
-The empty-session headline shows the Giana CoWork brand mark and name without a Preview badge. This presentation does not imply release or production acceptance.
+The empty-session headline shows the 96px user-provided Giana CoWork mark and a visible Preview designation in both locales. At content widths of 320px or less, the logo, name and Preview line stack without shrinking the logo. Product identity follows the [GCP branding glossary](../ui-brand-official/README.md); this presentation does not imply release or production acceptance.
+
+## Dictation Presentation
+
+The recording waveform uses a theme-owned gold token with a fixed 36px track and slender bars. Quiet input receives display-only amplitude compression; silence stays at the floor and peak height is capped. The 72-sample history traverses the track in seven seconds. This does not change the recorded audio, STT endpoint, cancellation, or reduced-motion behavior. The empty-session brand mark occupies a 96px slot. Visual component verification does not establish speech-service availability or packaged-application acceptance.
 
 ## Model Experience
 

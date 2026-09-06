@@ -28,10 +28,10 @@ exports[`sidebar shell snapshots > renders the collapsed rail after the crossfad
             <img
               alt=""
               aria-hidden="true"
-              height="24"
+              height="32"
               src="/giana-cowork-logo.png"
               style="object-fit: contain;"
-              width="24"
+              width="32"
             />
           </div>
         </span>
@@ -123,10 +123,10 @@ exports[`sidebar shell snapshots > renders the expanded column (wordmark, capsul
               <img
                 alt=""
                 aria-hidden="true"
-                height="48"
+                height="64"
                 src="/giana-cowork-logo.png"
                 style="object-fit: contain;"
-                width="48"
+                width="64"
               />
             </div>
           </span>
@@ -138,9 +138,23 @@ exports[`sidebar shell snapshots > renders the expanded column (wordmark, capsul
               style="display: contents;"
             >
               <span
-                class="fallbackBrandName"
+                aria-label="Giana CoWork Preview"
+                style="display: inline-flex; align-items: center; gap: 8px; min-width: 0px; min-height: 40px; text-align: left;"
               >
-                Giana CoWork
+                <span
+                  style="display: flex; flex-direction: column; align-items: flex-start; min-width: 0px;"
+                >
+                  <span
+                    style="font-size: 17px; font-weight: 650; line-height: 1.2; overflow-wrap: anywhere;"
+                  >
+                    Giana CoWork
+                  </span>
+                  <span
+                    style="font-size: 12px; font-weight: 500; line-height: 16px;"
+                  >
+                    Preview
+                  </span>
+                </span>
               </span>
               <span
                 class="buildRevision"
@@ -249,10 +263,10 @@ exports[`sidebar shell snapshots > renders the expanded column in the default lo
               <img
                 alt=""
                 aria-hidden="true"
-                height="48"
+                height="64"
                 src="/giana-cowork-logo.png"
                 style="object-fit: contain;"
-                width="48"
+                width="64"
               />
             </div>
           </span>
@@ -264,9 +278,23 @@ exports[`sidebar shell snapshots > renders the expanded column in the default lo
               style="display: contents;"
             >
               <span
-                class="fallbackBrandName"
+                aria-label="Giana CoWork Preview"
+                style="display: inline-flex; align-items: center; gap: 8px; min-width: 0px; min-height: 40px; text-align: left;"
               >
-                Giana CoWork
+                <span
+                  style="display: flex; flex-direction: column; align-items: flex-start; min-width: 0px;"
+                >
+                  <span
+                    style="font-size: 17px; font-weight: 650; line-height: 1.2; overflow-wrap: anywhere;"
+                  >
+                    Giana CoWork
+                  </span>
+                  <span
+                    style="font-size: 12px; font-weight: 500; line-height: 16px;"
+                  >
+                    Preview
+                  </span>
+                </span>
               </span>
               <span
                 class="buildRevision"

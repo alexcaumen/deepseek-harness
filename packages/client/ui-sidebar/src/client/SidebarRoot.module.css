@@ -93,7 +93,7 @@
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  height: 60px;
+  height: 80px;
   padding: 8px 0 8px 4px;
   margin-bottom: 8px;
   box-sizing: border-box;
@@ -130,7 +130,7 @@
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  height: 48px;
+  height: 64px;
   min-width: 0;
 }
 
@@ -143,20 +143,15 @@
 
 .brandName {
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
   min-width: 0;
-  height: 24px;
+  min-height: 40px;
   font-size: 18px;
   font-weight: 600;
   line-height: 24px;
-  letter-spacing: 0.04em;
-}
-
-.fallbackBrandName {
-  font-size: 17px;
-  letter-spacing: 0px;
-  white-space: nowrap;
+  letter-spacing: 0;
 }
 
 .iconButton {

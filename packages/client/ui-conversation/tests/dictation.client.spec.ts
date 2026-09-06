@@ -8,6 +8,38 @@ import {
 } from '../src/client/skeleton/dictation.ts'
 
 describe('Indonesian dictation runtime route', () => {
+  it('accepts the desktop-owned speech port without changing the shared default', () => {
+    expect(resolveIndonesianTranscriptionUrl({ __GIANA_DESKTOP__: { speechTranscriptionUrl: 'http://127.0.0.1:17402/v1/stt/transcribe' } })).toBe('http://127.0.0.1:17402/v1/stt/transcribe')
+  })
+  it('uses the desktop route only when runtime discovery and configuration are absent', () => {
+    const desktop = { speechTranscriptionUrl: 'http://127.0.0.1:17402/v1/stt/transcribe' }
+    const configured = 'http://127.0.0.1:19000/configured'
+    const discovered = 'http://127.0.0.1:18444/discovered'
+    expect(resolveIndonesianTranscriptionUrl({
+      __GIANA_DESKTOP__: desktop,
+      __GIANA_WINDOWS_RUNTIME__: { resolveRoute: () => discovered, routes: { [INDONESIAN_TRANSCRIPTION_ROUTE]: configured } },
+    })).toBe(discovered)
+    expect(resolveIndonesianTranscriptionUrl({
+      __GIANA_DESKTOP__: desktop,
+      __GIANA_WINDOWS_RUNTIME__: { resolveRoute: () => undefined, routes: { [INDONESIAN_TRANSCRIPTION_ROUTE]: configured } },
+    })).toBe(configured)
+    expect(resolveIndonesianTranscriptionUrl({
+      __GIANA_DESKTOP__: desktop,
+      __GIANA_WINDOWS_RUNTIME__: { resolveRoute: () => undefined, routes: {} },
+    })).toBe(desktop.speechTranscriptionUrl)
+    expect(resolveIndonesianTranscriptionUrl({ __GIANA_DESKTOP__: {} })).toBe(LOCAL_INDONESIAN_TRANSCRIPTION_URL)
+    expect(LOCAL_INDONESIAN_TRANSCRIPTION_URL).toBe('http://127.0.0.1:17302/v1/stt/transcribe')
+  })
+
+  it.each([
+    'https://token:secret@example.test/transcribe',
+    'file:///private/transcribe',
+    'http://127.0.0.1:65536/v1/stt/transcribe',
+  ])('validates desktop-injected routes before use: %s', (speechTranscriptionUrl) => {
+    expect(resolveIndonesianTranscriptionUrl({ __GIANA_DESKTOP__: { speechTranscriptionUrl } }))
+      .toBe(LOCAL_INDONESIAN_TRANSCRIPTION_URL)
+  })
+
   it('prefers typed runtime discovery, then static configuration', () => {
     const resolveRoute = vi.fn(() => 'http://127.0.0.1:18444/speech/id')
     expect(resolveIndonesianTranscriptionUrl({

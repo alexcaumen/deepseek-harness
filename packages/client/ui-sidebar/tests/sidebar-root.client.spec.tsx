@@ -104,6 +104,11 @@ describe('SidebarRoot shell', () => {
     />)
 
     expect(screen.getByText('Giana CoWork')).toBeTruthy()
+    expect(screen.getByText('Preview')).toBeTruthy()
+    expect(screen.getByLabelText('Giana CoWork Preview')).toBeTruthy()
+    expect(container.querySelector('img')?.getAttribute('width')).toBe('64')
+    expect(container.querySelector('img')?.getAttribute('height')).toBe('64')
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('/giana-cowork-logo.png')
     expect(screen.getByText('0123456')).toBeTruthy()
     expect(container.querySelector('svg')).not.toBeNull()
   })

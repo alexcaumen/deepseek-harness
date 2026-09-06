@@ -2,6 +2,8 @@
 
 English | [中文](README.zh.md)
 
+`BrandWordmark` renders Giana CoWork with a visible Preview line and the accessible name Giana CoWork Preview. `includeMark={false}` omits only the image; Preview remains visible. `FishLogo` retains its upstream symbol name and renders the existing user-provided `/giana-cowork-logo.png` at the requested square size.
+
 Pure React atoms (zero cordis): StateDot, DisclosureRow, ic_ds_* icons, Button/Pill/Menu/Modal/Input, the Toast transient banner, the OnboardingSurface first-run takeover (body-portaled mask + opaque stage that holds `#root` inert for exactly its own lifetime), the markdown family (MessageText/MarkdownText/JsonBlock), the read-only JsonTree inspector, the `useAnchoredMaxHeight` hook that clamps a bottom-anchored overlay to the viewport space above its anchor (re-measured on resize, scroll, and a caller-supplied dependency), the `useAnchoredPosition` hook that holds a fixed-position floating panel under its anchor (measure, offset, clamp inside the viewport margin, re-placed on capture-phase scroll, window resize, and the panel's own size changes), TerminalBlock, DiffBlock, ReadBlock, SearchBlock, and WebBlock.
 
 ## Hover cards

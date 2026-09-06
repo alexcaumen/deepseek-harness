@@ -7,7 +7,7 @@ type OfficialBrandMarkProps = HeroBrandMarkOwnerProps & SidebarBrandMarkOwnerPro
 /**
  * Render the official mark with the presentation requested by its host surface.
  * @param props - Host-supplied mark presentation.
- * @returns the official Giana OS mark.
+ * @returns the user-provided GCP mark (the build profile does not imply GCW ownership).
  */
 export function OfficialBrandMark({ size, className }: OfficialBrandMarkProps) {
   return <FishLogo size={size} className={className} />

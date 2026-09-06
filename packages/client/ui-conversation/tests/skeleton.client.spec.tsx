@@ -278,20 +278,24 @@ function mount(
 }
 
 describe('Hero chrome', () => {
-  it('renders the Giana CoWork title and brand mark without a preview badge', () => {
+  it.each([en, zh])('renders the GCP name, visible Preview designation and enlarged mark', (locale) => {
     const renderSlot = vi.fn<HeroShellProps['renderSlot']>(() => null)
-    const view = render(<HeroShell t={makeTranslate(en, commonEn)} renderSlot={renderSlot} />)
+    const view = render(<HeroShell t={makeTranslate(locale, commonEn)} renderSlot={renderSlot} />)
     expect(view.getByText('Giana CoWork')).toBeTruthy()
-    expect(view.queryByText('Preview')).toBeNull()
+    expect(view.getByText('Preview')).toBeTruthy()
     expect(renderSlot).toHaveBeenCalledOnce()
     expect(renderSlot.mock.calls[0]?.[0]).toBe('conversation.hero.brand.mark')
     const brandMarkOwner = renderSlot.mock.calls[0]?.[1]
     if (brandMarkOwner === undefined || !('size' in brandMarkOwner) || !('className' in brandMarkOwner)) {
       throw new Error('hero brand-mark owner must provide size and className')
     }
-    expect(brandMarkOwner.size).toBe(68)
+    expect(brandMarkOwner.size).toBe(96)
     expect(brandMarkOwner.className).toBeTypeOf('string')
     expect(renderSlot.mock.calls[0]?.[2]?.fallback).toBeTruthy()
+    const fallback = render(renderSlot.mock.calls[0]?.[2]?.fallback)
+    expect(fallback.container.querySelector('img')?.getAttribute('width')).toBe('96')
+    expect(fallback.container.querySelector('img')?.getAttribute('height')).toBe('96')
+    expect(fallback.container.querySelector('img')?.getAttribute('src')).toBe('/giana-cowork-logo.png')
   })
 })
 

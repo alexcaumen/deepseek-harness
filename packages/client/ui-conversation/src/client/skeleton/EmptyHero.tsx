@@ -121,11 +121,12 @@ export function HeroShell({ t, renderSlot, children }: HeroShellProps) {
         <div className={css.headline}>
           {/* Giana mark is intentionally prominent on the empty-session hero. */}
           <span className={css.fishHitbox}>
-            {renderSlot('conversation.hero.brand.mark', { size: 68, className: css.fish }, {
-              fallback: <FishLogo size={68} className={css.fish} />,
+            {renderSlot('conversation.hero.brand.mark', { size: 96, className: css.fish }, {
+              fallback: <FishLogo size={96} className={css.fish} />,
             })}
           </span>
           <span className={css.headlineText}>{t('hero.headline')}</span>
+          <span className={css.preview}>{t('hero.preview')}</span>
         </div>
         <div className={css.body}>
           {/* The resident composer (ConversationRoot's root-owned scrollport;

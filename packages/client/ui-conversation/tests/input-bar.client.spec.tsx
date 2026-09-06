@@ -582,6 +582,71 @@ describe('automatic-language dictation', () => {
     }
   })
 
+  it.each(['success', 'network-error', 'http-error', 'invalid-response', 'empty-result'] as const)(
+    'reports only fixed diagnostic fields for %s through the desktop speech port', async (outcome) => {
+      const speechTranscriptionUrl = 'http://127.0.0.1:17402/v1/stt/transcribe'
+      const privateTranscript = 'private transcript sentinel'
+      const privateError = `private fetch error sentinel ${speechTranscriptionUrl}?token=private-token`
+      const privateDraft = 'private draft sentinel'
+      const reportDictation = vi.fn<(record: Record<string, unknown>) => void>()
+      vi.stubGlobal('__GIANA_WINDOWS_RUNTIME__', undefined)
+      vi.stubGlobal('__GIANA_DESKTOP__', { speechTranscriptionUrl, reportDictation })
+      const stopTrack = vi.fn()
+      installMediaDevices(() => Promise.resolve({ getTracks: () => [{ stop: stopTrack }] } as unknown as MediaStream))
+      vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+      const transcription = deferred<Response>()
+      const fetchMock = vi.fn<(input: URL | RequestInfo, init?: RequestInit) => Promise<Response>>(() => transcription.promise)
+      vi.stubGlobal('fetch', fetchMock)
+
+      const result = bench({ draft: privateDraft })
+      const microphone = result.view.getByRole('button', { name: '开始自动语言听写' })
+      fireEvent.click(microphone)
+      await vi.waitFor(() => { expect(microphone.getAttribute('aria-pressed')).toBe('true') })
+      expect(reportDictation).not.toHaveBeenCalled()
+      fireEvent.click(microphone)
+      expect(fetchMock).toHaveBeenCalledExactlyOnceWith(speechTranscriptionUrl, expect.objectContaining({
+        method: 'POST', body: expect.any(FormData), signal: expect.any(AbortSignal),
+      }))
+      expect(reportDictation).not.toHaveBeenCalled()
+
+      await act(async () => {
+        if (outcome === 'network-error') transcription.reject(new TypeError(privateError))
+        else transcription.resolve({
+          ok: outcome !== 'http-error',
+          status: outcome === 'http-error' ? 503 : 200,
+          json: () => outcome === 'invalid-response'
+            ? Promise.reject(new SyntaxError(privateError))
+            : Promise.resolve({ text: outcome === 'empty-result' ? '  ' : privateTranscript, detail: privateError }),
+        } as Response)
+        await transcription.promise.catch(() => {})
+      })
+
+      expect(reportDictation).toHaveBeenCalledExactlyOnceWith({
+        kind: 'dictation', route: 'speech.transcribe', outcome,
+        at: expect.any(String), elapsedMs: expect.any(Number),
+        ...(outcome === 'network-error' ? {} : { httpStatus: outcome === 'http-error' ? 503 : 200 }),
+      })
+      const record = reportDictation.mock.calls[0]![0]
+      expect(record.at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+      expect(Number.isInteger(record.elapsedMs)).toBe(true)
+      expect(record.elapsedMs).toBeGreaterThanOrEqual(0)
+      expect(record.elapsedMs).toBeLessThanOrEqual(3_600_000)
+      for (const privateValue of [privateTranscript, privateError, privateDraft, speechTranscriptionUrl]) {
+        expect(JSON.stringify(record)).not.toContain(privateValue)
+      }
+      expect(stopTrack).toHaveBeenCalledOnce()
+      expect(result.sink).not.toHaveBeenCalled()
+      if (outcome === 'success') {
+        expect(result.shell.snapshot.draft).toBe(`${privateDraft} ${privateTranscript}`)
+        expect(result.view.getByRole('status').getAttribute('data-dictation-state')).toBe('review')
+      } else {
+        expect(result.shell.snapshot.draft).toBe(privateDraft)
+        expect(result.view.getByRole('alert').getAttribute('data-dictation-state')).toBe('error')
+        expect(result.view.getByRole('button', { name: '重试' })).toBeTruthy()
+      }
+    },
+  )
+
   it('lets the arrow stop, transcribe, and steer the active turn in one gesture', async () => {
     const stopTrack = vi.fn()
     installMediaDevices(() => Promise.resolve({
@@ -709,6 +774,25 @@ describe('automatic-language dictation', () => {
     expect(audio.analyser.disconnect).toHaveBeenCalledOnce()
     expect(audio.contexts[0]?.close).toHaveBeenCalledOnce()
     expect(stopTrack).toHaveBeenCalledOnce()
+  })
+
+  it('makes quiet speech visible while leaving silence at the waveform floor', async () => {
+    const frames = installAnimationFrames()
+    let reads = 0
+    installAudioContext((values) => { values.fill(reads++ === 0 ? 132 : 128) })
+    installMediaDevices(() => Promise.resolve({ getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream))
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+    const result = bench()
+    const microphone = result.view.getByRole('button', { name: '开始自动语言听写' })
+    fireEvent.click(microphone)
+    await vi.waitFor(() => { expect(microphone.getAttribute('aria-pressed')).toBe('true') })
+    const bars = result.view.container.querySelectorAll<HTMLElement>('[data-waveform-bar]')
+    act(() => { frames.step(16) })
+    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.331')
+    act(() => { frames.step(120) })
+    expect(bars[70]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.331')
+    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.080')
+    fireEvent.keyDown(result.textarea, { key: 'Escape' })
   })
 
   it('uses the same deterministic waveform fallback after cancellation and restart', async () => {

@@ -474,11 +474,12 @@ export class ReactLoopAgent implements Agent {
     }
     signal.throwIfAborted()
 
+    const requestTools = this.loopCtx.tools.schemasForRequest(tools, this, config.provider)
     const header = canonicalHeader({
       config,
       ...preparedCall === undefined ? {} : { adapterDefaults: preparedCall.adapterDefaults },
       ...system ? { system } : {},
-      ...tools.length > 0 ? { tools } : {},
+      ...requestTools.length > 0 ? { tools: requestTools } : {},
     })
     const baseline = this.session.requestHeader()
     if (!this.requestHeaderLogged) {

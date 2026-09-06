@@ -68,6 +68,10 @@ const LAYOUT_CHILDREN = {
 
 async function bench(nodes: ToolResultNode[]) {
   const runtime = await SlotTestRuntime.create()
+  runtime.provide('inputTriggers', {
+    registerSource: () => () => {},
+    sessionOf: () => undefined as never,
+  })
   runtime.provide('connection', {
     api: { settings: {} },
     isLoopback: false,

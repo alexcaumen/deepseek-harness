@@ -22,6 +22,9 @@
   // this client-registered project must not also hold them (one program
   // cannot see both sides of the cordis Context merges).
   "exclude": [
+    // Source-import branding checks belong to the non-emitting client aggregate.
+    "tests/branding-layout.spec.ts",
+    "tests/branding.spec.ts",
     "tests/scaffold.ts",
     "tests/scaffold-hermetic.e2e.ts",
     "tests/startup-rpc-budget.e2e.ts",

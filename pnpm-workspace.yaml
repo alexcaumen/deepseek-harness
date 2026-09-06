@@ -70,5 +70,6 @@ minimumReleaseAgeExclude:
   - dsh-better-sidebar@0.15.2
 
 patchedDependencies:
+  '@earendil-works/pi-ai@0.82.1': patches/@earendil-works__pi-ai@0.82.1.patch
   dsh-better-sidebar@0.15.2: patches/dsh-better-sidebar@0.15.2.patch
   node-pty@1.2.0-beta.15: patches/node-pty@1.2.0-beta.15.patch

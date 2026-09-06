@@ -5,6 +5,9 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto'
+export { ServerManagerStdioTransport, ServerManagerTransportError } from './stdio-transport.ts'
+export type { ServerManagerStdioOptions } from './stdio-transport.ts'
+export { installServerManagerLifecycle } from './install.ts'
 import {
   ResourceLeaseError,
   ResourceLeaseHolderRef,
@@ -57,7 +60,7 @@ export interface ServerManagerTargetIdentity {
 /** Exact admitted deployment binding; no field is inferred by this gateway. */
 export interface ServerManagerAdapterOptions {
   readonly transport: ServerManagerTransport
-  readonly targets: Readonly<Record<ResourceLeaseTarget, ServerManagerTargetIdentity>>
+  readonly targets: Readonly<Partial<Record<ResourceLeaseTarget, ServerManagerTargetIdentity>>>
   readonly issuerRef: string
   readonly holderRef: string
   readonly admissionDigest: string
@@ -224,7 +227,7 @@ function sameTargets(left: readonly ResourceLeaseTarget[], right: readonly Resou
  */
 export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider, ModelLifecycleDriver {
   private readonly transport: ServerManagerTransport
-  private readonly targetIdentities: Readonly<Record<ResourceLeaseTarget, ServerManagerTargetIdentity>>
+  private readonly targetIdentities: Readonly<Partial<Record<ResourceLeaseTarget, ServerManagerTargetIdentity>>>
   private readonly issuerRef: string
   private readonly holderRef: string
   private readonly admissionDigest: string
@@ -237,7 +240,8 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
 
   constructor(options: ServerManagerAdapterOptions) {
     this.transport = options.transport
-    this.targetIdentities = options.targets
+    this.targetIdentities = Object.freeze(Object.fromEntries(Object.entries(options.targets)
+      .map(([target, identity]) => [target, Object.freeze({ ...identity })])))
     this.issuerRef = options.issuerRef
     this.holderRef = options.holderRef
     this.admissionDigest = options.admissionDigest
@@ -254,10 +258,10 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
       || !finiteInteger(this.maxClockSkewMs, 0)) {
       throw new ServerManagerAdapterError('CONTRACT_INVALID')
     }
-    for (const target of ['r5300', 'prdg', 'ram-cpu'] as const) {
-      const identities: Partial<Record<ResourceLeaseTarget, ServerManagerTargetIdentity>> = this.targetIdentities
-      const identity = identities[target]
-      if (identity === undefined) throw new ServerManagerAdapterError('CONTRACT_INVALID')
+    const entries = Object.entries(this.targetIdentities)
+    if (entries.length === 0) throw new ServerManagerAdapterError('CONTRACT_INVALID')
+    for (const [target, identity] of entries) {
+      if (!['r5300', 'prdg', 'ram-cpu'].includes(target)) throw new ServerManagerAdapterError('CONTRACT_INVALID')
       assertBareDigest(identity.identityDigest)
       assertBareDigest(identity.currentnessDigest)
     }
@@ -648,6 +652,7 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
 
   private target(target: ResourceLeaseTarget): WireTarget {
     const identity = this.targetIdentities[target]
+    if (identity === undefined) throw new ResourceLeaseError('RESOURCE_LEASE_UNAVAILABLE')
     return Object.freeze({
       class: target,
       identity_digest: identity.identityDigest,

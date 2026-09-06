@@ -338,10 +338,10 @@ describe('Server Manager model lifecycle gateway', () => {
       .rejects.toMatchObject({ code: 'CONTRACT_INVALID' })
   })
 
-  it('sanitizes an incomplete owner target identity configuration', () => {
+  it('sanitizes an incomplete identity for a declared target', () => {
     expect(() => new ServerManagerModelLifecycleAdapter({
       transport: new FixtureTransport(),
-      targets: { r5300: TARGETS.r5300 } as unknown as typeof TARGETS,
+      targets: { r5300: { identityDigest: TARGETS.r5300.identityDigest } } as unknown as typeof TARGETS,
       issuerRef: ISSUER,
       holderRef: HOLDER,
       admissionDigest: ADMISSION,
@@ -349,6 +349,30 @@ describe('Server Manager model lifecycle gateway', () => {
       operationTimeoutMs: 30_000,
       maxClockSkewMs: 1_000,
     })).toThrow(expect.objectContaining({ code: 'CONTRACT_INVALID' }))
+  })
+
+  it('accepts R5300-only admission without inventing PRDG or RAM target identities', async () => {
+    const transport = new FixtureTransport()
+    const gateway = new ServerManagerModelLifecycleAdapter({
+      transport, targets: { r5300: TARGETS.r5300 }, issuerRef: ISSUER, holderRef: HOLDER,
+      admissionDigest: ADMISSION, leaseTtlMs: 60_000, operationTimeoutMs: 30_000,
+      maxClockSkewMs: 1_000, now: () => transport.now,
+    })
+    await expect(gateway.acquire({ targets: ['prdg'] }, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'RESOURCE_LEASE_UNAVAILABLE' })
+    expect(transport.calls).toHaveLength(0)
+    const lease = await gateway.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    expect(lease.targets).toEqual(['r5300'])
+    await gateway.release(lease, 'SETTLED', new AbortController().signal)
+  })
+
+  it('refuses empty or unknown target coverage', () => {
+    for (const targets of [{}, { unknown: TARGETS.r5300 }]) {
+      expect(() => new ServerManagerModelLifecycleAdapter({
+        transport: new FixtureTransport(), targets: targets as unknown as typeof TARGETS, issuerRef: ISSUER, holderRef: HOLDER,
+        admissionDigest: ADMISSION, leaseTtlMs: 60_000, operationTimeoutMs: 30_000, maxClockSkewMs: 1_000,
+      })).toThrow(expect.objectContaining({ code: 'CONTRACT_INVALID' }))
+    }
   })
 
   it('rejects a digest-bound stage receipt bound to another target', async () => {

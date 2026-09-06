@@ -14,6 +14,14 @@ Each lifecycle transaction begins lazily on its first stage, after caller cancel
 
 The adapter forwards caller cancellation to the injected transport and performs no hidden retry. A transport may retry only with the same idempotency key and must reject unknown-commit outcomes. Health decisions preserve `UNHEALTHY` as a typed false result so the lifecycle controller can run its bounded recovery path. Private lease ids, numeric fences, generations and wire payloads never enter the public grant or sanitized adapter error.
 
+## Deployment Connection
+
+`ServerManagerStdioTransport` connects to a deployment-owned executable using bounded JSON-lines frames. Supply an absolute executable, fixed arguments, an explicit environment and `maxOperationMs`. It starts lazily on the first operation, never inherits ambient application credentials, hides the helper window on Windows, and multiplexes responses so lease renewal can continue during model loading. Requests are `{id, operation, envelope}`; responses are `{id, result}` or `{id, error}`. Backend diagnostics never enter transport errors. There is no automatic retry or reconnect. Aborted/timed-out calls retain their response identity until settlement or connection closure; a transport failure does not prove that a remote physical operation stopped. The normal queue is capped by `maxPendingRequests`; renew, release and clean-cancel each reserve one additional bounded slot so lost stage replies cannot starve reconciliation. Await `close()` after lifecycle settlement to reap the transport child.
+
+`installServerManagerLifecycle(runtime, authority, routes, options)` transactionally installs the existing authority, shared lease provider and exact route drivers. Use its async disposer as a Cordis effect, and dispose it before closing the transport. Mounting it makes no resource calls, loads no default model, and does not rewrite settings or sessions. Failed registration unwinds earlier registrations. Failed disposal retains dependencies and unfinished cleanup for a later retry, without replaying completed cleanup. It is not an LLM catalog provider or an identity/admission issuer.
+
+Target identities may cover only the deployed subset, such as R5300 alone. Each declared target must contain valid identity and currentness digests. A request for an undeclared target fails before transport invocation; PRDG/RAM targets are never fabricated merely to fill a configuration shape.
+
 ## Model Experience
 
 ### Governed resource execution
@@ -32,7 +40,8 @@ Independent. This adapter does not rewrite conversation history or model input.
 
 ## Known Limitations and Deferred Work
 
-- **Source-only gateway** - this package includes no admitted transport, endpoint, credential, target identity, route registration, or live Server Manager deployment.
+- **Deployment binding still required** - the stdio transport and composition helper are implemented, but this package ships no admitted executable configuration, credential, target identity, model profile, or live Server Manager deployment.
+- **Single-slot consumer** - the existing lifecycle consumer still serializes one large-model residency. These transport changes alone do not implement adoption of preexisting external residency or capacity-aware multiple resident models.
 - **Owner reconciliation remains external** - `UNCERTAIN`, expired, revoked, or unknown-commit operations require the deployment owner to quarantine and reconcile physical state.
 - **Clock discipline is supplied, not measured** - deployment must provide a current verified maximum skew and reject operation when that evidence is stale.
 - **Execution fencing is owner-enforced** - client validation cannot replace atomic fence enforcement at every physical mutation endpoint.

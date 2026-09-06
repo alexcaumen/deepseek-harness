@@ -1,6 +1,6 @@
 import type { IconProps } from './icons/props.ts'
 
-/** Render the Giana OS mark used by the Giana Code workbench. */
+/** Render the user-provided logo used by Giana CoWork Preview (GCP). */
 export function FishLogo({ size = 24, className }: IconProps) {
   return (
     <img

@@ -147,6 +147,10 @@ async function bench(snapshot: ConversationSnapshot) {
     open: vi.fn(),
   }
   ctx.provide('sessions', sessionsFake)
+  ctx.provide('inputTriggers', {
+    registerSource: () => () => {},
+    sessionOf: () => undefined as never,
+  })
   const workspaces = {
     list: createSnapshotStore<WorkspaceListState>({
       items: [], archivedSessionIds: [], state: 'idle', phase: 'ready', error: null,
@@ -321,6 +325,7 @@ describe('run_code sub-calls through the real chat machinery', () => {
     }
     const b = await bench(snapshotWith([plain], []))
     const view = mountApp(b.slots)
+    expect(view.container.querySelector('[data-tool="mystery"]')).not.toBeNull()
     expect(view.container.querySelector('[data-subcalls]')).toBeNull()
   })
 })

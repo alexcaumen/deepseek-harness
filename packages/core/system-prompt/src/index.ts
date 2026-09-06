@@ -184,7 +184,7 @@ function compareToolNames(a: ToolSchema, b: ToolSchema): number {
 
 /** Plugin config: the deployment-authored fragment of the system prompt (see {@link Config.persona} for its contract). */
 export interface Config {
-  /** Include the fixed Giana CoWork identity before the deployment persona (default true). */
+  /** Include the fixed Giana CoWork Preview identity before the deployment persona (default true). */
   includeHarnessIdentity?: boolean
   /** Include dynamic runtime-context snapshots in model history (default true). */
   includeRuntimeContext?: boolean
@@ -359,7 +359,8 @@ export class SystemPrompt extends Service {
         name: 'harness:identity',
         order: -100,
         text: [
-          'You are an AI agent working through Giana CoWork.',
+          'You are an AI agent working through Giana CoWork Preview (GCP).',
+          'GCP is the temporary NewTech workbench, separate from canonical Giana CoWork (GCW) owned by the Giana CoWork team; it does not own or replace the GianaOS identity runtime.',
           'Refer to the product surface by this name; implementation package names and repository provenance are technical details, not alternate product names.',
           'Keep private chain-of-thought, self-directed planning, and tool narration out of user-visible prose.',
           'Call tools without narrating the next internal step, then provide exactly one concise user-facing final answer after the work is complete.',

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
+import type { Api, Context, Model, SimpleStreamOptions } from '@earendil-works/pi-ai'
+import { buildBaseOptions } from '@earendil-works/pi-ai/api/simple-options'
 
 const streamSimple = vi.hoisted(() => vi.fn())
 
@@ -19,13 +21,13 @@ import { memoryAuth } from './auth-double.ts'
 afterEach(() => { streamSimple.mockReset() })
 
 /** A hand-declared OpenAI-compatible route with one fully described model. */
-function gatewayAdapter(): PiAiAdapter {
+function gatewayAdapter(contextWindow = 8192, maxTokens = 1024): PiAiAdapter {
   return new PiAiAdapter({
     profiles: () => resolveProfiles({
       'local-gateway': {
         api: 'openai-completions',
         baseURL: 'http://127.0.0.1:9/v1',
-        models: [{ id: 'local-model', contextWindow: 8192, maxTokens: 1024 }],
+        models: [{ id: 'local-model', contextWindow, maxTokens }],
       },
     }),
     resolveApiKey: () => Promise.resolve('test-key'),
@@ -86,23 +88,14 @@ describe('pi-ai SDK retry boundary', () => {
 
   it('clamps an explicit output cap to the remaining model context before dispatch', async () => {
     streamSimple.mockImplementation(() => { throw new Error('mock SDK boundary') })
-    const adapter = new PiAiAdapter({
-      profiles: () => resolveProfiles({
-        'local-gateway': {
-          api: 'openai-completions',
-          baseURL: 'http://127.0.0.1:9/v1',
-          models: [{ id: 'local-model', contextWindow: 8192, maxTokens: 4096 }],
-        },
-      }),
-      resolveApiKey: () => Promise.resolve('test-key'),
-      auth: memoryAuth(),
-    })
+    const adapter = gatewayAdapter(8192, 4096)
 
-    await drain(adapter, { messages: [largeUserMessage(8000)], maxTokens: 4096 })
+    // 4,000 estimated input tokens leave less than the requested output cap
+    // even with the small-window reserve, unlike the old 2,000-token prompt.
+    await drain(adapter, { messages: [largeUserMessage(16000)], maxTokens: 4096 })
 
     const requestOptions = streamSimple.mock.calls[0]?.[2] as { maxTokens?: number }
-    expect(requestOptions.maxTokens).toBeGreaterThanOrEqual(1)
-    expect(requestOptions.maxTokens).toBeLessThan(4096)
+    expect(requestOptions.maxTokens).toBe(3168)
   })
 
   it('keeps a requested cap when the context has ample headroom', async () => {
@@ -112,5 +105,51 @@ describe('pi-ai SDK retry boundary', () => {
     await drain(adapter, { maxTokens: 512 })
 
     expect((streamSimple.mock.calls[0]?.[2] as { maxTokens?: number }).maxTokens).toBe(512)
+  })
+})
+
+describe.each([
+  { contextWindow: 4096, reserve: 512 },
+  { contextWindow: 8192, reserve: 1024 },
+  { contextWindow: 32768, reserve: 4096 },
+  { contextWindow: 65536, reserve: 4096 },
+  { contextWindow: 262144, reserve: 4096 },
+])('pi-ai option dispatch with $contextWindow context tokens', ({ contextWindow, reserve }) => {
+  it.each([
+    { label: 'ample headroom', remaining: 2048, expected: 1024 },
+    { label: 'crowded prompt', remaining: 128, expected: 128 },
+    { label: 'exact saturation', remaining: 0, expected: 1 },
+    { label: 'overflow', remaining: -512, expected: 1 },
+  ])('preserves truthful capacity and clamps $label', async ({ remaining, expected }) => {
+    streamSimple.mockImplementation(() => { throw new Error('mock SDK boundary') })
+    const adapter = gatewayAdapter(contextWindow, 1024)
+    const inputTokens = contextWindow - reserve - remaining
+
+    await drain(adapter, { messages: [largeUserMessage(inputTokens * 4)], maxTokens: 1024 })
+
+    expect(streamSimple).toHaveBeenCalledOnce()
+    const [model, context, options] = streamSimple.mock.calls[0] as [Model<Api>, Context, SimpleStreamOptions]
+    expect(model).toMatchObject({ contextWindow, maxTokens: 1024 })
+    expect(context.messages).toEqual([{ role: 'user', content: 'x'.repeat(inputTokens * 4), timestamp: 0 }])
+    expect(options.maxTokens).toBe(expected)
+    // The real provider applies buildBaseOptions after adapter dispatch.
+    expect(buildBaseOptions(model, context, options).maxTokens).toBe(expected)
+    expect(await adapter.resolveModel('local-gateway', 'local-model')).toMatchObject({
+      context: { contextWindow },
+      defaultMaxTokens: 1024,
+    })
+  })
+
+  it.each([undefined, 256])('preserves the model default or explicit cap %s', async (maxTokens) => {
+    streamSimple.mockImplementation(() => { throw new Error('mock SDK boundary') })
+    await drain(gatewayAdapter(contextWindow, 1024), {
+      messages: [largeUserMessage(1024)],
+      ...maxTokens === undefined ? {} : { maxTokens },
+    })
+
+    const [model, context, options] = streamSimple.mock.calls[0] as [Model<Api>, Context, SimpleStreamOptions]
+    expect(model).toMatchObject({ contextWindow, maxTokens: 1024 })
+    expect(options.maxTokens).toBe(maxTokens ?? 1024)
+    expect(buildBaseOptions(model, context, options).maxTokens).toBe(maxTokens ?? 1024)
   })
 })

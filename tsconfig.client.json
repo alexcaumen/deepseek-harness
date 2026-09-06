@@ -14,6 +14,10 @@
     "types": ["node"]
   },
   "include": [
+    // Cross-package branding tests and their Vite config dependency do not emit.
+    "apps/web/tests/branding-layout.spec.ts",
+    "apps/web/tests/branding.spec.ts",
+    "apps/web/vite.config.ts",
     // Source-subpath test imports can arrive through workspace links whose
     // realpath semantics vary by host. Load package CSS declarations directly.
     "packages/client/*/src/css-modules.d.ts",

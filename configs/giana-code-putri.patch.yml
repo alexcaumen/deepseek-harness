@@ -1,3 +1,17 @@
+# Native GLM discovery changes request presentation only, never tool permissions.
+- id: tools
+  config:
+    mode: !!js process.env.DSH_TOOLS_MODE
+    onDemand:
+      providers:
+        - glm-local-r5300
+      alwaysAvailable:
+        - read
+        - skill
+        - skill_search
+      maxSearchResults: 4
+      maxActiveTools: 16
+
 - insert:
     - id: model-lifecycle
       name: '@deepseek-ai/dsh-model-lifecycle'

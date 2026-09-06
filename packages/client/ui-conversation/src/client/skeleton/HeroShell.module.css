@@ -7,12 +7,15 @@
   align-items: center;
   justify-content: center;
   height: 100%;
+  width: 100%;
+  box-sizing: border-box;
   min-width: 0;
   padding: 0 24px;
 }
 
 /* Cap matches the InputBar card. Glow may paint past the sides. */
 .stack {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -26,7 +29,7 @@
 /* Center the brand mark and title as one two-column group. */
 .headline {
   display: grid;
-  grid-template-columns: 68px auto;
+  grid-template-columns: 96px minmax(0, max-content);
   column-gap: 10px;
   align-items: center;
   justify-content: center;
@@ -39,15 +42,51 @@
 .headlineText {
   grid-row: 1;
   grid-column: 2;
+  align-self: end;
+  overflow-wrap: anywhere;
+}
+
+.preview {
+  grid-row: 2;
+  grid-column: 2;
+  align-self: start;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-secondary);
 }
 
 /* Keep hover detection on a stationary box while the mark moves within it. */
 .fishHitbox {
-  grid-row: 1;
+  grid-row: 1 / span 2;
   grid-column: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 96px;
+  height: 96px;
+}
+
+@container (max-width: 320px) {
+  .headline {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    text-align: center;
+  }
+
+  .fishHitbox {
+    grid-row: 1;
+  }
+
+  .headlineText {
+    grid-row: 2;
+    grid-column: 1;
+  }
+
+  .preview {
+    grid-row: 3;
+    grid-column: 1;
+  }
 }
 
 /* Keep the hero mark in the same primary ink as its headline. */

@@ -12,6 +12,7 @@ import type { GenerateOptions, LlmModelReasoningInfo, LlmResolvedModelInfo, Stre
 import SessionStore, { Session, SessionId, foldRequestHeader } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
+import type { Config as ToolsConfig } from '@deepseek-ai/dsh-tools'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
@@ -24,12 +25,13 @@ async function harness(adapter: MockAdapter, persona = 'stable base') {
 async function harnessRoutes(
   adapters: readonly (readonly [provider: string, adapter: MockAdapter])[],
   persona = 'stable base',
+  toolsConfig: ToolsConfig = {},
 ) {
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(SessionStore)
   await ctx.plugin(SystemPrompt, { persona })
-  await ctx.plugin(ToolRuntime)
+  await ctx.plugin(ToolRuntime, toolsConfig)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
   for (const [provider, adapter] of adapters) ctx.llm.registerAdapter([provider], adapter)
@@ -71,6 +73,38 @@ function registerEcho(ctx: Context) {
 }
 
 describe('request stability across the loop', () => {
+  it('binds native discovery to the resolved route on switches and replay under another default', async () => {
+    const local = new MockAdapter([textResponse('local'), textResponse('local-again')])
+    const remote = new MockAdapter([textResponse('remote')])
+    const toolsConfig: ToolsConfig = { onDemand: { providers: ['local'], alwaysAvailable: [],
+      maxSearchResults: 2, maxActiveTools: 4 } }
+    const ctx = await harnessRoutes([['local', local], ['remote', remote]], 'stable', toolsConfig)
+    registerEcho(ctx)
+    // Initial options deliberately disagree with the first request's actual route.
+    const agent = ctx.agentLoop.create(SessionId('on-demand-switch'), { provider: 'remote', model: 'm' })
+    ctx.on('agent/request', async ({ turn }, next) => ({ ...await next(), provider: turn === 2 ? 'remote' : 'local' }))
+    for (const message of ['first', 'switch-away', 'switch-back']) {
+      send(agent, message)
+      await waitForIdle(ctx, agent)
+    }
+    expect(local.requests.map(request => request.tools?.map(tool => tool.name))).toEqual([['tool_search'], ['tool_search']])
+    expect(remote.requests[0]?.tools?.map(tool => tool.name)).toEqual(['echo'])
+    const headers = agent.session.events.filter(event => event.type === 'request/header')
+    expect(headers.map(event => event.data.header.config.provider)).toEqual(['local', 'remote', 'local'])
+    for (const [index, request] of [local.requests[0]!, remote.requests[0]!, local.requests[1]!].entries()) {
+      expect(headers[index]?.data.header.tools).toEqual(request.tools)
+    }
+    const restoredAdapter = new MockAdapter([textResponse('restored')])
+    const restoredCtx = await harnessRoutes([['remote', restoredAdapter]], 'stable', toolsConfig)
+    registerEcho(restoredCtx)
+    const handle = await restoredCtx.agents.create({ sessionId: SessionId('restored-on-demand'),
+      seed: structuredClone(agent.session.events), agentOptions: { provider: 'remote', model: 'm' } })
+    send(handle.agent, 'continue')
+    await waitForIdle(restoredCtx, handle.agent)
+    expect(restoredAdapter.requests[0]?.tools?.map(tool => tool.name)).toEqual(['echo'])
+    expect(handle.agent.session.requestHeader()?.tools).toEqual(restoredAdapter.requests[0]?.tools)
+  })
+
   it('each step request within a turn append-extends the previous, frozen end to end', async () => {
     const adapter = new MockAdapter([
       toolCallResponse('c1', 'echo', { text: 'one' }, 'first'),

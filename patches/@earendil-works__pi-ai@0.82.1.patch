@@ -1,0 +1,14 @@
+diff --git a/dist/api/simple-options.js b/dist/api/simple-options.js
+--- a/dist/api/simple-options.js
++++ b/dist/api/simple-options.js
+@@ -4,7 +4,9 @@ const MIN_MAX_TOKENS = 1;
+ export function clampMaxTokensToContext(model, context, maxTokens) {
+     if (model.contextWindow <= 0)
+         return Math.max(MIN_MAX_TOKENS, maxTokens);
+-    const available = model.contextWindow - estimateContextTokens(context).tokens - CONTEXT_SAFETY_TOKENS;
++    // Keep estimation headroom without consuming an entire small context window.
++    const safetyTokens = Math.min(CONTEXT_SAFETY_TOKENS, Math.max(64, Math.floor(model.contextWindow / 8)));
++    const available = model.contextWindow - estimateContextTokens(context).tokens - safetyTokens;
+     return Math.min(maxTokens, Math.max(MIN_MAX_TOKENS, available));
+ }
+ export function buildBaseOptions(model, context, options, apiKey) {

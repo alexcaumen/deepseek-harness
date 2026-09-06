@@ -2,6 +2,7 @@
    font-weight: 500 in this UI — non-variable webfonts snap intermediate
    weights unpredictably across platforms. */
 body {
+  --dsw-alias-dictation-waveform: rgb(164, 124, 30);
   --dsw-static-amber-100: rgb(254, 245, 231);
   --dsw-static-amber-400: rgb(247, 173, 49);
   --dsw-static-amber-500: rgb(245, 158, 11);
@@ -78,6 +79,7 @@ body {
 }
 
 body[data-ds-dark-theme] {
+  --dsw-alias-dictation-waveform: rgb(220, 184, 83);
   --dsw-static-amber-100: rgb(254, 245, 231);
   --dsw-static-amber-400: rgb(247, 173, 49);
   --dsw-static-amber-500: rgb(245, 158, 11);

@@ -37,6 +37,7 @@ import {
   IDLE_DICTATION_STATE, reduceDictation, resolveIndonesianTranscriptionUrl,
 } from './dictation.ts'
 import { PermissionSelect } from './PermissionSelect.tsx'
+import { reportDictationOutcome, type DictationOutcome } from './dictation-diagnostics.ts'
 import { isSafariBrowser, repairSafariTextareaLayout } from './safari.ts'
 import css from './InputBar.module.css'
 
@@ -63,7 +64,9 @@ function analyserWaveformAmplitude(analyser: AnalyserNode, values: Uint8Array<Ar
     energy += normalized * normalized
   }
   const rms = Math.sqrt(energy / values.length)
-  return Math.max(DICTATION_WAVEFORM_FLOOR, Math.min(1, rms * 3.5))
+  // Expand quiet speech visually without amplifying the recorded audio or silence.
+  if (rms < 0.012) return DICTATION_WAVEFORM_FLOOR
+  return Math.max(DICTATION_WAVEFORM_FLOOR, Math.min(1, Math.sqrt(rms * 3.5)))
 }
 
 function paintWaveform(element: HTMLSpanElement | null, samples: readonly number[]): void {
@@ -393,6 +396,9 @@ export function InputBar({
   }, [dictation.phase])
 
   const transcribeDictation = useCallback(async (audio: Blob, operation: number): Promise<void> => {
+    const startedAt = Date.now()
+    let outcome: DictationOutcome = 'network-error'
+    let httpStatus: number | undefined
     const controller = new AbortController()
     transcriptionAbortRef.current = controller
     try {
@@ -404,9 +410,13 @@ export function InputBar({
         body: form,
         signal: controller.signal,
       })
+      httpStatus = response.status
+      outcome = 'http-error'
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      outcome = 'invalid-response'
       const result = await response.json() as { text?: unknown }
       const transcript = typeof result.text === 'string' ? result.text.trim() : ''
+      outcome = 'empty-result'
       if (transcript === '') throw new Error('No speech was recognized')
       if (dictationOperationRef.current !== operation || keyboard === undefined) return
       const current = keyboard.snapshot.draft
@@ -418,6 +428,7 @@ export function InputBar({
         insertedLength: inserted.length,
       })
       dispatchDictation({ type: 'transcribed', transcript })
+      reportDictationOutcome('success', startedAt, httpStatus)
       const autoSubmit = dictationAutoSubmitRef.current
       dictationAutoSubmitRef.current = false
       requestAnimationFrame(() => {
@@ -431,7 +442,11 @@ export function InputBar({
         inputRef.current?.focus()
       })
     } catch (error) {
-      if (controller.signal.aborted || dictationOperationRef.current !== operation) return
+      if (controller.signal.aborted || dictationOperationRef.current !== operation) {
+        reportDictationOutcome('canceled', startedAt, httpStatus)
+        return
+      }
+      reportDictationOutcome(outcome, startedAt, httpStatus)
       const message = error instanceof Error ? error.message : String(error)
       dispatchDictation({ type: 'transcription-failed', message: t('input.dictation.failed', { message }) })
     } finally {
@@ -441,6 +456,7 @@ export function InputBar({
 
   const requestDictation = useCallback(async (): Promise<void> => {
     if (locked || machineBusy) return
+    const startedAt = Date.now()
     const operation = dictationOperationRef.current + 1
     dictationOperationRef.current = operation
     recordedAudioRef.current = null
@@ -469,6 +485,7 @@ export function InputBar({
       recorder.onerror = (event) => {
         if (dictationOperationRef.current !== operation) return
         recorderFailed = true
+        reportDictationOutcome('capture-error', startedAt)
         const detail = event as Event & { readonly error?: DOMException }
         const message = detail.error?.message ?? 'Media recorder error'
         releaseRecording()
@@ -486,6 +503,7 @@ export function InputBar({
       dispatchDictation({ type: 'permission-granted', at: Date.now() })
     } catch (error) {
       if (dictationOperationRef.current !== operation) return
+      reportDictationOutcome('permission-error', startedAt)
       releaseRecording()
       const message = error instanceof Error ? error.message : String(error)
       dispatchDictation({ type: 'permission-failed', message: t('input.dictation.failed', { message }) })
