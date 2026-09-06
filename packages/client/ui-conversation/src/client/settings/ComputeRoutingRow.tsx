@@ -23,6 +23,7 @@ export interface ComputeRoutingResponse {
 }
 
 interface ComputeRuntimeGlobal {
+  readonly __GIANA_DESKTOP__?: { readonly speechComputeConfigUrl?: string }
   readonly __GIANA_WINDOWS_RUNTIME__?: {
     readonly resolveRoute?: (route: typeof COMPUTE_CONFIG_ROUTE) => string | URL | undefined
     readonly routes?: Readonly<Partial<Record<typeof COMPUTE_CONFIG_ROUTE, string | URL>>>
@@ -36,6 +37,7 @@ export function resolveComputeConfigUrl(runtimeGlobal: ComputeRuntimeGlobal = gl
   try {
     discovered = runtime?.resolveRoute?.(COMPUTE_CONFIG_ROUTE)
       ?? runtime?.routes?.[COMPUTE_CONFIG_ROUTE]
+      ?? runtimeGlobal.__GIANA_DESKTOP__?.speechComputeConfigUrl
   } catch {
     return LOCAL_COMPUTE_CONFIG_URL
   }

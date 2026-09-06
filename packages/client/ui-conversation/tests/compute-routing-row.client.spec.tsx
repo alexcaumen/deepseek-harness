@@ -50,6 +50,17 @@ function mount() {
 }
 
 describe('compute routing URL', () => {
+  it('uses the desktop speech port while preserving canonical route priority', () => {
+    const desktop = { speechComputeConfigUrl: 'http://127.0.0.1:17402/v1/compute/config' }
+    expect(resolveComputeConfigUrl({ __GIANA_DESKTOP__: desktop })).toBe(desktop.speechComputeConfigUrl)
+    expect(resolveComputeConfigUrl({ __GIANA_DESKTOP__: desktop,
+      __GIANA_WINDOWS_RUNTIME__: { routes: { 'speech.compute.config': '/owned/compute' } },
+      location: { origin: 'https://gcp.test' },
+    })).toBe('https://gcp.test/owned/compute')
+    expect(resolveComputeConfigUrl({ __GIANA_DESKTOP__: { speechComputeConfigUrl: 'https://user:secret@example.test/config' } }))
+      .toBe(LOCAL_COMPUTE_CONFIG_URL)
+  })
+
   it('uses the loopback service and rejects credential-bearing overrides', () => {
     expect(resolveComputeConfigUrl({})).toBe(LOCAL_COMPUTE_CONFIG_URL)
     expect(resolveComputeConfigUrl({
@@ -59,6 +70,16 @@ describe('compute routing URL', () => {
 })
 
 describe('ComputeRoutingRow', () => {
+  it('fetches the injected desktop compute endpoint', async () => {
+    const endpoint = 'http://127.0.0.1:17402/v1/compute/config'
+    vi.stubGlobal('__GIANA_DESKTOP__', { speechComputeConfigUrl: endpoint })
+    const fetchMock = vi.fn(() => response(automatic))
+    vi.stubGlobal('fetch', fetchMock)
+    mount()
+    await screen.findByText('Using PRDG · cuda · ready')
+    expect(fetchMock).toHaveBeenCalledWith(endpoint)
+  })
+
   it('loads honest selected route status', async () => {
     vi.stubGlobal('fetch', vi.fn(() => response(automatic)))
     mount()
