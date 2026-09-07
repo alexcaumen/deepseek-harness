@@ -49,6 +49,7 @@ describe('Giana CoWork runtime binding', () => {
     const entries = entriesFromPatch()
 
     expect(entries.map(entry => [entry.id, entry.name, entry.disabled])).toEqual([
+      ['tools', undefined, undefined],
       ['model-lifecycle', '@deepseek-ai/dsh-model-lifecycle', undefined],
       ['llm-gianaos-acp', '@grinviro/dsh-llm-gianaos-acp', undefined],
       ['llm-princess-os', '@grinviro/dsh-llm-princess-os', undefined],
