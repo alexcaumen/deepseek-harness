@@ -2,14 +2,25 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   AI_STUDIOTECH_GLM53_R3_HANDOFF_DIGEST,
   AI_STUDIOTECH_GLM53_R3_VALIDATION_DIGEST,
+  AI_STUDIOTECH_SIX_VARIANT_ASSEMBLY_RECEIPT_DIGEST,
+  AI_STUDIOTECH_SIX_VARIANT_HANDOFF_DIGEST,
+  AI_STUDIOTECH_SIX_VARIANT_SELECTION_INDEX_DIGEST,
+  AI_STUDIOTECH_SIX_VARIANT_VALIDATION_DIGEST,
   CANONICAL_AUTHORITIES,
+  DEEPSEEK_V4_ROUTE_IDS,
+  DEEPSEEK_V4_TERMINAL_OBSERVATIONS,
   GIANA_GIRLS,
   GLM53_TERMINAL_OBSERVATIONS,
   GLM53_ROUTE_IDS,
   GIANOS_FRONT_DOOR,
+  LOCAL_MODEL_ROUTE_IDS,
+  LOCAL_MODEL_TERMINAL_OBSERVATIONS,
+  SOURCE_ONLY_CONTRACT,
   assertSourceOnlyCatalog,
+  deepseekV4Routes,
   glm53Routes,
   isSelectable,
+  localModelEvidenceRoutes,
   materializeSelection,
   qwenRoute,
   sourceOnlyCatalog,
@@ -21,8 +32,8 @@ const digest = (digit: string): string => `sha256:${digit.repeat(64)}`
 describe('source-only GianaOS/GDM/R5300 front door', () => {
   const catalog = sourceOnlyCatalog()
 
-  it('exposes exactly 13 Giana Girls, one governed Qwen route, and four held GLM routes', () => {
-    expect(catalog).toHaveLength(18)
+  it('exposes exactly 13 Giana Girls, one governed Qwen route, and six held evidence routes', () => {
+    expect(catalog).toHaveLength(20)
     expect(catalog.filter(item => item.kind === 'giana-girl').map(item => item.id))
       .toEqual(GIANA_GIRLS.map(id => `giana.${id}`))
     expect(catalog.find(item => item.id === qwenRoute().id)?.displayName).toBe('Qwen 3.8-27B')
@@ -49,7 +60,61 @@ describe('source-only GianaOS/GDM/R5300 front door', () => {
       'GLM 5.3 Flash OrcaRouter Uncensored FP8',
       'GLM 5.3 Flash OrcaRouter Uncensored GGUF Q6_K',
     ])
+    expect(deepseekV4Routes().map(item => item.id)).toEqual(DEEPSEEK_V4_ROUTE_IDS)
+    expect(deepseekV4Routes().map(item => item.displayName)).toEqual([
+      'DeepSeek V4 Flash Vision Exp UD-Q8_K_XL',
+      'DeepSeek V4 Flash Vision Uncensored',
+    ])
     expect(glm53Routes().every(item => item.terminalObservation?.historicalOnly === true)).toBe(true)
+  })
+
+  it('binds the exact current six-model packet without admitting or defaulting any route', () => {
+    const routes = localModelEvidenceRoutes()
+    expect(routes.map(item => item.id)).toEqual(LOCAL_MODEL_ROUTE_IDS)
+    expect(routes).toHaveLength(6)
+    expect(LOCAL_MODEL_TERMINAL_OBSERVATIONS).toHaveLength(6)
+    expect(GLM53_TERMINAL_OBSERVATIONS).toHaveLength(4)
+    expect(DEEPSEEK_V4_TERMINAL_OBSERVATIONS).toHaveLength(2)
+
+    for (const route of routes) {
+      expect(route.selection.state).toBe('BLOCKED')
+      expect(route.sourceOnly).toBe(true)
+      expect(route.terminalObservation).toMatchObject({
+        historicalOnly: true,
+        handoffDigest: AI_STUDIOTECH_SIX_VARIANT_HANDOFF_DIGEST,
+        validationDigest: AI_STUDIOTECH_SIX_VARIANT_VALIDATION_DIGEST,
+        routeAdmission: false,
+        productionGreen: false,
+      })
+    }
+
+    expect(LOCAL_MODEL_TERMINAL_OBSERVATIONS.filter(item => item.r5300Compatible)).toHaveLength(5)
+    expect(LOCAL_MODEL_TERMINAL_OBSERVATIONS.filter(item => !item.r5300Compatible)).toEqual([
+      expect.objectContaining({
+        variantId: 'glm53_orcarouter_mlx_mixed_4_5_6',
+        runtimeEngine: 'MLX_AUDIT_ONLY_NO_SELECTED_CUDA_RUNTIME',
+        selectorState: 'VISIBLE_DISABLED',
+      }),
+    ])
+    expect(LOCAL_MODEL_TERMINAL_OBSERVATIONS.find(item => item.variantId === 'glm53_orcarouter_uncensored_gguf_q6k'))
+      .toMatchObject({
+        toolCallEvidence: 'FAIL_3_OF_3',
+        recordedState: 'TESTED_WITH_TOOL_CALL_HELD_NOT_ADMITTED',
+        nextPredicate: 'GLM53_Q6_NATIVE_TOOL_CALL_OBJECT_NOT_EMITTED_THREE_OF_THREE',
+      })
+    expect(LOCAL_MODEL_TERMINAL_OBSERVATIONS.filter(item => item.toolCallEvidence === 'PASS_3_OF_3'))
+      .toHaveLength(4)
+    expect(SOURCE_ONLY_CONTRACT).toMatchObject({
+      terminalHandoffDigest: AI_STUDIOTECH_SIX_VARIANT_HANDOFF_DIGEST,
+      terminalAssemblyReceiptDigest: AI_STUDIOTECH_SIX_VARIANT_ASSEMBLY_RECEIPT_DIGEST,
+      terminalValidationDigest: AI_STUDIOTECH_SIX_VARIANT_VALIDATION_DIGEST,
+      terminalSelectionIndexDigest: AI_STUDIOTECH_SIX_VARIANT_SELECTION_INDEX_DIGEST,
+      routeAdmission: false,
+      registryActivated: false,
+      defaultModelChanged: false,
+      productionGreen: false,
+      liveActivation: false,
+    })
   })
 
   it('keeps every entry on one authority tuple and blocks source-only selection', () => {

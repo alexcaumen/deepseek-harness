@@ -1,6 +1,6 @@
 {
   "name": "@grinviro/dsh-gianaos-catalog",
-  "description": "Source-only typed GianaOS/GDM/R5300 front-door catalog for DeepSeek Harness",
+  "description": "Source-only typed GianaOS/GDM/R5300 front-door catalog for Giana CoWork Preview",
   "version": "0.1.0",
   "private": true,
   "type": "module",
