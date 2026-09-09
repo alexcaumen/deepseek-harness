@@ -61,6 +61,52 @@ beforeEach(() => {
 })
 
 describe('PiAiAdapter provider routing', () => {
+  it('gates opt-in local routes on their exact live models response', async () => {
+    const model = 'local-model'
+    const server = await mockServer([
+      { body: JSON.stringify({ data: [{ id: model }] }) },
+      { body: JSON.stringify({ data: [{ id: model }] }) },
+    ])
+    const adapter = adapterOf({
+      local: {
+        api: 'openai-completions',
+        baseURL: `${server.url}/v1`,
+        models: [{ id: model }],
+        availabilityProbe: { model, timeoutMs: 1_000 },
+      },
+    })
+
+    await expect(adapter.listModels('local')).resolves.toEqual([
+      expect.objectContaining({ provider: 'local', id: model }),
+    ])
+    await expect(adapter.resolveModel('local', model)).resolves.toMatchObject({ provider: 'local', id: model })
+    expect(server.paths).toEqual(['/v1/models', '/v1/models'])
+  })
+
+  it('rejects an offline or mismatched opt-in local route before selection', async () => {
+    const server = await mockServer([
+      { body: JSON.stringify({ data: [{ id: 'different-model' }] }) },
+    ])
+    const adapter = adapterOf({
+      local: {
+        api: 'openai-completions',
+        baseURL: `${server.url}/v1`,
+        models: [{ id: 'local-model' }],
+        availabilityProbe: { model: 'local-model', timeoutMs: 1_000 },
+      },
+    })
+
+    await expect(adapter.listModels('local')).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' })
+    await expect(adapter.resolveModel('local', 'local-model')).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' })
+    expect(() => resolveProfiles({
+      local: {
+        api: 'openai-completions',
+        models: [{ id: 'local-model' }],
+        availabilityProbe: { model: 'local-model' },
+      },
+    })).toThrow(/availabilityProbe requires an explicit baseURL/)
+  })
+
   it('resolves a catalog model dynamically and uses a private endpoint', async () => {
     const server = await mockServer([{ events: textEvents }])
     const ctx = await harness(server.url)

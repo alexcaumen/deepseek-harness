@@ -173,6 +173,19 @@ export interface PiAiProviderProfile {
   requestImageMaxBytes?: number
   /** Provider-owned model-request retry policy; omission uses normal mode with five retries. */
   retryPolicy?: RetryPolicyConfig
+  /**
+   * Optional readiness gate for a hand-declared OpenAI-compatible route.
+   * Before the route is advertised, selected, or used, the adapter queries
+   * `<baseURL>/models`; `model` additionally requires that exact id in the
+   * response. This is intentionally opt-in because a deployment-owned model
+   * lifecycle controller may advertise cold routes it can start on demand.
+   */
+  availabilityProbe?: {
+    /** Exact model id that must be present in the OpenAI models response. */
+    model?: string
+    /** Bounded readiness request timeout in milliseconds. */
+    timeoutMs?: number
+  }
 }
 
 /** Validated profile with its route stamped and every adapter-owned default resolved. */
@@ -327,6 +340,10 @@ const profile = z.object({
   requestImagePixelBudget: z.number().step(1).min(1).default(DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET),
   requestImageMaxBytes: z.number().step(1).min(1).default(DEFAULT_REQUEST_IMAGE_MAX_BYTES),
   retryPolicy: RetryPolicySchema,
+  availabilityProbe: z.object({
+    model: z.string(),
+    timeoutMs: z.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).default(5_000),
+  }).default(undefined as unknown as { model: string; timeoutMs: number }),
 })
 
 /** Runtime schema for {@link Config}. */
@@ -386,6 +403,18 @@ export function resolveProfiles(
   const resolved = new Map<string, ResolvedPiAiProviderProfile>()
   for (const [provider, source] of entries) {
     rejectRemovedFields(provider, source)
+    if (source.availabilityProbe !== undefined && source.baseURL === undefined) {
+      throw new Error(`llm-pi-ai: provider "${provider}" availabilityProbe requires an explicit baseURL`)
+    }
+    if (source.availabilityProbe?.model !== undefined && source.availabilityProbe.model.length === 0) {
+      throw new Error(`llm-pi-ai: provider "${provider}" availabilityProbe has an empty model`)
+    }
+    if (source.availabilityProbe?.timeoutMs !== undefined
+      && (!Number.isInteger(source.availabilityProbe.timeoutMs)
+        || source.availabilityProbe.timeoutMs < 1
+        || source.availabilityProbe.timeoutMs > MAX_TIMER_DELAY_MS)) {
+      throw new Error(`llm-pi-ai: provider "${provider}" availabilityProbe has an invalid timeoutMs`)
+    }
     if (provider.length === 0) throw new Error('llm-pi-ai: provider names must be non-empty')
     if (source.baseURL !== undefined && source.baseURL.length === 0) {
       throw new Error(`llm-pi-ai: provider "${provider}" has an empty baseURL`)
@@ -450,6 +479,9 @@ export function resolveProfiles(
       retryPolicy: resolveRetryPolicy(retryPolicy, `llm-pi-ai: provider "${provider}" retryPolicy`),
       ...rest.headers === undefined ? {} : { headers: { ...rest.headers } },
       ...rest.thinkingBudgets === undefined ? {} : { thinkingBudgets: { ...rest.thinkingBudgets } },
+      ...rest.availabilityProbe === undefined
+        ? {}
+        : { availabilityProbe: Object.freeze({ ...rest.availabilityProbe }) },
       configuredMaxTokens: catalog.configuredMaxTokens,
       piProvider: buildProvider({
         provider,

@@ -99,6 +99,8 @@ export interface PiAiAdapterOptions {
    * conversion because its stored replay state is unusable by this build.
    */
   onReplayDegrade?: (detail: { provider: string; model: string; reason: string }) => void
+  /** Browser-compatible HTTP implementation used by opt-in readiness probes. */
+  fetch?: typeof globalThis.fetch
 }
 
 /** The two auth injectables a pi-ai collection is built with. */
@@ -217,8 +219,62 @@ function requestHeaders(headers: Readonly<Record<string, string>> | undefined): 
 export class PiAiAdapter extends LlmAdapter {
   private snapshot: PiAiSnapshot | undefined
 
+  private readonly fetch: typeof globalThis.fetch
+
   constructor(private readonly config: PiAiAdapterOptions) {
     super()
+    this.fetch = config.fetch ?? globalThis.fetch
+  }
+
+  /** Fail closed before a configured local route reaches a selector or request. */
+  private async assertAvailable(
+    snapshot: PiAiSnapshot,
+    provider: string,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const profile = this.profileOf(snapshot, provider)
+    const probe = profile.availabilityProbe
+    if (probe === undefined) return
+    const baseURL = profile.baseURL
+    if (baseURL === undefined) {
+      throw new LlmError(`pi-ai provider "${provider}" has no readiness endpoint`, 'PROVIDER_UNAVAILABLE')
+    }
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), probe.timeoutMs ?? 5_000)
+    ;(timeout as { unref?: () => void }).unref?.()
+    const combined = signal === undefined
+      ? controller.signal
+      : AbortSignal.any([signal, controller.signal])
+    try {
+      const apiKey = await this.config.resolveApiKey(provider, profile)
+      const response = await this.fetch(`${baseURL.replace(/\/$/u, '')}/models`, {
+        method: 'GET',
+        headers: {
+          ...profile.headers,
+          ...(apiKey === undefined ? {} : { authorization: `Bearer ${apiKey}` }),
+        },
+        signal: combined,
+      })
+      if (!response.ok) throw new Error('readiness endpoint rejected the request')
+      if (probe.model !== undefined) {
+        const payload: unknown = await response.json()
+        const data = payload !== null && typeof payload === 'object'
+          ? (payload as { data?: unknown }).data
+          : undefined
+        const present = Array.isArray(data) && data.some(entry =>
+          entry !== null && typeof entry === 'object' && (entry as { id?: unknown }).id === probe.model)
+        if (!present) throw new Error('expected model is absent')
+      }
+    } catch (error: unknown) {
+      if (signal?.aborted === true) throw error
+      throw new LlmError(
+        `pi-ai provider "${provider}" is not ready`,
+        'PROVIDER_UNAVAILABLE',
+        { cause: error },
+      )
+    } finally {
+      clearTimeout(timeout)
+    }
   }
 
   /**
@@ -266,28 +322,27 @@ export class PiAiAdapter extends LlmAdapter {
     return this.current().profiles.get(provider)?.retryPolicy
   }
 
-  override listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    return Promise.resolve().then(() => {
-      const snapshot = this.current()
-      this.profileOf(snapshot, provider)
-      return snapshot.models.getModels(provider).map(model => ({
-        provider,
-        id: model.id,
-        name: model.name,
-        inputModalities: [...model.input],
-      }))
-    })
+  override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    const snapshot = this.current()
+    this.profileOf(snapshot, provider)
+    await this.assertAvailable(snapshot, provider)
+    return snapshot.models.getModels(provider).map(model => ({
+      provider,
+      id: model.id,
+      name: model.name,
+      inputModalities: [...model.input],
+    }))
   }
 
-  override resolveModel(
+  override async resolveModel(
     provider: string,
     model: string,
-    _signal?: AbortSignal,
+    signal?: AbortSignal,
   ): Promise<LlmResolvedModelInfo> {
-    return Promise.resolve().then(() => {
-      const snapshot = this.current()
-      return this.modelInfo(snapshot, provider, model)
-    })
+    const snapshot = this.current()
+    const info = this.modelInfo(snapshot, provider, model)
+    await this.assertAvailable(snapshot, provider, signal)
+    return info
   }
 
   private modelInfo(snapshot: PiAiSnapshot, provider: string, model: string): LlmResolvedModelInfo {
@@ -308,12 +363,14 @@ export class PiAiAdapter extends LlmAdapter {
     }
   }
 
-  override prepareCall(provider: string, model: string, _signal?: AbortSignal): Promise<PreparedAdapterCall> {
+  override async prepareCall(provider: string, model: string, signal?: AbortSignal): Promise<PreparedAdapterCall> {
     const snapshot = this.current()
-    return Promise.resolve({
-      model: this.modelInfo(snapshot, provider, model),
+    const info = this.modelInfo(snapshot, provider, model)
+    await this.assertAvailable(snapshot, provider, signal)
+    return {
+      model: info,
       stream: options => this.streamWithSnapshot(options, snapshot),
-    })
+    }
   }
 
   stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
