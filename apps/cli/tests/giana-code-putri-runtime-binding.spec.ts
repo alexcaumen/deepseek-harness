@@ -82,10 +82,12 @@ describe('Giana CoWork runtime binding', () => {
         {
           id: 'glm53-official-fp8', provider: 'glm-local-r5300',
           model: 'GLM-5.3-Flash-official-fp8-canary', disposition: 'AVAILABLE',
+          allowExactResidentAdoption: true,
         },
         {
           id: 'qwen38-local', provider: 'qwen-local-r5300',
           model: 'Qwen/Qwen3.8-27B', disposition: 'AVAILABLE',
+          allowExactResidentAdoption: true,
         },
       ],
     })

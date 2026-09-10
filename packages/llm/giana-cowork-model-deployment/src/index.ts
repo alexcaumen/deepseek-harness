@@ -57,6 +57,7 @@ export interface RouteConfig {
   readonly revisionDigest: string
   readonly targets: ModelComputeTarget[]
   readonly allowRamCpuOffload: boolean
+  readonly allowExactResidentAdoption?: boolean
   readonly supportedReasoningEfforts?: string[]
   readonly stageTimeoutsMs?: Readonly<Record<string, number>>
 }
@@ -99,6 +100,7 @@ const routeSchema = z.object({
   revisionDigest: z.string(),
   targets: z.array(z.union([...TARGETS])).min(1),
   allowRamCpuOffload: z.boolean(),
+  allowExactResidentAdoption: z.boolean().default(false),
   supportedReasoningEfforts: z.array(z.string().min(1)).default(undefined as unknown as string[]),
   stageTimeoutsMs: z.dict(z.number().step(1).min(1)).default(undefined as unknown as Record<string, number>),
 })
@@ -190,6 +192,7 @@ function governedRoutes(config: Config): readonly GovernedModelRoute[] {
     revisionDigest: route.revisionDigest,
     targets: Object.freeze([...route.targets]),
     allowRamCpuOffload: route.allowRamCpuOffload,
+    allowExactResidentAdoption: route.allowExactResidentAdoption === true,
     ...route.supportedReasoningEfforts === undefined
       ? {} : { supportedReasoningEfforts: Object.freeze([...route.supportedReasoningEfforts]) },
     ...route.stageTimeoutsMs === undefined ? {} : { stageTimeoutsMs: Object.freeze({ ...route.stageTimeoutsMs }) },

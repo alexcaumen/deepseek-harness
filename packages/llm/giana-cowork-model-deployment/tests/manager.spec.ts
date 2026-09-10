@@ -29,6 +29,7 @@ const temporaryPaths: string[] = []
 class FakeRemote {
   residentPort: number | undefined
   modelsError: number | undefined
+  probeError: number | undefined
   statusError: number | undefined
   stalePidFile = false
   telemetry: string | undefined
@@ -192,6 +193,7 @@ class FakeRemote {
       return { code: 0, stdout: JSON.stringify({ data: [{ id }] }) }
     }
     if (command.includes('/v1/chat/completions')) {
+      if (this.probeError !== undefined) return { code: this.probeError, stdout: '' }
       return this.residentPort === undefined && this.foreignHealthyPort === undefined
         ? { code: 7, stdout: '' }
         : { code: 0, stdout: JSON.stringify({ choices: [{ message: { content: 'OK' } }] }) }
@@ -377,6 +379,10 @@ describe('Giana CoWork Preview model manager', () => {
       residency: { kind: 'RESIDENT', routeId: 'glm-official' },
     })
     await expect(adapter.health(ctx)).resolves.toMatchObject({ ok: false })
+    await expect(adapter.release(grant, 'SETTLED', new AbortController().signal)).resolves.toBeUndefined()
+    expect(remote.residentPort).toBe(18_081)
+    expect(remote.hostLease).toBeUndefined()
+    expect(remote.commands.some(command => command.includes('stop-glm'))).toBe(false)
   })
 
   it('recognizes an exact orphan process when the PID file is stale', async () => {
@@ -583,6 +589,27 @@ describe('Giana CoWork Preview model manager', () => {
     await expect(restarted.load()).rejects.toThrow('STATE_CONFLICT')
   })
 
+  it.each([
+    ['recovery', true],
+    ['lastStoppedRouteId', 'glm-official'],
+    ['nextAllowed', ['stop']],
+  ])('rejects a mutation-capable adopted resident state via %s', async (field, value) => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    const { adapter, statePath } = await fixture(remote, registry(systemdRuntime()))
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const ctx = context(grant, route('glm-official'), 'f')
+    await adapter.preflight(ctx)
+    await adapter.capturePrestate(ctx)
+    const state = JSON.parse(await readFile(statePath, 'utf8'))
+    const transaction = state.transactions[bare('f')]
+    transaction[field] = value
+    if (field === 'nextAllowed') transaction.allowedRoutes = { stop: ['glm-official'] }
+    await writeFile(statePath, `${JSON.stringify(state)}\n`, 'utf8')
+
+    await expect(new PreviewManagerStateStore(statePath).load()).rejects.toThrow('STATE_CONFLICT')
+  })
+
   it('rejects malformed durable JSON rather than silently starting empty', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'gcp-manager-corrupt-'))
     temporaryPaths.push(directory)
@@ -667,6 +694,70 @@ describe('Giana CoWork Preview model manager', () => {
 
     expect(remote.residentPort).toBe(18_081)
     expect(remote.commands.some(command => command.includes('17302'))).toBe(false)
+  })
+
+  it('adopts an exact resident GLM through health and probe without a start or stop mutation', async () => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    const { adapter } = await fixture(remote, registry(systemdRuntime()))
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const ctx = context(grant, route('glm-official'), 'f')
+
+    await expect(adapter.preflight(ctx)).resolves.toMatchObject({ ok: true })
+    await expect(adapter.capturePrestate(ctx)).resolves.toMatchObject({
+      residency: { kind: 'RESIDENT', routeId: 'glm-official' },
+    })
+    await expect(adapter.health(ctx)).resolves.toMatchObject({ ok: true })
+    await expect(adapter.probe(ctx)).resolves.toMatchObject({ ok: true })
+    await expect(adapter.release(grant, 'SETTLED', new AbortController().signal)).resolves.toBeUndefined()
+
+    expect(remote.residentPort).toBe(18_081)
+    expect(remote.hostLease).toBeUndefined()
+    expect(remote.commands.some(command => command.includes('systemd-run --unit="$unit"'))).toBe(false)
+    expect(remote.commands.some(command => command.includes('systemctl stop "$unit"'))).toBe(false)
+  })
+
+  it('accepts repeated exact-resident health and probe transactions without becoming busy', async () => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    const { adapter } = await fixture(remote, registry(systemdRuntime()))
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    for (const transaction of ['f', 'e']) {
+      const ctx = context(grant, route('glm-official'), transaction)
+      await expect(adapter.preflight(ctx)).resolves.toMatchObject({ ok: true })
+      await expect(adapter.capturePrestate(ctx)).resolves.toMatchObject({
+        residency: { kind: 'RESIDENT', routeId: 'glm-official' },
+      })
+      await expect(adapter.health(ctx)).resolves.toMatchObject({ ok: true })
+      await expect(adapter.probe(ctx)).resolves.toMatchObject({ ok: true })
+    }
+    await expect(adapter.release(grant, 'SETTLED', new AbortController().signal)).resolves.toBeUndefined()
+
+    expect(remote.residentPort).toBe(18_081)
+    expect(remote.hostLease).toBeUndefined()
+  })
+
+  it('leaves an adopted resident GLM unchanged when its capability probe fails', async () => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    remote.probeError = 7
+    const { adapter } = await fixture(remote, registry(systemdRuntime()))
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const ctx = context(grant, route('glm-official'), 'f')
+
+    await expect(adapter.preflight(ctx)).resolves.toMatchObject({ ok: true })
+    await expect(adapter.capturePrestate(ctx)).resolves.toMatchObject({
+      residency: { kind: 'RESIDENT', routeId: 'glm-official' },
+    })
+    await expect(adapter.health(ctx)).resolves.toMatchObject({ ok: true })
+    await expect(adapter.probe(ctx)).resolves.toMatchObject({ ok: false })
+    await expect(adapter.release(grant, 'SETTLED', new AbortController().signal)).resolves.toBeUndefined()
+
+    expect(remote.residentPort).toBe(18_081)
+    expect(remote.hostLease).toBeUndefined()
+    expect(remote.commands.some(command => command.includes('systemd-run --unit="$unit"'))).toBe(false)
+    expect(remote.commands.some(command => command.includes('systemctl stop "$unit"'))).toBe(false)
   })
 
   it('switches from GLM to Qwen only after drain, stop, and verified release', async () => {

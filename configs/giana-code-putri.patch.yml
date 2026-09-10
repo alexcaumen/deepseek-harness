@@ -55,6 +55,7 @@
             targets:
               - r5300
             allowRamCpuOffload: true
+            allowExactResidentAdoption: true
             supportedReasoningEfforts:
               - high
             stageTimeoutsMs:
@@ -70,6 +71,7 @@
             targets:
               - r5300
             allowRamCpuOffload: false
+            allowExactResidentAdoption: true
             supportedReasoningEfforts:
               - low
               - medium

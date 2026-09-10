@@ -429,6 +429,193 @@ describe('governed local-model lifecycle', () => {
     expect(first.modelLifecycle.snapshot()).toMatchObject({ phase: 'READY', active: { routeId: 'qwen' } })
   })
 
+  it('adopts an explicitly admitted exact resident route only after health and capability probes', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const qwen = route('qwen', 'qwen', ['r5300'], { allowExactResidentAdoption: true })
+    const log: string[] = []
+    ctx.modelLifecycle.register(qwen, driver(log))
+    simulatedHosts.get(log)!.set('r5300', {
+      kind: 'RESIDENT', routeId: qwen.id, revisionDigest: qwen.revisionDigest,
+    })
+    const authority = installRouteAuthority(ctx, [qwen])
+
+    const lease = await ctx.modelLifecycle.acquireRoute({ selection: qwen.selection })
+
+    expect(log).toEqual([
+      'preflight:qwen:r5300',
+      'prestate:qwen:r5300',
+      'health:qwen:r5300',
+      'probe:qwen:r5300',
+    ])
+    expect(ctx.modelLifecycle.snapshot()).toMatchObject({ phase: 'IN_USE', active: { routeId: 'qwen', target: 'r5300' } })
+    expect(authority.records.at(-1)).toMatchObject({ outcome: 'READY', routeId: 'qwen', target: 'r5300' })
+    await lease.release()
+  })
+
+  it('rejects an opt-in resident route when its revision is not exact without mutating the host', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const qwen = route('qwen', 'qwen', ['r5300'], { allowExactResidentAdoption: true })
+    const log: string[] = []
+    ctx.modelLifecycle.register(qwen, driver(log))
+    simulatedHosts.get(log)!.set('r5300', {
+      kind: 'RESIDENT', routeId: qwen.id, revisionDigest: OTHER_DIGEST,
+    })
+    const authority = installRouteAuthority(ctx, [qwen])
+
+    await expect(ctx.modelLifecycle.acquireRoute({ selection: qwen.selection }))
+      .rejects.toMatchObject({ code: 'RESIDENCY_UNVERIFIED' })
+
+    expect(log).toEqual(['preflight:qwen:r5300', 'prestate:qwen:r5300'])
+    expect(ctx.modelLifecycle.snapshot()).toEqual({ phase: 'TAINTED' })
+    expect(authority.records.at(-1)).toMatchObject({ outcome: 'TAINTED', errorCode: 'RESIDENCY_UNVERIFIED' })
+  })
+
+  it('does not start or stop an exact resident route when adoption health fails', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const qwen = route('qwen', 'qwen', ['r5300'], { allowExactResidentAdoption: true })
+    const log: string[] = []
+    ctx.modelLifecycle.register(qwen, driver(log, { unhealthyStage: 'health' }))
+    simulatedHosts.get(log)!.set('r5300', {
+      kind: 'RESIDENT', routeId: qwen.id, revisionDigest: qwen.revisionDigest,
+    })
+    const authority = installRouteAuthority(ctx, [qwen])
+
+    await expect(ctx.modelLifecycle.acquireRoute({ selection: qwen.selection }))
+      .rejects.toMatchObject({ code: 'HEALTH_FAILED' })
+
+    expect(log).toEqual(['preflight:qwen:r5300', 'prestate:qwen:r5300', 'health:qwen:r5300'])
+    expect(ctx.modelLifecycle.snapshot()).toEqual({ phase: 'IDLE' })
+    expect(authority.records.at(-1)).toMatchObject({ outcome: 'REJECTED', errorCode: 'HEALTH_FAILED' })
+  })
+
+  it('does not start or stop an exact resident route when adoption capability probe fails', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const qwen = route('qwen', 'qwen', ['r5300'], { allowExactResidentAdoption: true })
+    const log: string[] = []
+    ctx.modelLifecycle.register(qwen, driver(log, { unhealthyStage: 'probe' }))
+    simulatedHosts.get(log)!.set('r5300', {
+      kind: 'RESIDENT', routeId: qwen.id, revisionDigest: qwen.revisionDigest,
+    })
+    const authority = installRouteAuthority(ctx, [qwen])
+
+    await expect(ctx.modelLifecycle.acquireRoute({ selection: qwen.selection }))
+      .rejects.toMatchObject({ code: 'HEALTH_FAILED' })
+
+    expect(log).toEqual([
+      'preflight:qwen:r5300', 'prestate:qwen:r5300', 'health:qwen:r5300', 'probe:qwen:r5300',
+    ])
+    expect(ctx.modelLifecycle.snapshot()).toEqual({ phase: 'IDLE' })
+    expect(authority.records.at(-1)).toMatchObject({ outcome: 'REJECTED', errorCode: 'HEALTH_FAILED' })
+  })
+
+  it('finishes the non-mutating adoption probe before surfacing cancellation', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const qwen = route('qwen', 'qwen', ['r5300'], { allowExactResidentAdoption: true })
+    const controller = new AbortController()
+    const log: string[] = []
+    ctx.modelLifecycle.register(qwen, driver(log, {
+      observe(stage) {
+        if (stage === 'health') controller.abort()
+      },
+    }))
+    simulatedHosts.get(log)!.set('r5300', {
+      kind: 'RESIDENT', routeId: qwen.id, revisionDigest: qwen.revisionDigest,
+    })
+    installRouteAuthority(ctx, [qwen])
+
+    await expect(ctx.modelLifecycle.acquireRoute({ selection: qwen.selection, signal: controller.signal }))
+      .rejects.toMatchObject({ code: 'ABORTED' })
+
+    expect(log).toEqual([
+      'preflight:qwen:r5300', 'prestate:qwen:r5300', 'health:qwen:r5300', 'probe:qwen:r5300',
+    ])
+    expect(ctx.modelLifecycle.snapshot()).toEqual({ phase: 'IDLE' })
+    expect(simulatedHosts.get(log)!.get('r5300')).toEqual({
+      kind: 'RESIDENT', routeId: qwen.id, revisionDigest: qwen.revisionDigest,
+    })
+  })
+
+  it('completes health and probe when reusing an adopted route before another acquisition', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const qwen = route('qwen', 'qwen', ['r5300'], { allowExactResidentAdoption: true })
+    const log: string[] = []
+    ctx.modelLifecycle.register(qwen, driver(log))
+    simulatedHosts.get(log)!.set('r5300', {
+      kind: 'RESIDENT', routeId: qwen.id, revisionDigest: qwen.revisionDigest,
+    })
+    installRouteAuthority(ctx, [qwen])
+    const adopted = await ctx.modelLifecycle.acquireRoute({ selection: qwen.selection })
+    await adopted.release()
+    log.length = 0
+
+    const reused = await ctx.modelLifecycle.acquireRoute({ selection: qwen.selection })
+    await reused.release()
+    const reusedAgain = await ctx.modelLifecycle.acquireRoute({ selection: qwen.selection })
+    await reusedAgain.release()
+
+    expect(log).toEqual([
+      'preflight:qwen:r5300', 'prestate:qwen:r5300', 'health:qwen:r5300', 'probe:qwen:r5300',
+      'preflight:qwen:r5300', 'prestate:qwen:r5300', 'health:qwen:r5300', 'probe:qwen:r5300',
+    ])
+    expect(ctx.modelLifecycle.snapshot()).toMatchObject({ phase: 'READY', active: { routeId: 'qwen' } })
+  })
+
+  it('retains control of an adopted route until its admitted idle unload completes', async () => {
+    vi.useFakeTimers()
+    const ctx = await lifecycle({ idleUnloadMs: 20, minimumDwellMs: 0 })
+    const qwen = route('qwen', 'qwen', ['r5300'], { allowExactResidentAdoption: true })
+    const log: string[] = []
+    ctx.modelLifecycle.register(qwen, driver(log))
+    simulatedHosts.get(log)!.set('r5300', {
+      kind: 'RESIDENT', routeId: qwen.id, revisionDigest: qwen.revisionDigest,
+    })
+    installRouteAuthority(ctx, [qwen])
+    const lease = await ctx.modelLifecycle.acquireRoute({ selection: qwen.selection })
+    await lease.release()
+    log.length = 0
+
+    await vi.advanceTimersByTimeAsync(20)
+    await flushMicrotasks()
+
+    expect(log).toEqual([
+      'prestate:qwen:r5300',
+      'stop:qwen:r5300',
+      'verify-stopped:qwen:r5300',
+    ])
+    expect(ctx.modelLifecycle.snapshot()).toEqual({ phase: 'IDLE' })
+  })
+
+  it('drains an adopted route before an admitted user-requested switch', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const qwen = route('qwen', 'qwen', ['r5300'], { allowExactResidentAdoption: true })
+    const glm = route('glm', 'glm', ['r5300'])
+    const log: string[] = []
+    ctx.modelLifecycle.register(qwen, driver(log))
+    ctx.modelLifecycle.register(glm, driver(log))
+    simulatedHosts.get(log)!.set('r5300', {
+      kind: 'RESIDENT', routeId: qwen.id, revisionDigest: qwen.revisionDigest,
+    })
+    installRouteAuthority(ctx, [qwen, glm])
+    const first = await ctx.modelLifecycle.acquireRoute({ selection: qwen.selection })
+    await first.release()
+    log.length = 0
+
+    const second = await ctx.modelLifecycle.acquireRoute({ selection: glm.selection })
+
+    expect(log).toEqual([
+      'preflight:glm:r5300',
+      'prestate:glm:r5300',
+      'drain:qwen:r5300',
+      'stop:qwen:r5300',
+      'verify-stopped:qwen:r5300',
+      'start:glm:r5300',
+      'health:glm:r5300',
+      'probe:glm:r5300',
+    ])
+    expect(ctx.modelLifecycle.snapshot()).toMatchObject({ phase: 'IN_USE', active: { routeId: 'glm' } })
+    await second.release()
+  })
+
   it.each(['EMPTY', 'UNKNOWN', 'RESIDENT'] as const)('refuses changed %s residency before idle unload or disposal', async (kind) => {
     vi.useFakeTimers()
     const ctx = await lifecycle({ idleUnloadMs: 20, minimumDwellMs: 0 })
@@ -1706,7 +1893,7 @@ describe('governed local-model lifecycle', () => {
       'scopeDigest', 'selection', 'target', 'transactionDigest',
     ])
     expect(events[0]!.data.receiptDigests).toHaveLength(5)
-    expect(events[1]!.data.receiptDigests).toHaveLength(3)
+    expect(events[1]!.data.receiptDigests).toHaveLength(4)
     expect(events[0]!.data.transactionDigest).not.toBe(events[1]!.data.transactionDigest)
     for (const event of events) {
       expect(Object.isFrozen(event)).toBe(true)

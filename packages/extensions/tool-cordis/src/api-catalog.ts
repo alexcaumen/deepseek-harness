@@ -3529,7 +3529,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'GovernedModelRoute',
-    declaration: 'export interface GovernedModelRoute {\n    readonly id: string;\n    readonly selection: ModelSelectionIdentity;\n    readonly disposition: ModelRouteDisposition;\n    readonly admissionReceiptDigest: string;\n    readonly revisionDigest: string;\n    readonly targets: readonly ModelComputeTarget[];\n    readonly allowRamCpuOffload: boolean;\n    readonly supportedReasoningEfforts?: readonly string[];\n    readonly stageTimeoutsMs?: Readonly<Partial<Record<ModelLifecycleStage, number>>>;\n}',
+    declaration: 'export interface GovernedModelRoute {\n    readonly id: string;\n    readonly selection: ModelSelectionIdentity;\n    readonly disposition: ModelRouteDisposition;\n    readonly admissionReceiptDigest: string;\n    readonly revisionDigest: string;\n    readonly targets: readonly ModelComputeTarget[];\n    readonly allowRamCpuOffload: boolean;\n    readonly allowExactResidentAdoption?: boolean;\n    readonly supportedReasoningEfforts?: readonly string[];\n    readonly stageTimeoutsMs?: Readonly<Partial<Record<ModelLifecycleStage, number>>>;\n}',
   },
   {
     name: 'GrantRecord',

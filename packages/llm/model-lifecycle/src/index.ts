@@ -116,6 +116,8 @@ export interface GovernedModelRoute {
   readonly revisionDigest: string
   readonly targets: readonly ModelComputeTarget[]
   readonly allowRamCpuOffload: boolean
+  /** Admit a fresh runtime to reuse only this exact already-resident route/revision after health and capability probes. */
+  readonly allowExactResidentAdoption?: boolean
   readonly supportedReasoningEfforts?: readonly string[]
   /** Authority-admitted per-stage deadlines; omitted stages use the runtime setting. */
   readonly stageTimeoutsMs?: Readonly<Partial<Record<ModelLifecycleStage, number>>>
@@ -443,6 +445,7 @@ function sameRoute(left: GovernedModelRoute, right: GovernedModelRoute): boolean
     && left.admissionReceiptDigest === right.admissionReceiptDigest
     && left.revisionDigest === right.revisionDigest
     && left.allowRamCpuOffload === right.allowRamCpuOffload
+    && left.allowExactResidentAdoption === right.allowExactResidentAdoption
     && sameValues(left.targets, right.targets)
     && sameValues(left.supportedReasoningEfforts, right.supportedReasoningEfforts)
     && sameStageTimeouts(left.stageTimeoutsMs, right.stageTimeoutsMs)
@@ -829,23 +832,82 @@ export class ModelLifecycleRuntime extends Service {
     abortIfRequested(request.signal)
     const target = await this.selectTarget(registration, request, scope, transactionDigest, receipts)
     const context = this.stageContext(registration, target, request, scope, transactionDigest)
+    const previous = this.active
     let prestate: ModelLifecyclePrestateReceipt
     try {
       prestate = await this.runStage('prestate', context, bounded =>
         registration.driver.capturePrestate(bounded))
       assertStageReceipt('prestate', prestate, context)
-      this.assertResidency(prestate, this.active?.target === target ? this.active : undefined)
+      this.assertResidency(
+        prestate,
+        previous?.target === target ? previous : undefined,
+        previous === undefined ? registration.route : undefined,
+      )
     } catch (error: unknown) {
       throw lifecycleError('PREFLIGHT_FAILED', `Could not capture prestate for ${registration.route.id}`, error)
     }
     receipts.push(prestate)
-    const previous = this.active
+    const adoptingExactResident = previous === undefined
+      && this.isExactAdmittedResident(prestate, registration.route)
 
-    if (previous?.registration === registration && previous.target === target) {
+    if (adoptingExactResident) {
+      const detachedContext = this.stageContext(registration, target, {
+        selection: request.selection,
+        ...request.sessionId === undefined ? {} : { sessionId: request.sessionId },
+        ...request.preference === undefined ? {} : { preference: request.preference },
+      }, scope, transactionDigest)
       let healthy: ModelHealthDecision
       try {
-        healthy = await this.runStage('health', context, bounded => registration.driver.health(bounded))
-        assertHealthReceipt('health', healthy, context)
+        healthy = await this.runStage('health', detachedContext, bounded => registration.driver.health(bounded))
+        assertHealthReceipt('health', healthy, detachedContext)
+      } catch (error: unknown) {
+        throw lifecycleError('HEALTH_FAILED', `Could not health-check ${registration.route.id}`, error)
+      }
+      if (!healthy.ok) {
+        throw new ModelLifecycleError('HEALTH_FAILED', `Resident local model ${registration.route.id} failed its health check`)
+      }
+      receipts.push(healthy.receipt)
+      let probe: ModelHealthDecision
+      try {
+        probe = await this.runStage('probe', detachedContext, bounded => registration.driver.probe(bounded))
+        assertHealthReceipt('probe', probe, detachedContext)
+      } catch (error: unknown) {
+        throw lifecycleError('HEALTH_FAILED', `Could not capability-probe ${registration.route.id}`, error)
+      }
+      if (!probe.ok) {
+        throw new ModelLifecycleError('HEALTH_FAILED', `Resident local model ${registration.route.id} failed its capability probe`)
+      }
+      receipts.push(probe.receipt)
+      abortIfRequested(request.signal)
+      this.active = {
+        registration,
+        target,
+        healthDigest: probe.receipt.digest,
+        scope,
+        activatedAt: Date.now(),
+      }
+      await this.record(authority, {
+        transactionDigest,
+        scopeDigest: scope.digest,
+        routeId: registration.route.id,
+        target,
+        outcome: 'READY',
+        receiptDigests: receipts.map(receipt => receipt.digest),
+      })
+      this.publishEffectiveRoute(registration, request, target, scope, transactionDigest, receipts)
+      return this.routeLease(registration, target, scope, transactionDigest, receipts, authority, release)
+    }
+
+    if (previous?.registration === registration && previous.target === target) {
+      const detachedContext = this.stageContext(registration, target, {
+        selection: request.selection,
+        ...request.sessionId === undefined ? {} : { sessionId: request.sessionId },
+        ...request.preference === undefined ? {} : { preference: request.preference },
+      }, scope, transactionDigest)
+      let healthy: ModelHealthDecision
+      try {
+        healthy = await this.runStage('health', detachedContext, bounded => registration.driver.health(bounded))
+        assertHealthReceipt('health', healthy, detachedContext)
       } catch (error: unknown) {
         throw lifecycleError('HEALTH_FAILED', `Could not health-check ${registration.route.id}`, error)
       }
@@ -853,7 +915,19 @@ export class ModelLifecycleRuntime extends Service {
         throw new ModelLifecycleError('HEALTH_FAILED', 'The active local model failed its health check')
       }
       receipts.push(healthy.receipt)
-      this.active = { ...previous, scope, healthDigest: healthy.receipt.digest }
+      let probe: ModelHealthDecision
+      try {
+        probe = await this.runStage('probe', detachedContext, bounded => registration.driver.probe(bounded))
+        assertHealthReceipt('probe', probe, detachedContext)
+      } catch (error: unknown) {
+        throw lifecycleError('HEALTH_FAILED', `Could not capability-probe ${registration.route.id}`, error)
+      }
+      if (!probe.ok) {
+        throw new ModelLifecycleError('HEALTH_FAILED', 'The active local model failed its capability probe')
+      }
+      receipts.push(probe.receipt)
+      abortIfRequested(request.signal)
+      this.active = { ...previous, scope, healthDigest: probe.receipt.digest }
       await this.record(authority, {
         transactionDigest,
         scopeDigest: scope.digest,
@@ -1330,11 +1404,27 @@ export class ModelLifecycleRuntime extends Service {
     }
   }
 
-  /** A fresh process never adopts or stops an independently resident model from a cached receipt. */
-  private assertResidency(receipt: ModelLifecyclePrestateReceipt, expected: ActiveRoute | undefined): void {
+  private isExactAdmittedResident(
+    receipt: ModelLifecyclePrestateReceipt,
+    route: GovernedModelRoute,
+  ): boolean {
+    const resident = receipt.residency
+    return route.allowExactResidentAdoption === true
+      && resident.kind === 'RESIDENT'
+      && resident.routeId === route.id
+      && resident.revisionDigest === route.revisionDigest
+  }
+
+  /** A fresh process adopts residency only when the immutable route explicitly admits an exact route/revision match. */
+  private assertResidency(
+    receipt: ModelLifecyclePrestateReceipt,
+    expected: ActiveRoute | undefined,
+    admittedAdoption?: GovernedModelRoute,
+  ): void {
     const resident = receipt.residency
     const matches = expected === undefined
       ? resident.kind === 'EMPTY'
+        || (admittedAdoption !== undefined && this.isExactAdmittedResident(receipt, admittedAdoption))
       : resident.kind === 'RESIDENT'
         && resident.routeId === expected.registration.route.id
         && resident.revisionDigest === expected.registration.route.revisionDigest

@@ -132,6 +132,7 @@ interface TransactionState {
   destinationPrestateCaptured: boolean
   recovery: boolean
   startedRouteId?: string | undefined
+  adoptedResidentRouteId?: string | undefined
   lastStoppedRouteId?: string | undefined
   inFlight?: Stage | undefined
 }
@@ -501,7 +502,7 @@ function parseState(value: unknown): ManagerState {
       strictKeys(candidate, [
         'digest', 'kind', 'scopeDigest', 'nextAllowed', 'cleanCancelable', 'terminal', 'started', 'sequence',
         'allowedRoutes', 'destinationRouteId', 'sourceRouteId', 'destinationPrestateCaptured', 'recovery',
-        'startedRouteId', 'lastStoppedRouteId', 'inFlight',
+        'startedRouteId', 'adoptedResidentRouteId', 'lastStoppedRouteId', 'inFlight',
       ])
       const kind = stringField(candidate.kind) as TransactionKind
       if (!['MODEL_ROUTE', 'IDLE_UNLOAD', 'SHUTDOWN'].includes(kind)
@@ -538,6 +539,22 @@ function parseState(value: unknown): ManagerState {
       }
       const startedRouteId = optionalRoute(candidate.startedRouteId)
       if (candidate.started !== (startedRouteId !== undefined)) throw new ManagerError('STATE_CONFLICT')
+      const adoptedResidentRouteId = optionalRoute(candidate.adoptedResidentRouteId)
+      const lastStoppedRouteId = optionalRoute(candidate.lastStoppedRouteId)
+      if (adoptedResidentRouteId !== undefined && (kind !== 'MODEL_ROUTE'
+        || startedRouteId !== undefined
+        || adoptedResidentRouteId !== optionalRoute(candidate.destinationRouteId)
+        || adoptedResidentRouteId !== optionalRoute(candidate.sourceRouteId)
+        || !candidate.destinationPrestateCaptured
+        || candidate.recovery
+        || candidate.cleanCancelable
+        || lastStoppedRouteId !== undefined
+        || (!candidate.terminal && !(nextAllowed.length === 1
+          && (nextAllowed[0] === 'health' || nextAllowed[0] === 'probe')
+          && allowedRoutes[nextAllowed[0]]?.length === 1
+          && allowedRoutes[nextAllowed[0]]?.[0] === adoptedResidentRouteId)))) {
+        throw new ManagerError('STATE_CONFLICT')
+      }
       transactions[key] = {
         digest: stringField(candidate.digest, BARE_DIGEST),
         kind,
@@ -553,7 +570,8 @@ function parseState(value: unknown): ManagerState {
         destinationPrestateCaptured: candidate.destinationPrestateCaptured,
         recovery: candidate.recovery,
         startedRouteId,
-        lastStoppedRouteId: optionalRoute(candidate.lastStoppedRouteId),
+        adoptedResidentRouteId,
+        lastStoppedRouteId,
         ...(inFlight === undefined ? {} : { inFlight }),
       }
       const restored = transactions[key]
@@ -1607,6 +1625,9 @@ export class PreviewManager {
     if (outcome.status === 'QUARANTINED') return this.setAllowed(transaction, {})
     if (outcome.status !== 'PASS') {
       if (stage === 'start' || stage === 'health' || stage === 'probe') {
+        if ((stage === 'health' || stage === 'probe') && transaction.adoptedResidentRouteId === route.id) {
+          return this.setAllowed(transaction, {})
+        }
         if (route.id === transaction.destinationRouteId) transaction.recovery = true
         return this.setAllowed(transaction, { stop: [route.id] })
       }
@@ -1621,6 +1642,7 @@ export class PreviewManager {
       transaction.recovery = false
       delete transaction.sourceRouteId
       delete transaction.startedRouteId
+      delete transaction.adoptedResidentRouteId
       delete transaction.lastStoppedRouteId
       return this.setAllowed(transaction, { prestate: [route.id] })
     }
@@ -1638,6 +1660,9 @@ export class PreviewManager {
         if (route.id !== transaction.destinationRouteId) return this.setAllowed(transaction, {})
         if (residency.kind === 'resident') {
           transaction.sourceRouteId = residency.route.id
+          if (residency.route.id === transaction.destinationRouteId) {
+            transaction.adoptedResidentRouteId = route.id
+          }
           return residency.route.id === transaction.destinationRouteId
             ? this.setAllowed(transaction, { health: [route.id] })
             : this.setAllowed(transaction, { drain: [residency.route.id] })
@@ -1673,10 +1698,11 @@ export class PreviewManager {
     if (stage === 'start') {
       transaction.started = true
       transaction.startedRouteId = route.id
+      delete transaction.adoptedResidentRouteId
       return this.setAllowed(transaction, { health: [route.id] })
     }
     if (stage === 'health') {
-      return transaction.startedRouteId === route.id
+      return transaction.startedRouteId === route.id || transaction.adoptedResidentRouteId === route.id
         ? this.setAllowed(transaction, { probe: [route.id] })
         : this.setAllowed(transaction, {})
     }
