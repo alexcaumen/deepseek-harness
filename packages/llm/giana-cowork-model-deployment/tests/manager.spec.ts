@@ -481,6 +481,17 @@ describe('Giana CoWork Preview model manager', () => {
     expect(remote.commands.some(command => command.includes('stop-glm'))).toBe(false)
   })
 
+  it('accepts Linux kernel-thread telemetry with process group zero', async () => {
+    const remote = new FakeRemote()
+    remote.processTable = '2 0 0\n5010 5010 102400\n'
+    const { adapter } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('glm-official'), 'f')))
+      .resolves.toMatchObject({ ok: true })
+    await adapter.release(grant, 'SETTLED', new AbortController().signal)
+  })
+
   it('rechecks free capacity at start after a successful preflight', async () => {
     const remote = new FakeRemote()
     const { adapter } = await fixture(remote)

@@ -12,6 +12,7 @@
  */
 
 import { spawn, type ChildProcess } from 'node:child_process'
+import { timingSafeEqual } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -22,6 +23,7 @@ import * as FrontendStatic from '@deepseek-ai/dsh-host-frontend-static'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { scrubbedParentEnv } from '@deepseek-ai/dsh-subprocess'
 import type {} from '@deepseek-ai/cordis-plugin-loader'
+import type {} from '@deepseek-ai/dsh-cmdline'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-shell-env'
@@ -53,6 +55,8 @@ export interface Config {
   surfaceContext: boolean
   /** Explicit `--trusted-host` authorities from this invocation. */
   trustedHosts: string[]
+  /** Mount the authenticated loopback shutdown route used by an owning desktop wrapper. */
+  desktopShutdown?: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -60,6 +64,7 @@ export const Config: z<Config> = z.object({
   printUrl: z.boolean().default(true),
   surfaceContext: z.boolean().default(true),
   trustedHosts: z.array(String).default([]),
+  desktopShutdown: z.boolean().default(false),
 })
 
 /** Bind-dependent Web values shared by the trust fence and URL display. */
@@ -78,6 +83,76 @@ const DSH_WEB_URL = 'DSH_WEB_URL' as const
 const LOOPBACK_HOST = '127.0.0.1'
 /** The webserver schema's all-interfaces bind literal. */
 const ALL_INTERFACES_HOST = '0.0.0.0'
+/** Process-only bearer secret shared with the owning desktop wrapper. */
+const DESKTOP_SHUTDOWN_TOKEN_ENV = 'GIANA_COWORK_DESKTOP_SHUTDOWN_TOKEN'
+/** Private loopback route used only to dispose an owned desktop backend. */
+const DESKTOP_SHUTDOWN_PATH = '/__giana/desktop/shutdown'
+/** Header carrying the per-launch shutdown secret. */
+const DESKTOP_SHUTDOWN_HEADER = 'x-giana-cowork-shutdown-token'
+
+/** Whether a socket address names the local host. */
+function isLoopbackAddress(address: string | undefined): boolean {
+  return address === LOOPBACK_HOST || address === '::1' || address === `::ffff:${LOOPBACK_HOST}`
+}
+
+/** Compare the fixed-width hexadecimal shutdown secrets without content-dependent timing. */
+function matchesShutdownToken(candidate: string | string[] | undefined, expected: string): boolean {
+  if (typeof candidate !== 'string' || !/^[0-9a-f]{64}$/u.test(candidate)) return false
+  const left = Buffer.from(candidate, 'ascii')
+  const right = Buffer.from(expected, 'ascii')
+  return left.length === right.length && timingSafeEqual(left, right)
+}
+
+/** Mount the private desktop shutdown route when an owning wrapper opted in. */
+function mountDesktopShutdown(ctx: Context): void {
+  if (ctx.webServer.host !== LOOPBACK_HOST) {
+    throw new Error('web-app: desktop shutdown requires a loopback-only webserver')
+  }
+  const token = launchEnvironmentOf(ctx).getFrom(DESKTOP_SHUTDOWN_TOKEN_ENV, ['process'])?.value
+  if (token === undefined || !/^[0-9a-f]{64}$/u.test(token)) {
+    throw new Error(`web-app: ${DESKTOP_SHUTDOWN_TOKEN_ENV} must be a 64-character hexadecimal process value`)
+  }
+  const appExit = ctx.get('appExit')
+  if (appExit === undefined) throw new Error('web-app: desktop shutdown requires the launcher-provided appExit service')
+
+  let shutdownRequested = false
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: DESKTOP_SHUTDOWN_PATH,
+    handler: (req, res) => {
+      if (req.method !== 'POST') {
+        res.writeHead(405, { Allow: 'POST', 'Cache-Control': 'no-store' })
+        res.end()
+        return
+      }
+      if (!isLoopbackAddress(req.socket.remoteAddress)
+        || !matchesShutdownToken(req.headers[DESKTOP_SHUTDOWN_HEADER], token)) {
+        res.writeHead(403, { 'Cache-Control': 'no-store' })
+        res.end()
+        return
+      }
+      if (req.headers['transfer-encoding'] !== undefined
+        || (req.headers['content-length'] !== undefined && req.headers['content-length'] !== '0')) {
+        res.writeHead(413, { 'Cache-Control': 'no-store' })
+        res.end()
+        return
+      }
+      if (shutdownRequested) {
+        res.writeHead(409, { 'Cache-Control': 'no-store' })
+        res.end()
+        return
+      }
+      shutdownRequested = true
+      res.writeHead(202, {
+        'Cache-Control': 'no-store',
+        Connection: 'close',
+        'Content-Type': 'application/json; charset=utf-8',
+      })
+      res.end('{"status":"shutting-down"}')
+      setImmediate(() => { appExit(0) })
+    },
+  }), 'web-app: authenticated desktop shutdown route')
+}
 
 /** Whether this process was launched through SSH, including a forwarded-port session. */
 function launchedThroughSsh(ctx: Context): boolean {
@@ -230,6 +305,7 @@ export function apply(ctx: Context, config: Config): void {
   const handoffBrowser = config.openBrowser && !launchedThroughSsh(ctx)
   // Release dependent rows only after bind-dependent trust has been sampled once.
   ctx.provide(WEB_RUNTIME_SERVICE, runtime)
+  if (config.desktopShutdown === true) mountDesktopShutdown(ctx)
   ctx.plugin(FrontendStatic, { distIndex: internals.resolveDistIndex() })
   if (config.surfaceContext) {
     ctx.inject(['systemPrompt'], (promptCtx) => {

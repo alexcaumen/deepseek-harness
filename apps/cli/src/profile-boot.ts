@@ -36,7 +36,12 @@ const SHIPPED_PRESET_ROOT = fileURLToPath(new URL('../config/agent-presets/', im
 
 import { DSH_LAUNCH_ENVIRONMENT_KEY, type LaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environment'
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
-import { createProcessShutdown, type ProcessShutdown } from './process-shutdown.ts'
+import {
+  createProcessShutdown,
+  PROCESS_SHUTDOWN_TIMEOUT_ENV,
+  resolveProcessShutdownTimeout,
+  type ProcessShutdown,
+} from './process-shutdown.ts'
 
 const NAME = 'dsh'
 
@@ -207,7 +212,10 @@ function suppressShutdownError(ctx: Context, signal: AbortSignal, error: unknown
 export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Context; shutdown: ProcessShutdown }> {
   const composed = composeProfile(options.profile, options.patchFiles)
   const app: { current?: Context } = {}
-  const shutdown = createProcessShutdown(async () => { await app.current?.fiber.dispose() })
+  const shutdownTimeout = resolveProcessShutdownTimeout(
+    options.environment.getFrom(PROCESS_SHUTDOWN_TIMEOUT_ENV, ['process'])?.value,
+  )
+  const shutdown = createProcessShutdown(async () => { await app.current?.fiber.dispose() }, undefined, undefined, shutdownTimeout)
   const signalShutdown = new AbortController()
   const interrupt = (code: number): void => {
     signalShutdown.abort()

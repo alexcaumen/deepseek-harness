@@ -44,6 +44,14 @@ function evaluatedString(value: unknown, env: Record<string, string>): string {
   return evaluated
 }
 
+function evaluatedBoolean(value: unknown, env: Record<string, string>): boolean {
+  const evaluated: unknown = value !== null && typeof value === 'object' && '__jsExpr' in value
+    ? evaluate({ process: { env } }, (value as { __jsExpr: string }).__jsExpr) as unknown
+    : value
+  if (typeof evaluated !== 'boolean') throw new TypeError('the runtime switch must evaluate to a boolean')
+  return evaluated
+}
+
 describe('Giana CoWork runtime binding', () => {
   it('adds model lifecycle without replacing the established plugin composition', () => {
     const entries = entriesFromPatch()
@@ -54,6 +62,7 @@ describe('Giana CoWork runtime binding', () => {
       ['giana-cowork-model-deployment', '@deepseek-ai/dsh-giana-cowork-model-deployment', undefined],
       ['llm-gianaos-acp', '@grinviro/dsh-llm-gianaos-acp', undefined],
       ['llm-princess-os', '@grinviro/dsh-llm-princess-os', undefined],
+      ['web-runtime', undefined, undefined],
       ['approval', undefined, undefined],
       ['permission', undefined, undefined],
       ['client-hmr', undefined, true],
@@ -92,6 +101,15 @@ describe('Giana CoWork runtime binding', () => {
       ],
     })
     expect(entries.some(entry => entry.id === 'system-prompt')).toBe(false)
+  })
+
+  it('enables desktop shutdown only for a wrapper-owned launch', () => {
+    const webRuntime = configById(entriesFromPatch(), 'web-runtime')
+
+    expect(evaluatedBoolean(webRuntime.desktopShutdown, {})).toBe(false)
+    expect(evaluatedBoolean(webRuntime.desktopShutdown, {
+      GIANA_COWORK_DESKTOP_SHUTDOWN_TOKEN: 'a'.repeat(64),
+    })).toBe(true)
   })
 
   it('keeps lifecycle, terminal, browser, and subagent tools in the packaged base dependency closure', () => {

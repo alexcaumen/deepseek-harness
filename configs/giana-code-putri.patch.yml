@@ -123,6 +123,14 @@
 # The desktop app serves prebuilt client bundles. The upstream HMR row polls
 # every client bundle on the N: worktree every 500 ms and is only useful while
 # pnpm's watch build is running, so keep it out of the stable desktop runtime.
+- id: web-runtime
+  config:
+    openBrowser: !!js ctx.webStartup.openBrowser
+    printUrl: true
+    surfaceContext: true
+    trustedHosts: !!js ctx.webStartup.trustedHosts
+    desktopShutdown: !!js "process.env.GIANA_COWORK_DESKTOP_SHUTDOWN_TOKEN !== undefined"
+
 - id: approval
   config:
     # Full filesystem access must not silently disable the one-shot consent

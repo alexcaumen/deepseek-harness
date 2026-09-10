@@ -1379,7 +1379,9 @@ export class PreviewManager {
       const pid = Number(match[1])
       const group = Number(match[2])
       const rssKiB = Number(match[3])
-      if (!Number.isSafeInteger(pid) || pid < 1 || !Number.isSafeInteger(group) || group < 1
+      // Linux exposes kernel threads with PGID 0 in the full process table.
+      // They cannot match a managed userspace process group, but remain valid telemetry rows.
+      if (!Number.isSafeInteger(pid) || pid < 1 || !Number.isSafeInteger(group)
         || !Number.isSafeInteger(rssKiB) || rssKiB < 0 || processes.has(pid)) return false
       processes.set(pid, { group, rssKiB })
     }

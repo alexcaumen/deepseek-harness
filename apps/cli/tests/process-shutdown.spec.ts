@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createProcessShutdown,
+  PROCESS_SHUTDOWN_TIMEOUT_ENV,
   PROCESS_SHUTDOWN_TIMEOUT_MS,
+  resolveProcessShutdownTimeout,
 } from '../src/process-shutdown.ts'
 
 function deferred(): { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void } {
@@ -20,6 +22,14 @@ afterEach(() => {
 })
 
 describe('process shutdown', () => {
+  it('resolves a bounded process-only grace override and rejects invalid values', () => {
+    expect(resolveProcessShutdownTimeout(undefined)).toBe(PROCESS_SHUTDOWN_TIMEOUT_MS)
+    expect(resolveProcessShutdownTimeout('300000')).toBe(300_000)
+    for (const value of ['', '0', '-1', '1.5', '1800001', '9007199254740993']) {
+      expect(() => resolveProcessShutdownTimeout(value)).toThrow(PROCESS_SHUTDOWN_TIMEOUT_ENV)
+    }
+  })
+
   it('completes naturally after disposal resolves and forces exit when it rejects', async () => {
     const resolvedExit = vi.fn()
     const resolvedComplete = vi.fn()

@@ -4,6 +4,8 @@ English | [中文](README.zh.md)
 
 The `dsh` command is the product launcher for profiles: ordered stacks of plugin-bundle patch layers under the user's own overrides. [`src/args.ts`](src/args.ts) owns the command grammar, and [`src/bin.ts`](src/bin.ts) loads only the selected runner. Invalid commands, options from another mode, configuration errors, and boot failures exit nonzero.
 
+Long-lived profiles normally receive 5 seconds for whole-tree disposal. A process supervisor that owns a slower orderly drain may set the process-origin `DSH_PROCESS_SHUTDOWN_TIMEOUT_MS` to a positive integer up to 1,800,000 milliseconds; project and user environment files cannot change this bound.
+
 ## Entry modes
 
 | Command | Purpose |
@@ -41,6 +43,8 @@ Bundles named in `dsh.profile.bundles` resolve from the dsh installation first (
 Use `--dump-default-config` and `--dump-config` to inspect the composed tree without booting it.
 
 The [CLI behavior reference](reference/README.md) owns exact layer precedence, flags, shutdown behavior, deployment defaults, and source execution.
+
+An owning supervisor may set the process-only `DSH_PROCESS_SHUTDOWN_TIMEOUT_MS` value to a positive integer of at most 1,800,000 milliseconds when its mounted plugins need longer than the ordinary five-second graceful drain. Invalid values fail before the profile boots; the forced-exit fallback remains bounded.
 
 ## Development
 

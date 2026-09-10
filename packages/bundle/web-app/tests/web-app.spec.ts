@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { createLaunchEnvironmentSnapshot, DSH_LAUNCH_ENVIRONMENT_KEY } from '@deepseek-ai/dsh-launch-environment'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
-import type { WebServer } from '@deepseek-ai/dsh-host-webserver'
+import type { WebRoute, WebServer } from '@deepseek-ai/dsh-host-webserver'
 import { apply, Config, internals } from '../src/index.ts'
 
 vi.mock('node:child_process', async importOriginal => ({
@@ -68,19 +68,46 @@ function stageDist(): string {
   return index
 }
 
-/** A fake webServer capturing the fallback seat and index taps. */
-function fakeHttpServer(host: '127.0.0.1' | '0.0.0.0' = '127.0.0.1'): { server: WebServer; seat: () => unknown } {
+/** A fake webServer capturing the fallback seat and named routes. */
+function fakeHttpServer(host: '127.0.0.1' | '0.0.0.0' = '127.0.0.1'): {
+  server: WebServer
+  seat: () => unknown
+  routes: WebRoute[]
+} {
   let fallback: unknown
+  const routes: WebRoute[] = []
   const server = {
     host,
     port: 4567,
+    register: (route: WebRoute) => {
+      routes.push(route)
+      return () => { routes.splice(routes.indexOf(route), 1) }
+    },
     registerFallback: (handler: unknown) => {
       fallback = handler
       return () => { fallback = undefined }
     },
     renderIndex: (html: string) => html,
   } as unknown as WebServer
-  return { server, seat: () => fallback }
+  return { server, seat: () => fallback, routes }
+}
+
+/** Minimal response recorder for direct wire-handler checks. */
+function responseRecorder(): {
+  response: { writeHead: (status: number, headers?: Record<string, string>) => void; end: (body?: string) => void }
+  status: () => number | undefined
+  body: () => string | undefined
+} {
+  let status: number | undefined
+  let body: string | undefined
+  return {
+    response: {
+      writeHead: (value) => { status = value },
+      end: (value) => { body = value },
+    },
+    status: () => status,
+    body: () => body,
+  }
 }
 
 /** A fake Loader whose settlement the test controls (the URL line waits on it). */
@@ -95,6 +122,137 @@ interface BashContribution {
 }
 
 describe('web-app runtime glue', () => {
+  it('keeps desktop shutdown absent by default', async () => {
+    stageDist()
+    const ctx = new Context()
+    const { server, routes } = fakeHttpServer()
+    ctx.provide('webServer', server)
+    ctx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, createLaunchEnvironmentSnapshot([{ source: 'process', values: {} }]))
+
+    apply(ctx, new Config({ openBrowser: false, printUrl: false, surfaceContext: false, trustedHosts: [] }))
+    const invariantHost = ctx as Context & { testInvariantReady?: boolean }
+    await vi.waitFor(() => { expect(invariantHost.testInvariantReady).toBe(true) })
+
+    expect(routes).toEqual([])
+    await ctx.fiber.dispose()
+  })
+
+  it('authenticates one loopback desktop shutdown and disposes its route', async () => {
+    stageDist()
+    const ctx = new Context()
+    const { server, routes } = fakeHttpServer()
+    ctx.provide('webServer', server)
+    const token = 'a'.repeat(64)
+    ctx.provide(DSH_LAUNCH_ENVIRONMENT_KEY, createLaunchEnvironmentSnapshot([
+      { source: 'process', values: { GIANA_COWORK_DESKTOP_SHUTDOWN_TOKEN: token } },
+    ]))
+    const appExit = vi.fn()
+    ctx.provide('appExit', appExit)
+    apply(ctx, new Config({
+      openBrowser: false,
+      printUrl: false,
+      surfaceContext: false,
+      trustedHosts: [],
+      desktopShutdown: true,
+    }))
+    const invariantHost = ctx as Context & { testInvariantReady?: boolean }
+    await vi.waitFor(() => { expect(invariantHost.testInvariantReady).toBe(true) })
+    expect(routes).toHaveLength(1)
+    expect(routes[0]?.path).toBe('/__giana/desktop/shutdown')
+    const route = routes[0]!
+
+    const deniedMethod = responseRecorder()
+    await route.handler({ method: 'GET', headers: {}, socket: { remoteAddress: '127.0.0.1' } } as never, deniedMethod.response as never)
+    expect(deniedMethod.status()).toBe(405)
+
+    const deniedRemote = responseRecorder()
+    await route.handler({
+      method: 'POST',
+      headers: { 'x-giana-cowork-shutdown-token': token },
+      socket: { remoteAddress: '192.168.1.5' },
+    } as never, deniedRemote.response as never)
+    expect(deniedRemote.status()).toBe(403)
+
+    const deniedToken = responseRecorder()
+    await route.handler({
+      method: 'POST',
+      headers: { 'x-giana-cowork-shutdown-token': 'b'.repeat(64) },
+      socket: { remoteAddress: '127.0.0.1' },
+    } as never, deniedToken.response as never)
+    expect(deniedToken.status()).toBe(403)
+
+    const deniedBody = responseRecorder()
+    await route.handler({
+      method: 'POST',
+      headers: { 'x-giana-cowork-shutdown-token': token, 'content-length': '1' },
+      socket: { remoteAddress: '127.0.0.1' },
+    } as never, deniedBody.response as never)
+    expect(deniedBody.status()).toBe(413)
+
+    const accepted = responseRecorder()
+    await route.handler({
+      method: 'POST',
+      headers: { 'x-giana-cowork-shutdown-token': token, 'content-length': '0' },
+      socket: { remoteAddress: '::ffff:127.0.0.1' },
+    } as never, accepted.response as never)
+    expect(accepted.status()).toBe(202)
+    expect(accepted.body()).toBe('{"status":"shutting-down"}')
+
+    const duplicate = responseRecorder()
+    await route.handler({
+      method: 'POST',
+      headers: { 'x-giana-cowork-shutdown-token': token },
+      socket: { remoteAddress: '::1' },
+    } as never, duplicate.response as never)
+    expect(duplicate.status()).toBe(409)
+
+    await new Promise(resolve => setImmediate(resolve))
+    expect(appExit).toHaveBeenCalledOnce()
+    expect(appExit).toHaveBeenCalledWith(0)
+    await ctx.fiber.dispose()
+    expect(routes).toEqual([])
+  })
+
+  it('fails loud when desktop shutdown lacks process provenance, app exit, or loopback binding', async () => {
+    stageDist()
+    const config = new Config({
+      openBrowser: false,
+      printUrl: false,
+      surfaceContext: false,
+      trustedHosts: [],
+      desktopShutdown: true,
+    })
+
+    const projectOnly = new Context()
+    projectOnly.provide('webServer', fakeHttpServer().server)
+    projectOnly.provide(DSH_LAUNCH_ENVIRONMENT_KEY, createLaunchEnvironmentSnapshot([
+      { source: 'project-env', path: '/work/.env', values: { GIANA_COWORK_DESKTOP_SHUTDOWN_TOKEN: 'a'.repeat(64) } },
+    ]))
+    projectOnly.provide('appExit', vi.fn())
+    expect(() => { apply(projectOnly, config) }).toThrow('64-character hexadecimal process value')
+
+    const noExit = new Context()
+    noExit.provide('webServer', fakeHttpServer().server)
+    noExit.provide(DSH_LAUNCH_ENVIRONMENT_KEY, createLaunchEnvironmentSnapshot([
+      { source: 'process', values: { GIANA_COWORK_DESKTOP_SHUTDOWN_TOKEN: 'a'.repeat(64) } },
+    ]))
+    expect(() => { apply(noExit, config) }).toThrow('launcher-provided appExit')
+
+    const exposed = new Context()
+    exposed.provide('webServer', fakeHttpServer('0.0.0.0').server)
+    exposed.provide(DSH_LAUNCH_ENVIRONMENT_KEY, createLaunchEnvironmentSnapshot([
+      { source: 'process', values: { GIANA_COWORK_DESKTOP_SHUTDOWN_TOKEN: 'a'.repeat(64) } },
+    ]))
+    exposed.provide('appExit', vi.fn())
+    expect(() => { apply(exposed, config) }).toThrow('loopback-only')
+
+    await Promise.all([
+      projectOnly.fiber.dispose(),
+      noExit.fiber.dispose(),
+      exposed.fiber.dispose(),
+    ])
+  })
+
   it('mounts dist serving, prompt section, bash variables, and publishes the URL with the LAN snapshot', async () => {
     stageDist()
     const ctx = new Context()

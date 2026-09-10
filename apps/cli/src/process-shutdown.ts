@@ -2,6 +2,27 @@
 
 /** Maximum grace allowed for the application tree to dispose before process exit. */
 export const PROCESS_SHUTDOWN_TIMEOUT_MS = 5_000
+/** Process-only override used by supervisors whose owned plugins need a longer orderly drain. */
+export const PROCESS_SHUTDOWN_TIMEOUT_ENV = 'DSH_PROCESS_SHUTDOWN_TIMEOUT_MS'
+/** Largest supported graceful-drain window. */
+const PROCESS_SHUTDOWN_TIMEOUT_MAX_MS = 30 * 60 * 1_000
+
+/**
+ * Resolve the bounded graceful-drain timeout from a process environment value.
+ * @param raw - Decimal milliseconds, or undefined to keep the ordinary CLI default.
+ * @returns The validated timeout in milliseconds.
+ */
+export function resolveProcessShutdownTimeout(raw: string | undefined): number {
+  if (raw === undefined) return PROCESS_SHUTDOWN_TIMEOUT_MS
+  if (!/^[1-9][0-9]*$/u.test(raw)) {
+    throw new Error(`${PROCESS_SHUTDOWN_TIMEOUT_ENV} must be a positive integer number of milliseconds`)
+  }
+  const timeout = Number(raw)
+  if (!Number.isSafeInteger(timeout) || timeout > PROCESS_SHUTDOWN_TIMEOUT_MAX_MS) {
+    throw new Error(`${PROCESS_SHUTDOWN_TIMEOUT_ENV} must not exceed ${String(PROCESS_SHUTDOWN_TIMEOUT_MAX_MS)} milliseconds`)
+  }
+  return timeout
+}
 
 /** Process-exit controller shared by normal completion and Unix signal handlers. */
 export interface ProcessShutdown {
