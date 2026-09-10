@@ -28,6 +28,7 @@
         registryPath: !!js process.env.DSH_SOURCE_ROOT + '/configs/giana-cowork-preview/r5300.model-registry.json'
         statePath: !!js process.env.DSH_HOME + '/state/giana-cowork-preview/model-manager-state.json'
         auditPath: !!js process.env.DSH_HOME + '/state/giana-cowork-preview/model-lifecycle-audit.jsonl'
+        managerScript: !!js process.env.DSH_HOME + '/profiles/web/node_modules/@deepseek-ai/dsh-giana-cowork-model-deployment/lib/manager.js'
         sshExecutable: 'C:\Windows\System32\OpenSSH\ssh.exe'
         sshConfigPath: 'C:\Users\grinv\.ssh\config'
         sshHost: r5300

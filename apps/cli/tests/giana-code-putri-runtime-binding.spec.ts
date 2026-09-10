@@ -223,13 +223,25 @@ describe('Giana CoWork runtime binding', () => {
     const isolatedHome = join(REPO_ROOT, '.test-giana-code-putri-home')
     const env = { DSH_SOURCE_ROOT: REPO_ROOT, DSH_HOME: isolatedHome }
     const entries = entriesFromPatch()
+    const deployment = configById(entries, 'giana-cowork-model-deployment')
     const gianaOs = configById(entries, 'llm-gianaos-acp')
     const princessOs = configById(entries, 'llm-princess-os')
     const playwright = configById(entries, 'mcp-playwright')
+    const managerScript = evaluatedString(deployment?.managerScript, env)
     const launchScript = evaluatedString(gianaOs?.launchScript, env)
     const playwrightArgs = playwright?.args
 
     expect(resolve(evaluatedString(gianaOs?.localWorkspace, env))).toBe(REPO_ROOT)
+    expect(resolve(managerScript)).toBe(join(
+      isolatedHome,
+      'profiles',
+      'web',
+      'node_modules',
+      '@deepseek-ai',
+      'dsh-giana-cowork-model-deployment',
+      'lib',
+      'manager.js',
+    ))
     expect(resolve(launchScript)).toBe(join(REPO_ROOT, 'scripts', 'princess-os', 'Start-GianaOsPutriAcp.mjs'))
     expect(existsSync(launchScript)).toBe(true)
     expect(resolve(evaluatedString(princessOs?.workspace, env))).toBe(REPO_ROOT)
