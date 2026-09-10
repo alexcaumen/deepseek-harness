@@ -30,6 +30,15 @@ afterEach(async () => {
   }
 })
 
+it('passes only the non-secret Windows environment required by OpenSSH', () => {
+  expect(Deployment.managerEnvironment({
+    SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\fixture', TEMP: 'N:\\tmp',
+    PATH: 'private-path', GLM_CANARY_API_KEY: 'private-key', SSH_AUTH_SOCK: 'private-agent',
+  })).toEqual({
+    SystemRoot: 'C:\\Windows', USERPROFILE: 'C:\\Users\\fixture', TEMP: 'N:\\tmp',
+  })
+})
+
 it('boots from Loader while a held route remains inert at mount and dispatch', async () => {
   root = await mkdtemp(join(tmpdir(), 'gcp-deployment-loader-'))
   const statePath = join(root, 'manager-state.json')
@@ -63,17 +72,15 @@ it('boots from Loader while a held route remains inert at mount and dispatch', a
     }],
     managerScript,
   }
-  expect(() => Deployment.apply({} as Context, {
-    ...config,
-    admissionDigest: bare('3'),
-  })).toThrow('admission receipt digest does not match')
-  expect(() => Deployment.apply({} as Context, {
-    ...config,
-    routes: [{
-      ...config.routes[0]!,
-      disposition: 'AVAILABLE' as const,
-    }],
-  })).toThrow('available route is not bound to this admission receipt')
+  const mismatchedConfig = Object.assign({}, config, { admissionDigest: bare('3') })
+  expect(() => {
+    Deployment.apply({} as Context, mismatchedConfig)
+  }).toThrow('admission receipt digest does not match')
+  const availableRoute = Object.assign({}, config.routes[0]!, { disposition: 'AVAILABLE' as const })
+  const unboundConfig = Object.assign({}, config, { routes: [availableRoute] })
+  expect(() => {
+    Deployment.apply({} as Context, unboundConfig)
+  }).toThrow('available route is not bound to this admission receipt')
   await writeFile(configPath, [
     '- id: sessions',
     "  name: '@deepseek-ai/dsh-session'",

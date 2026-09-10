@@ -27,6 +27,18 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/u
 const BARE_DIGEST = /^[a-f0-9]{64}$/u
 const TARGETS = ['r5300', 'prdg', 'ram-cpu'] as const
 const DISPOSITIONS = ['HIDDEN_HELD', 'VISIBLE_DISABLED', 'AVAILABLE'] as const
+const MANAGER_ENVIRONMENT_NAMES = [
+  'SystemRoot', 'WINDIR', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+  'APPDATA', 'LOCALAPPDATA', 'ProgramData', 'TEMP', 'TMP',
+] as const
+
+/** Minimal non-secret Windows environment required by the fixed OpenSSH executable. */
+export function managerEnvironment(environment: NodeJS.ProcessEnv = process.env): Readonly<Record<string, string>> {
+  return Object.freeze(Object.fromEntries(MANAGER_ENVIRONMENT_NAMES.flatMap((name) => {
+    const value = environment[name]
+    return value === undefined ? [] : [[name, value]]
+  })))
+}
 
 /** One target identity issued for this preview deployment. */
 export interface TargetConfig {
@@ -248,7 +260,7 @@ export function apply(ctx: Context, input: Config): void {
     executable: process.execPath,
     args: [managerScript, '--registry', config.registryPath, '--state', config.statePath,
       '--ssh', config.sshExecutable, '--ssh-config', config.sshConfigPath, '--host', config.sshHost],
-    env: {}, maxOperationMs: config.operationTimeoutMs,
+    env: managerEnvironment(), maxOperationMs: config.operationTimeoutMs,
   })
   const targets = Object.fromEntries(config.targets.map((target: TargetConfig) => [target.class, {
     identityDigest: target.identityDigest,
