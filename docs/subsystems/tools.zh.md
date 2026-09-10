@@ -503,6 +503,15 @@ Tool registry and execution pipeline. Scoped registrations shadow globals; one v
 
 ```ts cordis-catalog
 /**
+ * Project the registered schemas for one concrete model request.
+ * @param schemas - schemas that survived normal scope and restriction filtering.
+ * @param agent - agent issuing the request.
+ * @param provider - selected provider identifier.
+ * @returns schemas exposed to this request after any on-demand projection.
+ */
+schemasForRequest(schemas: ToolSchema[], agent: Agent, provider: string): ToolSchema[]
+
+/**
  * Render the same scoped SDK used by the system prompt for an external tool
  * consumer. Reads current visibility and runtime language on every call;
  * missing or unsupported runtimes fail before exposing any declarations.
@@ -608,7 +617,7 @@ executionMode(exec: ToolExecutionInput): ToolExecutionMode
 async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>
 ```
 
-Types: [ScopeKey](scope.zh.md) · [ToolProviderResult](system-prompt.zh.md)
+Types: [Agent](core.zh.md) · [ScopeKey](scope.zh.md) · [ToolProviderResult](system-prompt.zh.md)
 
 Source: [`packages/core/tools/src/index.ts`](../../packages/core/tools/src/index.ts)
 

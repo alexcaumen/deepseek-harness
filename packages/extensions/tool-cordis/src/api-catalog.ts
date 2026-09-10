@@ -2142,6 +2142,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     description: 'Tool registry and execution pipeline. Scoped registrations shadow globals; one visibility resolver feeds presentation, lookup, and dispatch.',
     methods: [
       {
+        signature: 'schemasForRequest(schemas: ToolSchema[], agent: Agent, provider: string): ToolSchema[]',
+        description: 'Project the registered schemas for one concrete model request.',
+        parameters: [{ name: 'schemas', description: 'schemas that survived normal scope and restriction filtering.' }, { name: 'agent', description: 'agent issuing the request.' }, { name: 'provider', description: 'selected provider identifier.' }],
+        returns: 'schemas exposed to this request after any on-demand projection.',
+      },
+      {
         signature: 'codeSdk(scope?: ScopeKey): string',
         description: 'Render the same scoped SDK used by the system prompt for an external tool consumer. Reads current visibility and runtime language on every call; missing or unsupported runtimes fail before exposing any declarations.',
         parameters: [{ name: 'scope', description: 'the calling agent, or undefined for the global view.' }],
@@ -5035,7 +5041,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ToolRuntime',
-    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    constructor(ctx: Context, config: Config = {});\n    codeSdk(scope?: ScopeKey): string;\n    presentAs(mode: ToolPresentationMode): () => void;\n    wireSchemas(scope?: ScopeKey): ToolProviderResult;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n}',
+    declaration: 'export class ToolRuntime extends Service {\n    static inject;\n    static Config: z<Config>;\n    readonly [TOOL_RUNTIME_SCHEDULER]: ToolRuntimeScheduler;\n    constructor(ctx: Context, config: Config = {});\n    schemasForRequest(schemas: ToolSchema[], agent: Agent, provider: string): ToolSchema[];\n    codeSdk(scope?: ScopeKey): string;\n    presentAs(mode: ToolPresentationMode): () => void;\n    wireSchemas(scope?: ScopeKey): ToolProviderResult;\n    register(definition: ToolDefinition): () => void;\n    restrict(filter: ToolRestriction): () => void;\n    guard(guard: ToolGuard): () => void;\n    get(name: string, scope?: ScopeKey): ToolDefinition | undefined;\n    schemas(scope?: ScopeKey): ToolSchema[];\n    executionMode(exec: ToolExecutionInput): ToolExecutionMode;\n    async execute(exec: ToolExecutionInput): Promise<ToolExecutionResult>;\n}',
   },
   {
     name: 'ToolRuntimeScheduler',

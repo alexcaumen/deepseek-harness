@@ -854,6 +854,13 @@ export class ToolRuntime extends Service {
    * and before the caller freezes/logs its request header. Registration and
    * execution permissions are unchanged; no opt-in returns the original schemas.
    */
+  /**
+   * Project the registered schemas for one concrete model request.
+   * @param schemas - schemas that survived normal scope and restriction filtering.
+   * @param agent - agent issuing the request.
+   * @param provider - selected provider identifier.
+   * @returns schemas exposed to this request after any on-demand projection.
+   */
   schemasForRequest(schemas: ToolSchema[], agent: Agent, provider: string): ToolSchema[] {
     return this.projectRequestSchemas?.(schemas, agent, provider) ?? schemas
   }

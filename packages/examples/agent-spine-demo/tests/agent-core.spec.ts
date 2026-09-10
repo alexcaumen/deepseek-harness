@@ -375,7 +375,7 @@ describe('dsh-agent-spine-demo bundle', () => {
       const firstRequestText = adapter.requests[0]?.messages.map(messageText).join('\n')
       expect(firstRequestText).toContain('hi')
       expect(firstRequestText).toContain('bundled project rule')
-      expect(adapter.requests[0]?.system).toContain('You are an AI agent powered by DeepSeek Harness.')
+      expect(adapter.requests[0]?.system).toContain('You are an AI agent working through Giana CoWork Preview (GCP).')
       expect(adapter.requests[0]?.system).not.toContain('bundled project rule')
       await handle.dispose()
       await ctx.fiber.dispose()
@@ -794,7 +794,15 @@ describe('dsh-agent-spine-demo bundle', () => {
       })
     }
     const assembly = await ctx.get('systemPrompt')!.assemble()
-    expect(assembly.tools.map(tool => tool.name)).toEqual(['zulu', 'alpha', 'job_kill', 'job_list', 'job_output', 'skill'])
+    expect(assembly.tools.map(tool => tool.name)).toEqual([
+      'zulu',
+      'alpha',
+      'job_kill',
+      'job_list',
+      'job_output',
+      'skill',
+      'skill_search',
+    ])
     await ctx.fiber.dispose()
   })
 
