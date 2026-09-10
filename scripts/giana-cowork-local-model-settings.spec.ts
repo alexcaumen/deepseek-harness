@@ -99,6 +99,7 @@ describe('local-model candidate merge', () => {
     expect(profile).toMatchObject({
       displayName: 'GLM 5.3 Flash Official FP8 (Local)',
       api: 'openai-completions', baseURL: BASE_URL, reasoning: 'high',
+      availabilityProbe: { model: MODEL, timeoutMs: 10_000, phase: 'dispatch' },
       models: [{
         id: MODEL, name: 'GLM 5.3 Flash Official FP8 (Local)',
         contextWindow: 4096, maxTokens: 1024,
@@ -114,7 +115,7 @@ describe('local-model candidate merge', () => {
     expect(profile.models?.[0]?.compat).toBeUndefined()
   })
 
-  it('merges a prior target profile without losing unrelated models or profile preferences', () => {
+  it('replaces a prior target catalog with the one admitted model while preserving profile preferences', () => {
     const source = { 'llm-pi-ai': { providers: { [PROVIDER]: {
       apiKeyEnv: 'TEST_ONLY_GLM_KEY_REF', timeoutMs: 1234, reasoning: 'max',
       models: [{ id: 'retained' }, { id: MODEL, maxTokens: 9999, reasoningEfforts: { max: 'max' }, note: 'keep' }],
@@ -122,10 +123,31 @@ describe('local-model candidate merge', () => {
     const first = prepared(source)
     const profile = providers(first.settings)[PROVIDER]!
     expect(profile).toMatchObject({ timeoutMs: 1234, apiKeyEnv: 'TEST_ONLY_GLM_KEY_REF', reasoning: 'high' })
-    expect(profile.models).toEqual([{ id: 'retained' }, expect.objectContaining({ note: 'keep', maxTokens: 1024 })])
+    expect(profile.models).toEqual([expect.objectContaining({ id: MODEL, note: 'keep', maxTokens: 1024 })])
     expect(prepared(first.settings).settings).toEqual(first.settings)
     expect(profile.models?.filter(model => model.id === MODEL)).toHaveLength(1)
   })
+
+  it('keeps an admitted Qwen route selectable but probes it only after lifecycle dispatch', () => {
+    const qwen = {
+      displayName: 'Qwen3.8-27B', api: 'openai-completions', baseURL: 'http://127.0.0.1:49178/v1',
+      models: [{ id: 'Qwen/Qwen3.8-27B' }],
+    }
+    const result = prepared({ 'llm-pi-ai': { providers: { 'qwen-local-r5300': qwen } } })
+    expect(providers(result.settings)['qwen-local-r5300']).toEqual({
+      ...qwen,
+      availabilityProbe: { model: 'Qwen/Qwen3.8-27B', timeoutMs: 10_000, phase: 'dispatch' },
+    })
+  })
+
+  it.each(['glm-uncensored-local-r5300', 'deepseek-vision-local-r5300', 'deepseek-vision-uncensored-local-r5300'])(
+    'removes held route %s from the active selector', (id) => {
+      const profile = { displayName: 'Held local model', models: [{ id: 'held-model' }] }
+      const result = prepared({ 'llm-pi-ai': { providers: { [id]: profile } } })
+      expect(providers(result.settings)[id]).toBeUndefined()
+      expect(result.heldProviders[id]).toEqual(profile)
+    },
+  )
 
   it.each(['model.glm53.flash.orcasaq.mlx.mixed456.local', 'OrcaSAQ-local', 'glm-orca-saq-mlx', 'Orca_SAQ'])('holds explicit OrcaSAQ route %s', (id) => {
     const profile = { models: [{ id: 'something' }], apiKeyEnv: 'TEST_ONLY_REF' }

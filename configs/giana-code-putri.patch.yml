@@ -21,6 +21,64 @@
       config:
         preference: automatic
 
+    - id: giana-cowork-model-deployment
+      name: '@deepseek-ai/dsh-giana-cowork-model-deployment'
+      config:
+        admissionReceiptPath: !!js process.env.DSH_SOURCE_ROOT + '/configs/giana-cowork-preview/R5300_LOCAL_MODEL_PREVIEW_ADMISSION_20260911.json'
+        registryPath: !!js process.env.DSH_SOURCE_ROOT + '/configs/giana-cowork-preview/r5300.model-registry.json'
+        statePath: !!js process.env.DSH_HOME + '/state/giana-cowork-preview/model-manager-state.json'
+        auditPath: !!js process.env.DSH_HOME + '/state/giana-cowork-preview/model-lifecycle-audit.jsonl'
+        sshExecutable: 'C:\Windows\System32\OpenSSH\ssh.exe'
+        sshConfigPath: 'C:\Users\grinv\.ssh\config'
+        sshHost: r5300
+        workId: giana-cowork-preview-local-model-heqa-20260911
+        principalId: alex
+        tenantId: giana-cowork-preview
+        issuerRef: giana:issuer:sha256:8fcaed49cd538cb6494053c7f2958fe9f48091e19f4258105fb5aa2a571e392a
+        holderRef: giana:holder:sha256:23a5fc97f64fa90efc8fd2a913cab32474ba267195d6c6be89beb70ba809c5ee
+        admissionDigest: 4978787ea7d990e513c7737cf911a2469b40ff17e28ee4b20db73c6cb24b0bbd
+        leaseTtlMs: 1800000
+        operationTimeoutMs: 1500000
+        maxClockSkewMs: 10000
+        targets:
+          - class: r5300
+            identityDigest: 49426230ec7354353db3c1f8ea8880803701b00ce8cdd8c15dfbaccb087bd2c7
+            currentnessDigest: 40ba00bc258fee097427502c53a317b791fc001cf8462e41c6ce042fa9507ec7
+        routes:
+          - id: glm53-official-fp8
+            provider: glm-local-r5300
+            model: GLM-5.3-Flash-official-fp8-canary
+            disposition: AVAILABLE
+            admissionReceiptDigest: sha256:4978787ea7d990e513c7737cf911a2469b40ff17e28ee4b20db73c6cb24b0bbd
+            revisionDigest: sha256:af139ab51af2a3ad155f9b012e1351ec074b7b3672262db7a9ebb6c845742aa4
+            targets:
+              - r5300
+            allowRamCpuOffload: true
+            supportedReasoningEfforts:
+              - high
+            stageTimeoutsMs:
+              start: 1200000
+              health: 180000
+              probe: 180000
+          - id: qwen38-local
+            provider: qwen-local-r5300
+            model: Qwen/Qwen3.8-27B
+            disposition: AVAILABLE
+            admissionReceiptDigest: sha256:4978787ea7d990e513c7737cf911a2469b40ff17e28ee4b20db73c6cb24b0bbd
+            revisionDigest: sha256:5da5832e0b3c0351bfb24486451b28649e629a6d14ef17c215358d8721b8b7d2
+            targets:
+              - r5300
+            allowRamCpuOffload: false
+            supportedReasoningEfforts:
+              - low
+              - medium
+              - high
+              - xhigh
+            stageTimeoutsMs:
+              start: 900000
+              health: 180000
+              probe: 180000
+
     - id: llm-gianaos-acp
       name: '@grinviro/dsh-llm-gianaos-acp'
       config:

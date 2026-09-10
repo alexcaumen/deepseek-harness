@@ -1,0 +1,17 @@
+# Giana CoWork Preview model deployment
+
+Private staging integration between the preview profile, model lifecycle service and a fixed-command SSH model manager. It is mounted only by the isolated Giana CoWork Preview patch and is not deployed in canonical Putri or GCW profiles. Package tests and a read-only R5300 probe are green, but this package is not yet evidence of an authorized live GPU switch.
+
+## Configuration and state
+
+The plugin requires explicit absolute admission receipt, registry, state, audit and SSH executable paths, host identity, principal/tenant scope, target identities, route revisions and lease timing. Startup hashes the admission receipt bytes and refuses a mismatch; every `AVAILABLE` route must bind that same receipt digest. It installs the existing Server Manager adapter and writes audit records durably. The manager accepts only registered script, systemd unit or Docker container identities. Script routes bind both start and stop paths to admitted SHA-256 digests and require one exact tracked process at stop time. Systemd routes bind the exact unit, launcher path and digest, cgroup and process marker. Docker routes bind the immutable container and image IDs in addition to the human-readable container name.
+
+Expired unresolved transactions and quarantined leases retain ownership. Quarantine cannot be removed by a SETTLED request. Persistence failure stops subsequent operations in that process. A host-side monotonic lease and operation lock fence independent manager processes before every mutation. The four host slot control paths must be absolute and distinct. Required GPU and process telemetry must be complete, valid and unique. Capacity uses measured route-owned RSS and VRAM, treats configured reclaimable values only as ceilings, and is checked again before start. Residency is established from exact container, systemd cgroup or process-group ownership rather than HTTP failure. Health and inference probes revalidate that ownership before accepting an endpoint response. Drain requires three consecutive zero-request samples. Release requires three consecutive samples proving the route absent and its listener closed; failure to prove release quarantines the lease. A failed or receipt-less remote mutation is treated as uncertain rather than proof that nothing changed. Route-bound recovery, durable request replay, nested restart-state validation and one absolute deadline per lifecycle stage are enforced by the manager.
+
+## Model Experience
+
+This plugin adds no prompt text or tool schemas. It gates local model dispatch, so admission and startup add latency before inference. It does not implement prompt-prefix caching, context reduction or KV-cache sharing. Offload and memory requirements are explicit route configuration, not automatic hardware pooling.
+
+## Known Limitations and Deferred Work
+
+The host-side fence governs only cooperating GCP model-manager instances; it cannot stop an unrelated privileged operator from mutating the same GPU or runtime. Drain proves zero requests only through the registered endpoint telemetry and therefore requires exclusive endpoint ownership. The package-level Loader composition is tested, while final GCP profile composition, an authorized live switch and desktop acceptance remain open. Fixture tests and the read-only host probe must not be represented as live GPU or desktop acceptance. Keep this package out of deployed profiles until exact route admission, preview-only profile wiring, an authorized live switch and the end-to-end gates are closed.

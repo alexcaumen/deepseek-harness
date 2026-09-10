@@ -185,6 +185,12 @@ export interface PiAiProviderProfile {
     model?: string
     /** Bounded readiness request timeout in milliseconds. */
     timeoutMs?: number
+    /**
+     * `eager` gates catalog resolution and dispatch. `dispatch` keeps an
+     * admitted cold route selectable so a lifecycle controller can start it,
+     * then gates the actual provider request after that controller settles.
+     */
+    phase?: 'eager' | 'dispatch'
   }
 }
 
@@ -343,7 +349,8 @@ const profile = z.object({
   availabilityProbe: z.object({
     model: z.string(),
     timeoutMs: z.number().step(1).min(1).max(MAX_TIMER_DELAY_MS).default(5_000),
-  }).default(undefined as unknown as { model: string; timeoutMs: number }),
+    phase: z.union(['eager', 'dispatch']).default('eager'),
+  }).default(undefined as unknown as { model: string; timeoutMs: number; phase: 'eager' | 'dispatch' }),
 })
 
 /** Runtime schema for {@link Config}. */

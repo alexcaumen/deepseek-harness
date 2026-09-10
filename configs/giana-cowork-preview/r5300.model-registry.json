@@ -1,0 +1,84 @@
+{
+  "schema": "giana.cowork.preview.model-registry.v1",
+  "issuerRef": "giana:issuer:sha256:8fcaed49cd538cb6494053c7f2958fe9f48091e19f4258105fb5aa2a571e392a",
+  "holderRef": "giana:holder:sha256:23a5fc97f64fa90efc8fd2a913cab32474ba267195d6c6be89beb70ba809c5ee",
+  "admissionDigest": "4978787ea7d990e513c7737cf911a2469b40ff17e28ee4b20db73c6cb24b0bbd",
+  "renewAfterMs": 120000,
+  "slot": {
+    "id": "gcp-r5300-slot-01",
+    "lockPath": "/run/lock/giana-cowork-preview-model-slot.state.lock",
+    "operationLockPath": "/run/lock/giana-cowork-preview-model-slot.operation.lock",
+    "statePath": "/var/lib/giana-cowork-preview/model-slot/state.json",
+    "counterPath": "/var/lib/giana-cowork-preview/model-slot/fence.counter"
+  },
+  "targets": [
+    {
+      "class": "r5300",
+      "identity_digest": "49426230ec7354353db3c1f8ea8880803701b00ce8cdd8c15dfbaccb087bd2c7",
+      "currentness_digest": "40ba00bc258fee097427502c53a317b791fc001cf8462e41c6ce042fa9507ec7"
+    }
+  ],
+  "routes": [
+    {
+      "id": "glm53-official-fp8",
+      "revisionDigest": "af139ab51af2a3ad155f9b012e1351ec074b7b3672262db7a9ebb6c845742aa4",
+      "target": "r5300",
+      "exclusiveEndpoint": true,
+      "runtime": {
+        "kind": "systemd",
+        "unit": "gcp-glm53-official-fp8-preview-r1.service",
+        "launcherPath": "/mnt/r5300-bulk/GRINVIRO_CORPORATE_WORKPLANE/12_AI_MODEL_AND_MEDIA_VAULT/models/.staging/GLM-5.3-Flash__zai-org__03eb5366286afd40d2221b1d9c63a6dd1ba4832e/runtime/canary/newtech-context64k-20260905T234913Z/launcher-context64k.sh",
+        "launcherSha256": "0b8045fb2c3f3334714c4e2eff00153fa1f091cd25d8ed1ee9c27f89a16ce684",
+        "processMarker": "GLM-5.3-Flash-official-fp8-canary",
+        "remotePort": 18081,
+        "expectedModel": "GLM-5.3-Flash-official-fp8-canary",
+        "drain": {
+          "kind": "sglang-load",
+          "path": "/get_load",
+          "pollIntervalMs": 2000
+        },
+        "release": {
+          "pollIntervalMs": 5000,
+          "maximumSamples": 36
+        }
+      },
+      "resources": {
+        "gpuIndices": [1],
+        "minimumFreeVramMiB": { "1": 42122 },
+        "reclaimableVramMiB": { "1": 41098 },
+        "minimumFreeRamMiB": 426754,
+        "reclaimableRamMiB": 312598
+      }
+    },
+    {
+      "id": "qwen38-local",
+      "revisionDigest": "5da5832e0b3c0351bfb24486451b28649e629a6d14ef17c215358d8721b8b7d2",
+      "target": "r5300",
+      "exclusiveEndpoint": true,
+      "runtime": {
+        "kind": "docker",
+        "container": "qwen38-vllm-server",
+        "containerId": "1d36f19265f38cf4694ce2f1e1394f2de68308ecf36a9944918de3de9e0bd30a",
+        "imageId": "sha256:716e50e11551b69fce41b67e73aa4f4549e3079f9fd13af7773f8dfa9c014890",
+        "remotePort": 8000,
+        "expectedModel": "Qwen/Qwen3.8-27B",
+        "drain": {
+          "kind": "vllm-metrics",
+          "path": "/metrics",
+          "pollIntervalMs": 2000
+        },
+        "release": {
+          "pollIntervalMs": 5000,
+          "maximumSamples": 36
+        }
+      },
+      "resources": {
+        "gpuIndices": [0, 1],
+        "minimumFreeVramMiB": { "0": 37417, "1": 37417 },
+        "reclaimableVramMiB": { "0": 36393, "1": 36393 },
+        "minimumFreeRamMiB": 73728,
+        "reclaimableRamMiB": 65536
+      }
+    }
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "schema": "giana.cowork.preview.local-model-admission.v1",
+  "issued_at": "2026-09-11T02:20:22+08:00",
+  "issuer_ref": "giana:issuer:sha256:8fcaed49cd538cb6494053c7f2958fe9f48091e19f4258105fb5aa2a571e392a",
+  "holder_ref": "giana:holder:sha256:23a5fc97f64fa90efc8fd2a913cab32474ba267195d6c6be89beb70ba809c5ee",
+  "authorization_basis": "Alex authorized isolated Giana CoWork Preview integration and direct HEQA of the governed local-model lifecycle in this Codex task.",
+  "scope": {
+    "product": "Giana CoWork Preview",
+    "environment": "isolated-staging-only",
+    "target": "r5300",
+    "official_giana_cowork": false,
+    "putri_v15": false,
+    "public_listener": false,
+    "production_green": false
+  },
+  "startup_policy": {
+    "mutate_gpu_at_mount": false,
+    "preserve_exact_recognized_resident_route": true,
+    "cold_start_without_user_request": false,
+    "new_session_default": "glm53-official-fp8",
+    "qwen_forced_at_startup": false
+  },
+  "target_identity": {
+    "basis": "r5300|472613f8d52b14a3da2d469eee3154a6db148ae2b492c9e2a284e54ce6e0632a|GPU-8300afae-7723-4a43-a6ac-7804166c4018|GPU-bdf65c79-5672-1627-b052-f16fef5e7a01",
+    "digest": "49426230ec7354353db3c1f8ea8880803701b00ce8cdd8c15dfbaccb087bd2c7"
+  },
+  "target_currentness": {
+    "observed_at": "2026-09-11T02:17:46+08:00",
+    "basis": "r5300|boot:7c7a326c7676ccbffd755ff442b1841885d8211cc243933da73c9711a1d635d3|kernel:7.0.2-6-pve|launcher:0b8045fb2c3f3334714c4e2eff00153fa1f091cd25d8ed1ee9c27f89a16ce684|qwen-image:sha256:716e50e11551b69fce41b67e73aa4f4549e3079f9fd13af7773f8dfa9c014890|dots:gpu0",
+    "digest": "40ba00bc258fee097427502c53a317b791fc001cf8462e41c6ce042fa9507ec7"
+  },
+  "upstream_evidence": {
+    "six_variant_handoff_sha256": "0ff9813619290e7f09b7449a2a8bc41d76fa8fa5254f1f5bb4e660d9b26af1fb",
+    "single_model_slot_contract_sha256": "169a64881f6c7dd9b73ec03434b5969c001218f1a641bf8af8a9c53945cea8ea",
+    "upstream_route_admission": false,
+    "meaning": "The upstream handoff supplies evidence, not admission. This receipt grants only the narrower Alex-authorized preview test scope above."
+  },
+  "routes": [
+    {
+      "id": "glm53-official-fp8",
+      "disposition": "AVAILABLE",
+      "provider": "glm-local-r5300",
+      "model": "GLM-5.3-Flash-official-fp8-canary",
+      "revision_digest": "af139ab51af2a3ad155f9b012e1351ec074b7b3672262db7a9ebb6c845742aa4",
+      "model_manifest_sha256": "03a47e43a65582c9ea2e7d36ee09e366727025509c729679c9830cd54bc2c16c",
+      "runtime": "systemd-exact-unit-launcher-cgroup-marker",
+      "default_for_new_sessions": true
+    },
+    {
+      "id": "qwen38-local",
+      "disposition": "AVAILABLE",
+      "provider": "qwen-local-r5300",
+      "model": "Qwen/Qwen3.8-27B",
+      "revision_digest": "5da5832e0b3c0351bfb24486451b28649e629a6d14ef17c215358d8721b8b7d2",
+      "runtime": "docker-exact-container-and-image",
+      "default_for_new_sessions": false
+    }
+  ],
+  "held_routes": [
+    "glm53-orcarouter-mlx-mixed-4-5-6",
+    "glm53-uncensored-fp8",
+    "glm53-uncensored-gguf-q6k",
+    "deepseek-v4-flash-vision-regular",
+    "deepseek-v4-flash-vision-uncensored"
+  ],
+  "invariants": {
+    "single_model_slot": true,
+    "three_zero_drain_samples": true,
+    "three_release_samples": true,
+    "exact_identity_before_mutation": true,
+    "host_monotonic_fence": true,
+    "rollback_to_captured_healthy_source": true,
+    "dots_port_17302_and_gpu0_reservation_untouched": true,
+    "no_f_drive_write": true
+  }
+}

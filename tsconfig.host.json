@@ -213,6 +213,7 @@
     { "path": "./packages/code-runtime/code-runtime-worker-thread" },
     { "path": "./packages/llm/llm-deepseek" },
     { "path": "./packages/llm/llm-gianaos-catalog" },
+    { "path": "./packages/llm/giana-cowork-model-deployment" },
     { "path": "./packages/llm/model-lifecycle" },
     { "path": "./packages/llm/model-lifecycle-server-manager" },
     { "path": "./packages/llm/llm-gianaos-acp" },

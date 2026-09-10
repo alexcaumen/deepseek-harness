@@ -51,6 +51,7 @@ describe('Giana CoWork runtime binding', () => {
     expect(entries.map(entry => [entry.id, entry.name, entry.disabled])).toEqual([
       ['tools', undefined, undefined],
       ['model-lifecycle', '@deepseek-ai/dsh-model-lifecycle', undefined],
+      ['giana-cowork-model-deployment', '@deepseek-ai/dsh-giana-cowork-model-deployment', undefined],
       ['llm-gianaos-acp', '@grinviro/dsh-llm-gianaos-acp', undefined],
       ['llm-princess-os', '@grinviro/dsh-llm-princess-os', undefined],
       ['approval', undefined, undefined],
@@ -67,6 +68,27 @@ describe('Giana CoWork runtime binding', () => {
       ['mcp-tool-runtime', '@deepseek-ai/dsh-mcp-server-tool-runtime', undefined],
     ])
     expect(configById(entries, 'model-lifecycle')).toEqual({ preference: 'automatic' })
+    expect(configById(entries, 'giana-cowork-model-deployment')).toMatchObject({
+      sshHost: 'r5300',
+      principalId: 'alex',
+      tenantId: 'giana-cowork-preview',
+      admissionDigest: '4978787ea7d990e513c7737cf911a2469b40ff17e28ee4b20db73c6cb24b0bbd',
+      targets: [{
+        class: 'r5300',
+        identityDigest: '49426230ec7354353db3c1f8ea8880803701b00ce8cdd8c15dfbaccb087bd2c7',
+        currentnessDigest: '40ba00bc258fee097427502c53a317b791fc001cf8462e41c6ce042fa9507ec7',
+      }],
+      routes: [
+        {
+          id: 'glm53-official-fp8', provider: 'glm-local-r5300',
+          model: 'GLM-5.3-Flash-official-fp8-canary', disposition: 'AVAILABLE',
+        },
+        {
+          id: 'qwen38-local', provider: 'qwen-local-r5300',
+          model: 'Qwen/Qwen3.8-27B', disposition: 'AVAILABLE',
+        },
+      ],
+    })
     expect(entries.some(entry => entry.id === 'system-prompt')).toBe(false)
   })
 

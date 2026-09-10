@@ -23,6 +23,13 @@ const yaml = require('yaml') as {
 const PROVIDER = 'glm-local-r5300'
 const MODEL = 'GLM-5.3-Flash-official-fp8-canary'
 const DISPLAY = 'GLM 5.3 Flash Official FP8 (Local)'
+const QWEN_PROVIDER = 'qwen-local-r5300'
+const QWEN_MODEL = 'Qwen/Qwen3.8-27B'
+const HELD_PROVIDER_IDS = new Set([
+  'glm-uncensored-local-r5300',
+  'deepseek-vision-local-r5300',
+  'deepseek-vision-uncensored-local-r5300',
+])
 const ORCASAQ = /(?:^|[^a-z0-9])orca[-_.\s]*saq(?:$|[^a-z0-9])/i
 type Mapping = Record<string, unknown>
 
@@ -169,7 +176,7 @@ export function mergeLocalModelSettings(source: Mapping, options: MergeOptions):
     const retained = listed?.filter(model => !isOrcaSAQ(model.id, model.name))
     const excludedOverride = Object.entries(overrides)
       .some(([modelId, model]) => isOrcaSAQ(modelId, mapping(model).name))
-    if (isOrcaSAQ(id, profile.displayName) || excludedOverride
+    if (HELD_PROVIDER_IDS.has(id) || isOrcaSAQ(id, profile.displayName) || excludedOverride
       || (listed && retained && listed.length > 0 && retained.length === 0)) {
       // Empty catalogs can fall back to installed models; hold the entire route instead.
       heldProviders[id] = structuredClone(profile)
@@ -203,9 +210,15 @@ export function mergeLocalModelSettings(source: Mapping, options: MergeOptions):
     api: 'openai-completions',
     baseURL,
     reasoning: 'high',
-    models: listed.some(entry => entry.id === MODEL)
-      ? listed.map(entry => entry.id === MODEL ? model : entry)
-      : [...listed, model],
+    availabilityProbe: { model: MODEL, timeoutMs: 10_000, phase: 'dispatch' },
+    models: [model],
+  }
+  if (providers[QWEN_PROVIDER] !== undefined) {
+    const qwen = mapping(providers[QWEN_PROVIDER])
+    providers[QWEN_PROVIDER] = {
+      ...qwen,
+      availabilityProbe: { model: QWEN_MODEL, timeoutMs: 10_000, phase: 'dispatch' },
+    }
   }
   settings['llm-pi-ai'] = { ...llm, providers }
   settings['agent-default-model'] = {

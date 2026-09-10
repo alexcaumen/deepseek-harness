@@ -107,6 +107,57 @@ describe('PiAiAdapter provider routing', () => {
     })).toThrow(/availabilityProbe requires an explicit baseURL/)
   })
 
+  it('keeps a lifecycle-managed cold route selectable and probes at dispatch', async () => {
+    const model = 'managed-local-model'
+    const server = await mockServer([
+      { body: JSON.stringify({ data: [{ id: model }] }) },
+      { events: textEvents },
+    ])
+    const adapter = adapterOf({
+      local: {
+        api: 'openai-completions',
+        baseURL: `${server.url}/v1`,
+        models: [{ id: model }],
+        availabilityProbe: { model, timeoutMs: 1_000, phase: 'dispatch' },
+      },
+    })
+
+    await expect(adapter.listModels('local')).resolves.toEqual([
+      expect.objectContaining({ provider: 'local', id: model }),
+    ])
+    const prepared = await adapter.prepareCall('local', model)
+    expect(server.paths).toEqual([])
+
+    const chunks = []
+    for await (const chunk of prepared.stream({ ...prepared.model, provider: 'local', model, messages: [] })) {
+      chunks.push(chunk)
+    }
+    expect(chunks.length).toBeGreaterThan(0)
+    expect(server.paths).toEqual(['/v1/models', '/v1/chat/completions'])
+  })
+
+  it('does not send chat when a dispatch-phase readiness probe fails', async () => {
+    const model = 'managed-local-model'
+    const server = await mockServer([
+      { body: JSON.stringify({ data: [{ id: 'foreign-model' }] }) },
+    ])
+    const adapter = adapterOf({
+      local: {
+        api: 'openai-completions', baseURL: `${server.url}/v1`, models: [{ id: model }],
+        availabilityProbe: { model, timeoutMs: 1_000, phase: 'dispatch' },
+      },
+    })
+    const prepared = await adapter.prepareCall('local', model)
+    const drain = async (): Promise<void> => {
+      for await (const _chunk of prepared.stream({ ...prepared.model, provider: 'local', model, messages: [] })) {
+        // No chunks are accepted from a route that failed its readiness gate.
+      }
+    }
+
+    await expect(drain()).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' })
+    expect(server.paths).toEqual(['/v1/models'])
+  })
+
   it('resolves a catalog model dynamically and uses a private endpoint', async () => {
     const server = await mockServer([{ events: textEvents }])
     const ctx = await harness(server.url)

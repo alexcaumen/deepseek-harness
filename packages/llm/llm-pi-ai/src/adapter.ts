@@ -231,10 +231,12 @@ export class PiAiAdapter extends LlmAdapter {
     snapshot: PiAiSnapshot,
     provider: string,
     signal?: AbortSignal,
+    phase: 'catalog' | 'dispatch' = 'catalog',
   ): Promise<void> {
     const profile = this.profileOf(snapshot, provider)
     const probe = profile.availabilityProbe
     if (probe === undefined) return
+    if (phase === 'catalog' && probe.phase === 'dispatch') return
     const baseURL = profile.baseURL
     if (baseURL === undefined) {
       throw new LlmError(`pi-ai provider "${provider}" has no readiness endpoint`, 'PROVIDER_UNAVAILABLE')
@@ -405,6 +407,7 @@ export class PiAiAdapter extends LlmAdapter {
     using watchdog = idleWatchdog(upstream, streamIdleTimeoutMs, 'LLM_STREAM_IDLE_TIMEOUT')
 
     try {
+      await this.assertAvailable(snapshot, options.provider, watchdog.signal, 'dispatch')
       const containsImage = options.messages.some(message => contentHasImage(message.content))
       if (containsImage && !model.input.includes('image')) {
         throw new LlmError(`pi-ai model "${model.id}" does not support image input`, 'UNSUPPORTED_CONTENT')
