@@ -784,6 +784,22 @@ describe('governed local-model lifecycle', () => {
     expect(log).toEqual([])
   })
 
+  it('treats omitted and explicit-false resident adoption settings as the same route', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const admitted = route('glm', 'glm', ['r5300'])
+    const log: string[] = []
+    ctx.modelLifecycle.register(admitted, driver(log))
+    installAuthority(ctx, () => ({
+      kind: 'GOVERNED',
+      scope: executionScope(),
+      route: { ...admitted, allowExactResidentAdoption: false },
+    }))
+
+    const lease = await ctx.modelLifecycle.acquireRoute({ selection: admitted.selection })
+    expect(lease).toMatchObject({ managed: true, routeId: 'glm', target: 'r5300' })
+    await lease.release()
+  })
+
   it.each(['start', 'health'] as const)('enforces the %s deadline independently of the long-start override', async (stage) => {
     vi.useFakeTimers()
     const ctx = await lifecycle({ stageTimeoutMs: 50, idleUnloadMs: 0 })

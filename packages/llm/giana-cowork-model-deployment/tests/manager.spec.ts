@@ -610,6 +610,27 @@ describe('Giana CoWork Preview model manager', () => {
     await expect(new PreviewManagerStateStore(statePath).load()).rejects.toThrow('STATE_CONFLICT')
   })
 
+  it('rejects an adopted resident state when its adoption marker is removed', async () => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    const { adapter, statePath } = await fixture(remote, registry(systemdRuntime()))
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const ctx = context(grant, route('glm-official'), 'f')
+    await adapter.preflight(ctx)
+    await adapter.capturePrestate(ctx)
+    const state = JSON.parse(await readFile(statePath, 'utf8')) as {
+      transactions: Record<string, Record<string, unknown>>
+    }
+    const transaction = state.transactions[bare('f')]
+    expect(transaction).toBeDefined()
+    delete transaction!.adoptedResidentRouteId
+    transaction!.nextAllowed = ['stop']
+    transaction!.allowedRoutes = { stop: ['glm-official'] }
+    await writeFile(statePath, `${JSON.stringify(state)}\n`, 'utf8')
+
+    await expect(new PreviewManagerStateStore(statePath).load()).rejects.toThrow('STATE_CONFLICT')
+  })
+
   it('rejects malformed durable JSON rather than silently starting empty', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'gcp-manager-corrupt-'))
     temporaryPaths.push(directory)

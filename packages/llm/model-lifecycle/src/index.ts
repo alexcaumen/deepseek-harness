@@ -445,7 +445,7 @@ function sameRoute(left: GovernedModelRoute, right: GovernedModelRoute): boolean
     && left.admissionReceiptDigest === right.admissionReceiptDigest
     && left.revisionDigest === right.revisionDigest
     && left.allowRamCpuOffload === right.allowRamCpuOffload
-    && left.allowExactResidentAdoption === right.allowExactResidentAdoption
+    && (left.allowExactResidentAdoption === true) === (right.allowExactResidentAdoption === true)
     && sameValues(left.targets, right.targets)
     && sameValues(left.supportedReasoningEfforts, right.supportedReasoningEfforts)
     && sameStageTimeouts(left.stageTimeoutsMs, right.stageTimeoutsMs)

@@ -539,12 +539,23 @@ function parseState(value: unknown): ManagerState {
       }
       const startedRouteId = optionalRoute(candidate.startedRouteId)
       if (candidate.started !== (startedRouteId !== undefined)) throw new ManagerError('STATE_CONFLICT')
+      const destinationRouteId = optionalRoute(candidate.destinationRouteId)
+      const sourceRouteId = optionalRoute(candidate.sourceRouteId)
       const adoptedResidentRouteId = optionalRoute(candidate.adoptedResidentRouteId)
       const lastStoppedRouteId = optionalRoute(candidate.lastStoppedRouteId)
+      const structurallyAdopted = kind === 'MODEL_ROUTE'
+        && candidate.destinationPrestateCaptured
+        && !candidate.started
+        && startedRouteId === undefined
+        && destinationRouteId !== undefined
+        && sourceRouteId === destinationRouteId
+      if (structurallyAdopted !== (adoptedResidentRouteId !== undefined)) {
+        throw new ManagerError('STATE_CONFLICT')
+      }
       if (adoptedResidentRouteId !== undefined && (kind !== 'MODEL_ROUTE'
         || startedRouteId !== undefined
-        || adoptedResidentRouteId !== optionalRoute(candidate.destinationRouteId)
-        || adoptedResidentRouteId !== optionalRoute(candidate.sourceRouteId)
+        || adoptedResidentRouteId !== destinationRouteId
+        || adoptedResidentRouteId !== sourceRouteId
         || !candidate.destinationPrestateCaptured
         || candidate.recovery
         || candidate.cleanCancelable
@@ -565,8 +576,8 @@ function parseState(value: unknown): ManagerState {
         started: candidate.started,
         sequence: integerField(candidate.sequence, 1),
         allowedRoutes,
-        destinationRouteId: optionalRoute(candidate.destinationRouteId),
-        sourceRouteId: optionalRoute(candidate.sourceRouteId),
+        destinationRouteId,
+        sourceRouteId,
         destinationPrestateCaptured: candidate.destinationPrestateCaptured,
         recovery: candidate.recovery,
         startedRouteId,
