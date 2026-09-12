@@ -1,5 +1,5 @@
 import { CallId, createUserMessage } from '@deepseek-ai/dsh-llm'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { type Agent, type AgentOptions } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -82,7 +82,7 @@ describe('startInProcessRun', () => {
     await run.dispose()
   })
 
-  it('inherits the parent latest assembled route after a session-local switch', async () => {
+  it('inherits the parent latest resolved route after a session-local switch', async () => {
     const { ctx, parent, adapter } = await setup([textResponse('parent answer'), textResponse('child answer')])
     ctx.llm.registerAdapter(['selected'], adapter)
     ctx.on('agent/request', async ({ agent }, next) => agent === parent
@@ -90,10 +90,15 @@ describe('startInProcessRun', () => {
       : next())
     parent.followup(createUserMessage({ content: [{ type: 'text', text: 'parent question' }], source: { kind: 'user' } }))
     await parent.whenIdle()
+    ctx.llm.registerAdapter(['resolved'], adapter)
+    vi.spyOn(parent.session, 'requestContext').mockReturnValue({
+      provider: 'resolved',
+      model: 'resolved-model',
+    })
 
     const run = await startInProcessRun(request(parent), {})
     expect(ctx.agents.get(run.id)!.options).toMatchObject({
-      provider: 'selected', model: 'selected-model', maxTokens: 321,
+      provider: 'resolved', model: 'resolved-model', maxTokens: 321,
     })
     await expect(run.result).resolves.toMatchObject({ stopReason: 'completed' })
     await run.dispose()
