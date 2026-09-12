@@ -316,6 +316,42 @@ describe('Server Manager model lifecycle gateway', () => {
     await gateway.release(grant, 'SETTLED', new AbortController().signal)
   })
 
+  it('forwards the exact eviction consent on a fenced stop stage', async () => {
+    const transport = new FixtureTransport()
+    const gateway = adapter(transport)
+    const grant = await gateway.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const consent = {
+      id: 'approval-1',
+      signature: bare('a'),
+      fencing_digest: FENCING,
+      scope_digest: scope().digest,
+      transaction_digest: prefixed('f'),
+      source_route_id: 'qwen-local',
+      source_revision_digest: route().revisionDigest,
+      source_target: 'r5300' as const,
+      destination_route_id: 'glm-local',
+      destination_revision_digest: prefixed('b'),
+      destination_target: 'prdg' as const,
+      source_prestate_digest: prefixed('c'),
+      destination_prestate_digest: prefixed('d'),
+      expires_at: 1_010_000,
+    }
+    await gateway.stop({ ...context(grant), evictionConsent: consent })
+
+    const request = transport.calls.find(call => call.operation === 'stage' && call.request.stage === 'stop')?.request
+    expect(request?.eviction_consent).toEqual({
+      ...consent,
+      fencing_digest: bare('5'),
+      scope_digest: bare('e'),
+      transaction_digest: bare('f'),
+      source_revision_digest: bare('d'),
+      destination_revision_digest: bare('b'),
+      source_prestate_digest: bare('c'),
+      destination_prestate_digest: bare('d'),
+    })
+    expect(request).toMatchObject({ lease_id: LEASE_ID, fence: 1 })
+  })
+
   it('rejects a receipt changed after signing without exposing the wire payload', async () => {
     const transport = new FixtureTransport()
     transport.corruptNext = true

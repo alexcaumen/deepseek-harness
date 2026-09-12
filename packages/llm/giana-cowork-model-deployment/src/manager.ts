@@ -1,7 +1,7 @@
 /** Fixed-command Server Manager process for the isolated Giana CoWork Preview deployment. */
 
 import { spawn } from 'node:child_process'
-import { createHash, randomBytes } from 'node:crypto'
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { dirname, isAbsolute } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -135,6 +135,25 @@ interface TransactionState {
   adoptedResidentRouteId?: string | undefined
   lastStoppedRouteId?: string | undefined
   inFlight?: Stage | undefined
+  destinationPrestateDigest?: string | undefined
+  sourcePrestateDigest?: string | undefined
+}
+
+interface EvictionConsent {
+  readonly id: string
+  readonly fencing_digest: string
+  readonly scope_digest: string
+  readonly transaction_digest: string
+  readonly source_route_id: string
+  readonly source_revision_digest: string
+  readonly source_target: TargetClass
+  readonly destination_route_id: string
+  readonly destination_revision_digest: string
+  readonly destination_target: TargetClass
+  readonly source_prestate_digest: string
+  readonly destination_prestate_digest: string
+  readonly expires_at: number
+  readonly signature: string
 }
 
 interface ReplayEntry {
@@ -152,6 +171,7 @@ interface ManagerState {
   lease?: LeaseState | undefined
   transactions: Record<string, TransactionState>
   replay: ReplayEntry[]
+  consumedEvictions: Record<string, string>
 }
 
 /** Fixed local process and remote host arguments for one manager instance. */
@@ -217,7 +237,7 @@ function asciiJsonString(value: string): string {
     `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`)
 }
 
-function canonicalJson(value: unknown): string {
+export function canonicalJson(value: unknown): string {
   if (value === null) return 'null'
   if (typeof value === 'string') return asciiJsonString(value)
   if (typeof value === 'number') {
@@ -270,6 +290,31 @@ function targetClass(value: unknown): TargetClass {
 
 function strictKeys(input: Record<string, unknown>, allowed: readonly string[]): void {
   if (Object.keys(input).some(key => !allowed.includes(key))) throw new ManagerError('INVALID_REQUEST')
+}
+
+function parseEvictionConsent(value: unknown): EvictionConsent {
+  const input = record(value)
+  strictKeys(input, [
+    'id', 'fencing_digest', 'scope_digest', 'transaction_digest', 'source_route_id', 'source_revision_digest',
+    'source_target', 'destination_route_id', 'destination_revision_digest', 'destination_target',
+    'source_prestate_digest', 'destination_prestate_digest', 'expires_at', 'signature',
+  ])
+  return {
+    id: stringField(input.id, BARE_DIGEST),
+    fencing_digest: stringField(input.fencing_digest, BARE_DIGEST),
+    scope_digest: stringField(input.scope_digest, BARE_DIGEST),
+    transaction_digest: stringField(input.transaction_digest, BARE_DIGEST),
+    source_route_id: stringField(input.source_route_id, SAFE_TOKEN),
+    source_revision_digest: stringField(input.source_revision_digest, BARE_DIGEST),
+    source_target: targetClass(input.source_target),
+    destination_route_id: stringField(input.destination_route_id, SAFE_TOKEN),
+    destination_revision_digest: stringField(input.destination_revision_digest, BARE_DIGEST),
+    destination_target: targetClass(input.destination_target),
+    source_prestate_digest: stringField(input.source_prestate_digest, BARE_DIGEST),
+    destination_prestate_digest: stringField(input.destination_prestate_digest, BARE_DIGEST),
+    expires_at: integerField(input.expires_at, 1),
+    signature: stringField(input.signature, BARE_DIGEST),
+  }
 }
 
 function parseRequirement(value: unknown): ResourceRequirement {
@@ -450,13 +495,13 @@ export function parsePreviewManagerRegistry(value: unknown): PreviewManagerRegis
 }
 
 function initialState(): ManagerState {
-  return { schema: STATE_SCHEMA, nextFence: 1, generation: 0, transactions: {}, replay: [] }
+  return { schema: STATE_SCHEMA, nextFence: 1, generation: 0, transactions: {}, replay: [], consumedEvictions: {} }
 }
 
 function parseState(value: unknown): ManagerState {
   try {
     const input = record(value)
-    strictKeys(input, ['schema', 'nextFence', 'generation', 'lease', 'transactions', 'replay'])
+    strictKeys(input, ['schema', 'nextFence', 'generation', 'lease', 'transactions', 'replay', 'consumedEvictions'])
     if (input.schema !== STATE_SCHEMA) throw new ManagerError('STATE_CONFLICT')
 
     let lease: LeaseState | undefined
@@ -503,6 +548,7 @@ function parseState(value: unknown): ManagerState {
         'digest', 'kind', 'scopeDigest', 'nextAllowed', 'cleanCancelable', 'terminal', 'started', 'sequence',
         'allowedRoutes', 'destinationRouteId', 'sourceRouteId', 'destinationPrestateCaptured', 'recovery',
         'startedRouteId', 'adoptedResidentRouteId', 'lastStoppedRouteId', 'inFlight',
+        'destinationPrestateDigest', 'sourcePrestateDigest',
       ])
       const kind = stringField(candidate.kind) as TransactionKind
       if (!['MODEL_ROUTE', 'IDLE_UNLOAD', 'SHUTDOWN'].includes(kind)
@@ -584,6 +630,10 @@ function parseState(value: unknown): ManagerState {
         adoptedResidentRouteId,
         lastStoppedRouteId,
         ...(inFlight === undefined ? {} : { inFlight }),
+        ...(candidate.destinationPrestateDigest === undefined ? {}
+          : { destinationPrestateDigest: stringField(candidate.destinationPrestateDigest, BARE_DIGEST) }),
+        ...(candidate.sourcePrestateDigest === undefined ? {}
+          : { sourcePrestateDigest: stringField(candidate.sourcePrestateDigest, BARE_DIGEST) }),
       }
       const restored = transactions[key]
       if (restored === undefined || restored.digest !== key) throw new ManagerError('STATE_CONFLICT')
@@ -608,6 +658,12 @@ function parseState(value: unknown): ManagerState {
       throw new ManagerError('STATE_CONFLICT')
     }
 
+    const consumedInput = input.consumedEvictions === undefined ? {} : record(input.consumedEvictions)
+    const consumedEvictions: Record<string, string> = {}
+    for (const [id, transactionDigest] of Object.entries(consumedInput)) {
+      consumedEvictions[stringField(id, BARE_DIGEST)] = stringField(transactionDigest, BARE_DIGEST)
+    }
+
     const nextFence = integerField(input.nextFence, 1)
     const generation = integerField(input.generation, 0)
     if (lease !== undefined && (lease.fence >= nextFence || lease.generation > generation)) {
@@ -620,6 +676,7 @@ function parseState(value: unknown): ManagerState {
       ...(lease === undefined ? {} : { lease }),
       transactions,
       replay,
+      consumedEvictions,
     }
   } catch {
     throw new ManagerError('STATE_CONFLICT')
@@ -866,6 +923,7 @@ function runRemote(args: PreviewManagerArguments, command: string, timeoutMs: nu
 /** Stateful JSONL operation implementation behind the Server Manager transport. */
 export class PreviewManager {
   private readonly routeById: ReadonlyMap<string, ManagedRoute>
+  private readonly evictionKeyPath: string
 
   constructor(
     private readonly registry: PreviewManagerRegistry,
@@ -874,6 +932,20 @@ export class PreviewManager {
     private readonly remote: PreviewManagerRemoteRunner = (command, timeoutMs) => runRemote(args, command, timeoutMs),
   ) {
     this.routeById = new Map(registry.routes.map(route => [route.id, route]))
+    this.evictionKeyPath = `${args.statePath}.eviction-key`
+  }
+
+  private async verifyEvictionConsent(consent: EvictionConsent): Promise<void> {
+    let key: Buffer
+    try {
+      key = await readFile(this.evictionKeyPath)
+    } catch {
+      throw new ManagerError('STATE_CONFLICT')
+    }
+    if (key.length !== 32) throw new ManagerError('STATE_CONFLICT')
+    const { signature, ...fields } = consent
+    const expected = createHmac('sha256', key).update(canonicalJson(fields), 'utf8').digest()
+    if (!timingSafeEqual(expected, Buffer.from(signature, 'hex'))) throw new ManagerError('STATE_CONFLICT')
   }
 
   async invoke(operation: string, envelopeValue: unknown): Promise<Readonly<Record<string, unknown>>> {
@@ -1036,6 +1108,7 @@ export class PreviewManager {
     if (route === undefined || route.revisionDigest !== revision || route.target !== targetName) throw new ManagerError('INVALID_REQUEST')
     const transactionDigest = stringField(envelope.transaction_digest, BARE_DIGEST)
     let hostLease: Pick<LeaseState, 'leaseId' | 'fence'> | undefined
+    let consentExpiresAt: number | undefined
     await this.store.run(async (state) => {
       const lease = this.boundLease(state, envelope)
       const covered = lease.targetDescriptors.find(descriptor => descriptor.class === targetName)
@@ -1046,6 +1119,36 @@ export class PreviewManager {
         || lease.expiresAt <= Date.now() || !this.routeAllowed(transaction, stage, route)) {
         throw new ManagerError('STATE_CONFLICT')
       }
+      if (stage === 'stop') {
+        if (transaction.kind !== 'MODEL_ROUTE') throw new ManagerError('STATE_CONFLICT')
+        const evictsExisting = transaction.sourceRouteId === route.id
+          && transaction.destinationRouteId !== route.id && !transaction.recovery
+        if (evictsExisting) {
+          const consent = parseEvictionConsent(envelope.eviction_consent)
+          const destination = this.routeById.get(transaction.destinationRouteId ?? '')
+          if (destination === undefined || consent.expires_at <= Date.now()
+            || consent.expires_at > lease.expiresAt
+            || consent.id in state.consumedEvictions
+            || consent.fencing_digest !== digest({ lease: lease.leaseId, fence: lease.fence })
+            || consent.scope_digest !== transaction.scopeDigest
+            || consent.transaction_digest !== transaction.digest
+            || consent.source_route_id !== route.id
+            || consent.source_revision_digest !== route.revisionDigest
+            || consent.source_target !== route.target
+            || consent.destination_route_id !== destination.id
+            || consent.destination_revision_digest !== destination.revisionDigest
+            || consent.destination_target !== destination.target
+            || consent.source_prestate_digest !== transaction.sourcePrestateDigest
+            || consent.destination_prestate_digest !== transaction.destinationPrestateDigest) {
+            throw new ManagerError('STATE_CONFLICT')
+          }
+          await this.verifyEvictionConsent(consent)
+          state.consumedEvictions[consent.id] = transaction.digest
+          consentExpiresAt = consent.expires_at
+        } else if (envelope.eviction_consent !== undefined) {
+          throw new ManagerError('INVALID_REQUEST')
+        }
+      } else if (envelope.eviction_consent !== undefined) throw new ManagerError('INVALID_REQUEST')
       hostLease = { leaseId: lease.leaseId, fence: lease.fence }
       transaction.inFlight = stage
       await this.store.persist()
@@ -1054,7 +1157,7 @@ export class PreviewManager {
     let outcome: { status: 'PASS' | 'FAIL' | 'QUARANTINED'; decision: string; evidence: unknown }
     try {
       if (hostLease === undefined) throw new ManagerError('STATE_CONFLICT')
-      outcome = await this.executeStage(stage, route, timeoutMs, hostLease)
+      outcome = await this.executeStage(stage, route, timeoutMs, hostLease, consentExpiresAt)
     }
     catch (error: unknown) {
       outcome = {
@@ -1078,6 +1181,14 @@ export class PreviewManager {
       transaction.nextAllowed = this.advanceTransaction(stage, route, outcome, transaction)
       transaction.terminal = transaction.nextAllowed.length === 0
       const result = this.stageReceipt(lease, transaction, route, stage, outcome)
+      if (stage === 'prestate' && outcome.status === 'PASS') {
+        const receiptDigest = stringField(result.receiptDigest, SHA256_DIGEST).slice(7)
+        if (route.id === transaction.destinationRouteId && transaction.destinationPrestateCaptured) {
+          transaction.destinationPrestateDigest = receiptDigest
+        } else if (route.id === transaction.sourceRouteId) {
+          transaction.sourcePrestateDigest = receiptDigest
+        }
+      }
       this.remember(state, 'stage', key, result)
       if (outcome.status === 'QUARANTINED') lease.quarantined = true
       await this.store.persist()
@@ -1090,6 +1201,7 @@ export class PreviewManager {
     route: ManagedRoute,
     timeoutMs: number,
     lease: Pick<LeaseState, 'leaseId' | 'fence'>,
+    consentExpiresAt?: number,
   ): Promise<{ status: 'PASS' | 'FAIL' | 'QUARANTINED'; decision: string; evidence: unknown }> {
     const budget = new StageBudget(timeoutMs)
     await this.assertHostLease(lease, budget)
@@ -1120,6 +1232,9 @@ export class PreviewManager {
         return { status: 'FAIL', decision: 'FAILED', evidence: before }
       }
       if (before.kind === 'resident') {
+        if (consentExpiresAt !== undefined && consentExpiresAt <= Date.now()) {
+          throw new ManagerError('STATE_CONFLICT')
+        }
         const command = route.runtime.kind === 'docker'
           ? dockerMutationCommand(route.runtime, 'stop')
           : route.runtime.kind === 'systemd'
@@ -1619,7 +1734,9 @@ export class PreviewManager {
     if (stage === 'prestate' && transaction.destinationPrestateCaptured
       && transaction.destinationRouteId !== undefined) {
       const destination = this.routeById.get(transaction.destinationRouteId)
-      if (destination === undefined || route.id === destination.id || route.target === destination.target) return false
+      if (destination === undefined || route.id === destination.id
+        || (transaction.sourceRouteId !== undefined && route.id !== transaction.sourceRouteId)
+        || (route.target === destination.target && transaction.sourceRouteId !== route.id)) return false
     }
     return true
   }
@@ -1658,6 +1775,8 @@ export class PreviewManager {
       delete transaction.startedRouteId
       delete transaction.adoptedResidentRouteId
       delete transaction.lastStoppedRouteId
+      delete transaction.destinationPrestateDigest
+      delete transaction.sourcePrestateDigest
       return this.setAllowed(transaction, { prestate: [route.id] })
     }
 
@@ -1679,7 +1798,7 @@ export class PreviewManager {
           }
           return residency.route.id === transaction.destinationRouteId
             ? this.setAllowed(transaction, { health: [route.id] })
-            : this.setAllowed(transaction, { drain: [residency.route.id] })
+            : this.setAllowed(transaction, { prestate: [residency.route.id] })
         }
         return residency.kind === 'empty' && transaction.destinationRouteId !== undefined
           ? this.setAllowed(transaction, { prestate: ['*'], start: [transaction.destinationRouteId] })

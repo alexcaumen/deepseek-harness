@@ -1,11 +1,14 @@
 /** Giana CoWork Preview deployment binding for governed local models. */
 
-import { createHash } from 'node:crypto'
+import { createHash, createHmac, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { open, mkdir } from 'node:fs/promises'
+import { open, mkdir, readFile } from 'node:fs/promises'
 import { isAbsolute, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-agent'
+import type { SessionId } from '@deepseek-ai/dsh-session'
+import type {} from '@deepseek-ai/dsh-user-approval'
 import z from '@deepseek-ai/schemastery'
 import {
   createModelExecutionScopeDigest,
@@ -15,6 +18,7 @@ import {
   type ModelExecutionScope,
   type ModelLifecycleAuditRecord,
   type ModelLifecycleAuthority,
+  type ModelEvictionConsentRequest,
   type ModelRouteDisposition,
 } from '@deepseek-ai/dsh-model-lifecycle'
 import {
@@ -22,6 +26,7 @@ import {
   ServerManagerStdioTransport,
   type ServerManagerTargetIdentity,
 } from '@deepseek-ai/dsh-model-lifecycle-server-manager'
+import { canonicalJson } from './manager.js'
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/u
 const BARE_DIGEST = /^[a-f0-9]{64}$/u
@@ -129,7 +134,7 @@ export const Config: z<Config> = z.object({
 })
 
 export const name = 'giana-cowork-model-deployment'
-export const inject = ['modelLifecycle']
+export const inject = ['modelLifecycle', 'agents', 'approval']
 
 function validate(config: Config): void {
   for (const [label, value] of [
@@ -218,7 +223,37 @@ class DurableAuditWriter {
   }
 }
 
-function authority(config: Config, routes: readonly GovernedModelRoute[]): ModelLifecycleAuthority {
+async function evictionSigningKey(statePath: string): Promise<Buffer> {
+  const file = `${statePath}.eviction-key`
+  await mkdir(dirname(file), { recursive: true })
+  try {
+    const handle = await open(file, 'wx', 0o600)
+    try {
+      await handle.writeFile(randomBytes(32))
+      await handle.sync()
+    } finally {
+      await handle.close()
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+  }
+  const key = await readFile(file)
+  if (key.length !== 32) throw new Error('GCP eviction signing key is unavailable')
+  return key
+}
+
+function bare(value: string): string {
+  if (!DIGEST.test(value)) throw new Error('Invalid GCP consent digest')
+  return value.slice('sha256:'.length)
+}
+
+/** Build the preview-scoped authority after its private signing key is ready. */
+export function createPreviewAuthority(
+  ctx: Context,
+  config: Config,
+  routes: readonly GovernedModelRoute[],
+  key: Buffer,
+): ModelLifecycleAuthority {
   const providers = new Set(routes.map(route => route.selection.provider))
   const bySelection = new Map(routes.map(route => [`${route.selection.provider}\u0000${route.selection.model}`, route]))
   const audit = new DurableAuditWriter(config.auditPath)
@@ -250,6 +285,58 @@ function authority(config: Config, routes: readonly GovernedModelRoute[]): Model
       return { kind: 'GOVERNED', route, scope }
     },
     record: (record: ModelLifecycleAuditRecord) => audit.append(record),
+    async requestEvictionConsent(request: ModelEvictionConsentRequest, signal: AbortSignal) {
+      const agent = ctx.agents.get(request.scope.sessionId as SessionId)
+      if (agent === undefined) return null
+      const from = `${request.sourceRoute.selection.model} on ${request.sourceTarget}`
+      const to = `${request.destinationRoute.selection.model} on ${request.destinationTarget}`
+      const decision = await ctx.approval.requestWithReceipt({
+        agent,
+        toolName: 'giana-cowork-preview:model-switch',
+        reason: `Stop resident ${from} and load ${to}? Rejecting keeps the current model running.`,
+        signal,
+      })
+      if (decision.outcome !== 'allowed-once' || signal.aborted) return null
+      const id = createHash('sha256').update([
+        decision.id, request.scope.digest, request.transactionDigest,
+        request.sourcePrestate.digest, request.destinationPrestate.digest,
+      ].join('\u0000')).digest('hex')
+      const fencingDigest = request.resourceLease.fencingDigest
+      const now = Date.now()
+      const expiresAt = Math.min(now + 300_000, request.resourceLease.expiresAt)
+      if (expiresAt <= now + 2_000) return null
+      const wire = {
+        id,
+        scope_digest: bare(request.scope.digest),
+        transaction_digest: bare(request.transactionDigest),
+        fencing_digest: bare(fencingDigest),
+        source_route_id: request.sourceRoute.id,
+        source_revision_digest: bare(request.sourceRoute.revisionDigest),
+        source_target: request.sourceTarget,
+        destination_route_id: request.destinationRoute.id,
+        destination_revision_digest: bare(request.destinationRoute.revisionDigest),
+        destination_target: request.destinationTarget,
+        source_prestate_digest: bare(request.sourcePrestate.digest),
+        destination_prestate_digest: bare(request.destinationPrestate.digest),
+        expires_at: expiresAt,
+      }
+      return {
+        id,
+        fencing_digest: fencingDigest,
+        signature: createHmac('sha256', key).update(canonicalJson(wire)).digest('hex'),
+        scope_digest: request.scope.digest,
+        transaction_digest: request.transactionDigest,
+        source_route_id: request.sourceRoute.id,
+        source_revision_digest: request.sourceRoute.revisionDigest,
+        source_target: request.sourceTarget,
+        destination_route_id: request.destinationRoute.id,
+        destination_revision_digest: request.destinationRoute.revisionDigest,
+        destination_target: request.destinationTarget,
+        source_prestate_digest: request.sourcePrestate.digest,
+        destination_prestate_digest: request.destinationPrestate.digest,
+        expires_at: expiresAt,
+      }
+    },
   }
 }
 
@@ -270,8 +357,9 @@ export function apply(ctx: Context, input: Config): void {
     currentnessDigest: target.currentnessDigest,
   }])) as Readonly<Partial<Record<ModelComputeTarget, ServerManagerTargetIdentity>>>
   ctx.effect(async () => {
+    const key = await evictionSigningKey(config.statePath)
     const uninstall = await installServerManagerLifecycle(
-      ctx.modelLifecycle, authority(config, routes), routes, {
+      ctx.modelLifecycle, createPreviewAuthority(ctx, config, routes, key), routes, {
         transport, targets, issuerRef: config.issuerRef, holderRef: config.holderRef,
         admissionDigest: config.admissionDigest, leaseTtlMs: config.leaseTtlMs,
         operationTimeoutMs: config.operationTimeoutMs, maxClockSkewMs: config.maxClockSkewMs,

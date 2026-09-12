@@ -255,6 +255,11 @@ export class ApprovalService extends Service {
    *   append commit point.
    */
   async request(req: ApprovalRequest): Promise<ApprovalOutcome> {
+    return (await this.requestWithReceipt(req)).outcome
+  }
+
+  /** Return the durable asked/decided identity for callers that must bind a one-shot action. */
+  async requestWithReceipt(req: ApprovalRequest): Promise<Readonly<{ id: string; outcome: ApprovalOutcome }>> {
     const session = req.agent.session
     if (!hasOpenTurn(session.events)) {
       throw new Error(
@@ -272,7 +277,7 @@ export class ApprovalService extends Service {
     })
     const outcome = await this.decide(req, session)
     session.append('approval/decided', { id, outcome })
-    return outcome
+    return { id, outcome }
   }
 
   /**

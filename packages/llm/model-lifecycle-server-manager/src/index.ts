@@ -453,6 +453,18 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
       stage,
       route_id: context.route.id,
       exact_revision_digest: bareDigest(context.route.revisionDigest),
+      ...(stage === 'stop' && context.evictionConsent !== undefined
+        ? { eviction_consent: {
+          ...context.evictionConsent,
+          scope_digest: bareDigest(context.evictionConsent.scope_digest),
+          transaction_digest: bareDigest(context.evictionConsent.transaction_digest),
+          fencing_digest: bareDigest(context.evictionConsent.fencing_digest),
+          source_revision_digest: bareDigest(context.evictionConsent.source_revision_digest),
+          destination_revision_digest: bareDigest(context.evictionConsent.destination_revision_digest),
+          source_prestate_digest: bareDigest(context.evictionConsent.source_prestate_digest),
+          destination_prestate_digest: bareDigest(context.evictionConsent.destination_prestate_digest),
+        } }
+        : {}),
     }, context.signal)
     this.validateStageReceipt(wire, state, transaction, context, stage)
     const stageReceipt = wire.stage_receipt

@@ -40,6 +40,8 @@ export interface ModelLifecycleConfig {
   readonly minimumDwellMs?: number
   /** Idle time after the last inference lease before unloading; zero disables it. */
   readonly idleUnloadMs?: number
+  /** GCP opt-in: close the app's lease without stopping its verified resident model. */
+  readonly preserveResidentOnShutdown?: boolean
   /** Maximum duration of one host-driver stage before it is cancelled. */
   readonly stageTimeoutMs?: number
   /** Maximum queued inference requests, excluding the current lease. */
@@ -52,6 +54,7 @@ interface ResolvedModelLifecycleConfig {
   readonly preference: ModelComputePreference
   readonly minimumDwellMs: number
   readonly idleUnloadMs: number
+  readonly preserveResidentOnShutdown: boolean
   readonly stageTimeoutMs: number
   readonly maxPendingRequests: number
   readonly queueTimeoutMs: number
@@ -62,6 +65,7 @@ export const Config: z<ModelLifecycleConfig> = z.object({
   preference: z.union([...MODEL_COMPUTE_PREFERENCES]).default('automatic'),
   minimumDwellMs: z.number().min(0).default(30_000),
   idleUnloadMs: z.number().min(0).default(300_000),
+  preserveResidentOnShutdown: z.boolean().default(false),
   stageTimeoutMs: z.number().min(1).default(120_000),
   maxPendingRequests: z.number().step(1).min(0).max(Number.MAX_SAFE_INTEGER).default(32),
   queueTimeoutMs: z.number().step(1).min(1).max(2_147_483_647).default(120_000),
@@ -98,6 +102,7 @@ export type ModelLifecycleErrorCode =
   | 'QUEUE_FULL'
   | 'QUEUE_TIMEOUT'
   | 'SESSION_PUBLICATION_FAILED'
+  | 'EVICTION_NOT_APPROVED'
   | 'ABORTED'
 
 /** Complete provider/model pair. Provider and model are never updated independently. */
@@ -147,7 +152,7 @@ export interface ModelLifecycleAuditRecord {
   readonly scopeDigest: string
   readonly routeId: string
   readonly target?: ModelComputeTarget
-  readonly outcome: 'READY' | 'RELEASED' | 'FAILED_ROLLED_BACK' | 'REJECTED' | 'IDLE_UNLOADED' | 'TAINTED'
+  readonly outcome: 'READY' | 'RELEASED' | 'FAILED_ROLLED_BACK' | 'REJECTED' | 'IDLE_UNLOADED' | 'RESIDENT_NOT_STOPPED' | 'TAINTED'
   readonly receiptDigests: readonly string[]
   readonly errorCode?: ModelLifecycleErrorCode
 }
@@ -189,6 +194,11 @@ export interface ModelLifecycleAuthority {
    * @returns Completion after durable settlement.
    */
   record(record: ModelLifecycleAuditRecord, signal: AbortSignal): Promise<void>
+  /** GCP opt-in: one explicit human decision before a resident model is drained. */
+  requestEvictionConsent?(
+    request: ModelEvictionConsentRequest,
+    signal: AbortSignal,
+  ): Promise<ModelEvictionConsentGrant | null>
 }
 
 const lifecycleStages = ['prestate', 'preflight', 'drain', 'stop', 'verify-stopped', 'start', 'health', 'probe'] as const
@@ -219,6 +229,36 @@ export interface ModelLifecyclePrestateReceipt extends ModelLifecycleStageReceip
     | { readonly kind: 'UNKNOWN' }
 }
 
+/** One exact, expiring grant carried to the GCP manager's fenced stop gate. */
+export interface ModelEvictionConsentGrant {
+  readonly id: string
+  readonly fencing_digest: string
+  readonly signature: string
+  readonly scope_digest: string
+  readonly transaction_digest: string
+  readonly source_route_id: string
+  readonly source_revision_digest: string
+  readonly source_target: ModelComputeTarget
+  readonly destination_route_id: string
+  readonly destination_revision_digest: string
+  readonly destination_target: ModelComputeTarget
+  readonly source_prestate_digest: string
+  readonly destination_prestate_digest: string
+  readonly expires_at: number
+}
+
+export interface ModelEvictionConsentRequest {
+  readonly scope: ModelExecutionScope
+  readonly transactionDigest: string
+  readonly resourceLease: ResourceLeaseGrant
+  readonly sourceRoute: GovernedModelRoute
+  readonly sourceTarget: ModelComputeTarget
+  readonly sourcePrestate: ModelLifecyclePrestateReceipt
+  readonly destinationRoute: GovernedModelRoute
+  readonly destinationTarget: ModelComputeTarget
+  readonly destinationPrestate: ModelLifecyclePrestateReceipt
+}
+
 /** Dynamic resource decision returned by the host driver. */
 export type ModelCapacityDecision =
   | { readonly ok: true; readonly receipt: ModelLifecycleStageReceipt }
@@ -236,6 +276,7 @@ export interface ModelLifecycleStageContext {
   readonly scope: ModelExecutionScope
   readonly transactionKind: ModelLifecycleTransactionKind
   readonly transactionDigest: string
+  readonly evictionConsent?: ModelEvictionConsentGrant
   /** Externally issued resource grant; drivers must validate its fence at the execution endpoint. */
   readonly resourceLease: ResourceLeaseGrant
   /** Absolute deadline for this individual host-driver stage. */
@@ -963,16 +1004,54 @@ export class ModelLifecycleRuntime extends Service {
           nextRoute: registration.route,
           nextTarget: target,
         }
-        if (previous.target !== target) {
+        let sourcePrestate = prestate
+        if (previous.target !== target || authority.requestEvictionConsent !== undefined) {
           try {
-            const previousPrestate = await this.runStage('prestate', previousContext, bounded =>
+            sourcePrestate = await this.runStage('prestate', previousContext, bounded =>
               previous.registration.driver.capturePrestate(bounded))
-            assertStageReceipt('prestate', previousPrestate, previousContext)
-            this.assertResidency(previousPrestate, previous)
-            receipts.push(previousPrestate)
+            assertStageReceipt('prestate', sourcePrestate, previousContext)
+            this.assertResidency(sourcePrestate, previous)
+            receipts.push(sourcePrestate)
           } catch (error: unknown) {
             throw lifecycleError('PREFLIGHT_FAILED', 'Could not verify the previous host model residency', error)
           }
+        }
+        let stopContext: ModelLifecycleStageContext = previousContext
+        const requestEvictionConsent = authority.requestEvictionConsent
+        if (requestEvictionConsent !== undefined) {
+          const consent = await this.runAuthorityOperation(
+            'resident-model eviction approval',
+            request.signal,
+            signal => requestEvictionConsent({
+              scope,
+              transactionDigest,
+              resourceLease: previousContext.resourceLease,
+              sourceRoute: previous.registration.route,
+              sourceTarget: previous.target,
+              sourcePrestate,
+              destinationRoute: registration.route,
+              destinationTarget: target,
+              destinationPrestate: prestate,
+            }, signal),
+          )
+          if (consent === null
+            || !/^[0-9a-f]{64}$/u.test(consent.id)
+            || consent.expires_at <= Date.now()
+            || consent.scope_digest !== scope.digest
+            || consent.fencing_digest !== previousContext.resourceLease.fencingDigest
+            || !/^[0-9a-f]{64}$/u.test(consent.signature)
+            || consent.transaction_digest !== transactionDigest
+            || consent.source_route_id !== previous.registration.route.id
+            || consent.source_revision_digest !== previous.registration.route.revisionDigest
+            || consent.source_target !== previous.target
+            || consent.source_prestate_digest !== sourcePrestate.digest
+            || consent.destination_route_id !== registration.route.id
+            || consent.destination_revision_digest !== registration.route.revisionDigest
+            || consent.destination_target !== target
+            || consent.destination_prestate_digest !== prestate.digest) {
+            throw new ModelLifecycleError('EVICTION_NOT_APPROVED', 'Resident-model switch was not approved')
+          }
+          stopContext = { ...previousContext, evictionConsent: consent }
         }
         onActivationStart()
         try {
@@ -987,7 +1066,7 @@ export class ModelLifecycleRuntime extends Service {
         previousStopAttempted = true
         let stopError: unknown
         try {
-          const stop = await this.runStage('stop', previousContext, bounded =>
+          const stop = await this.runStage('stop', stopContext, bounded =>
             previous.registration.driver.stop(bounded))
           assertStageReceipt('stop', stop, previousContext)
           receipts.push(stop)
@@ -1647,6 +1726,24 @@ export class ModelLifecycleRuntime extends Service {
       && active.registration !== expectedRegistration
     )) {
       if (this.tainted || active === undefined) await this.releaseResources('UNCERTAIN')
+      release()
+      return
+    }
+
+    if (this.settings().preserveResidentOnShutdown) {
+      this.active = undefined
+      this.phase = 'IDLE'
+      await this.releaseResources('SETTLED')
+      if (this.authority !== undefined) {
+        await this.recordBestEffort(this.authority, {
+          transactionDigest: digest([active.registration.route.id, active.scope.digest, 'leave-resident', String(Date.now())]),
+          scopeDigest: active.scope.digest,
+          routeId: active.registration.route.id,
+          target: active.target,
+          outcome: this.tainted ? 'TAINTED' : 'RESIDENT_NOT_STOPPED',
+          receiptDigests: [active.healthDigest],
+        })
+      }
       release()
       return
     }

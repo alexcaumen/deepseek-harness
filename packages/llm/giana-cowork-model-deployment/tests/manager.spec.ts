@@ -1,4 +1,5 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { createHash, createHmac } from 'node:crypto'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -14,6 +15,7 @@ import {
   type ServerManagerTransport,
 } from '@deepseek-ai/dsh-model-lifecycle-server-manager/src/index.ts'
 import {
+  canonicalJson,
   parsePreviewManagerRegistry,
   PreviewManager,
   PreviewManagerStateStore,
@@ -24,7 +26,16 @@ import {
 const bare = (digit: string): string => digit.repeat(64)
 const prefixed = (digit: string): string => `sha256:${bare(digit)}`
 const targetIdentity = { identityDigest: bare('6'), currentnessDigest: bare('7') }
+const evictionKey = Buffer.alloc(32, 0x5a)
 const temporaryPaths: string[] = []
+
+function signConsent(fields: Record<string, unknown>) {
+  return { ...fields, signature: createHmac('sha256', evictionKey).update(canonicalJson(fields), 'utf8').digest('hex') }
+}
+
+function consentOf(request: Record<string, unknown>): Record<string, unknown> {
+  return request.eviction_consent as Record<string, unknown>
+}
 
 class FakeRemote {
   residentPort: number | undefined
@@ -36,6 +47,7 @@ class FakeRemote {
   processTable: string | undefined
   startError: number | undefined
   onTelemetry: (() => void) | undefined
+  onStopMutation: (() => Promise<void>) | undefined
   activeRequestCounts: number[] = []
   malformedDrain = false
   hostFence = 0
@@ -55,6 +67,10 @@ class FakeRemote {
 
   readonly run = async (command: string): Promise<PreviewManagerRemoteResult> => {
     this.commands.push(command)
+    if (command.includes('GCP_') && (command.includes('docker stop --time 30 "$container_id"')
+      || command.includes('systemctl stop "$unit"') || command.includes('\n"$stop_path"\n'))) {
+      await this.onStopMutation?.()
+    }
     if (command.includes("printf 'ACQUIRED %s %s %s")) {
       if (this.hostLeaseBusy || (this.hostLease !== undefined && this.hostLease.expiresAt > Date.now())) {
         return { code: 75, stdout: 'BUSY\n' }
@@ -302,6 +318,7 @@ async function fixture(remote: FakeRemote, configuredRegistry = registry(), oper
   const directory = await mkdtemp(join(tmpdir(), 'gcp-manager-'))
   temporaryPaths.push(directory)
   const statePath = join(directory, 'state.json')
+  await writeFile(`${statePath}.eviction-key`, evictionKey)
   const store = new PreviewManagerStateStore(statePath)
   await store.load()
   const args: PreviewManagerArguments = {
@@ -352,12 +369,41 @@ function context(grant: ResourceLeaseGrant, selected: GovernedModelRoute, transa
   }
 }
 
+async function evictionEnvelope(manager: PreviewManager, statePath: string, transaction = '9') {
+  const state = JSON.parse(await readFile(statePath, 'utf8'))
+  const base = {
+    lease_id: state.lease.leaseId, fence: state.lease.fence,
+    transaction_digest: bare(transaction), timeout_ms: 30_000,
+    target: registry().targets[0], route_id: 'glm-official', exact_revision_digest: bare('a'),
+  }
+  if (state.transactions[bare(transaction)].sourcePrestateDigest === undefined) {
+    await manager.invoke('stage', { ...base, idempotency_key: bare('1'), stage: 'prestate' })
+  }
+  const current = JSON.parse(await readFile(statePath, 'utf8')).transactions[bare(transaction)]
+  return {
+    ...base, stage: 'stop', idempotency_key: bare('2'),
+    eviction_consent: signConsent({
+      id: bare('3'), scope_digest: bare('e'), transaction_digest: bare(transaction),
+      fencing_digest: createHash('sha256').update(canonicalJson({ lease: state.lease.leaseId, fence: state.lease.fence })).digest('hex'),
+      source_route_id: 'glm-official', source_revision_digest: bare('a'), source_target: 'r5300',
+      destination_route_id: 'qwen-local', destination_revision_digest: bare('b'), destination_target: 'r5300',
+      source_prestate_digest: current.sourcePrestateDigest,
+      destination_prestate_digest: current.destinationPrestateDigest,
+      expires_at: state.lease.expiresAt - 1_000,
+    }),
+  }
+}
+
 afterEach(async () => {
   vi.restoreAllMocks()
   await Promise.all(temporaryPaths.splice(0).map(path => rm(path, { recursive: true, force: true })))
 })
 
 describe('Giana CoWork Preview model manager', () => {
+  it('exports canonical JSON with sorted keys and ASCII string escaping', () => {
+    expect(canonicalJson({ z: 'caf\u00e9', a: { y: 2, x: 1 } })).toBe('{"a":{"x":1,"y":2},"z":"caf\\u00e9"}')
+  })
+
   it.each([7, 22, 28, 124, 255])('does not treat process ownership failure %i as free resources', async (code) => {
     const remote = new FakeRemote()
     remote.statusError = code
@@ -794,7 +840,7 @@ describe('Giana CoWork Preview model manager', () => {
 
   it('switches from GLM to Qwen only after drain, stop, and verified release', async () => {
     const remote = new FakeRemote()
-    const { adapter } = await fixture(remote, registry(systemdRuntime()), 180_000)
+    const { adapter, manager, statePath } = await fixture(remote, registry(systemdRuntime()), 180_000)
     const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
     const glm = context(grant, route('glm-official'), 'f')
     await adapter.preflight(glm)
@@ -809,8 +855,14 @@ describe('Giana CoWork Preview model manager', () => {
     }
     await expect(adapter.preflight(qwen)).resolves.toMatchObject({ ok: true })
     await expect(adapter.capturePrestate(qwen)).resolves.toMatchObject({ residency: { kind: 'RESIDENT', routeId: 'glm-official' } })
+    const eviction = await evictionEnvelope(manager, statePath)
+    remote.onStopMutation = async () => {
+      const state = JSON.parse(await readFile(statePath, 'utf8'))
+      expect(state.consumedEvictions[bare('3')]).toBe(bare('9'))
+      expect(state.transactions[bare('9')].inFlight).toBe('stop')
+    }
     await adapter.drain({ ...glm, transactionDigest: qwen.transactionDigest, nextRoute: qwen.route, nextTarget: 'r5300' })
-    await adapter.stop({ ...glm, transactionDigest: qwen.transactionDigest })
+    await manager.invoke('stage', eviction)
     await adapter.verifyStopped({ ...glm, transactionDigest: qwen.transactionDigest })
     await adapter.start(qwen)
     await adapter.health(qwen)
@@ -837,8 +889,9 @@ describe('Giana CoWork Preview model manager', () => {
     const qwen = context(grant, route('qwen-local'), '9')
     await adapter.preflight(qwen)
     await adapter.capturePrestate(qwen)
+    const eviction = await evictionEnvelope(manager, statePath)
     await adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' })
-    await adapter.stop(glm)
+    await manager.invoke('stage', eviction)
     remote.lingeringListener = true
 
     await expect(adapter.verifyStopped(glm)).rejects.toThrow()
@@ -928,12 +981,13 @@ describe('Giana CoWork Preview model manager', () => {
     remote.residentPort = 18_081
     remote.freeVramMiB.set(1, 4_000)
     remote.activeRequestCounts = [2, 0, 0, 0]
-    const { adapter } = await fixture(remote)
+    const { adapter, manager, statePath } = await fixture(remote)
     const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
     const glm = context(grant, route('glm-official'), '9')
     const qwen = context(grant, route('qwen-local'), '9')
     await adapter.preflight(qwen)
     await adapter.capturePrestate(qwen)
+    await evictionEnvelope(manager, statePath)
 
     await expect(adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' }))
       .resolves.toMatchObject({ stage: 'drain' })
@@ -946,12 +1000,13 @@ describe('Giana CoWork Preview model manager', () => {
     remote.residentPort = 18_081
     remote.freeVramMiB.set(1, 4_000)
     remote.malformedDrain = true
-    const { adapter } = await fixture(remote)
+    const { adapter, manager, statePath } = await fixture(remote)
     const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
     const glm = context(grant, route('glm-official'), '9')
     const qwen = context(grant, route('qwen-local'), '9')
     await adapter.preflight(qwen)
     await adapter.capturePrestate(qwen)
+    await evictionEnvelope(manager, statePath)
 
     await expect(adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' })).rejects.toThrow()
     expect(remote.commands.some(command => command.includes('stop-glm'))).toBe(false)
@@ -962,7 +1017,7 @@ describe('Giana CoWork Preview model manager', () => {
     const remote = new FakeRemote()
     remote.residentPort = 18_081
     remote.freeVramMiB.set(1, 4_000)
-    const { adapter } = await fixture(remote)
+    const { adapter, manager, statePath } = await fixture(remote)
     const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
     const glm = context(grant, route('glm-official'), '9')
     const qwen = context(grant, route('qwen-local'), '9')
@@ -972,11 +1027,12 @@ describe('Giana CoWork Preview model manager', () => {
 
     await expect(adapter.stop(qwen)).rejects.toThrow()
     expect(remote.commands).toHaveLength(count)
+    const eviction = await evictionEnvelope(manager, statePath)
     await adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' })
-    await expect(adapter.stop(glm)).resolves.toMatchObject({ stage: 'stop', routeId: 'glm-official' })
+    await expect(manager.invoke('stage', eviction)).resolves.toMatchObject({ stage_receipt: { stage: 'stop', status: 'PASS' } })
   })
 
-  it('cleans up a failed destination and restores only the recorded source route', async () => {
+  it('requires a source prestate receipt before draining a different resident', async () => {
     const remote = new FakeRemote()
     remote.residentPort = 18_081
     remote.freeVramMiB.set(1, 4_000)
@@ -986,8 +1042,154 @@ describe('Giana CoWork Preview model manager', () => {
     const qwen = context(grant, route('qwen-local'), '9')
     await adapter.preflight(qwen)
     await adapter.capturePrestate(qwen)
+    const before = remote.commands.length
+    await expect(adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' })).rejects.toThrow()
+    expect(remote.commands).toHaveLength(before)
+    expect(remote.residentPort).toBe(18_081)
+  })
+
+  it.each([
+    ['absent', (request: Record<string, unknown>) => ({ ...request, eviction_consent: undefined })],
+    ['missing signature', (request: Record<string, unknown>) => {
+      const { signature: _signature, ...fields } = consentOf(request)
+      return { ...request, eviction_consent: fields }
+    }],
+    ['malformed signature', (request: Record<string, unknown>) => ({ ...request, eviction_consent: { ...consentOf(request), signature: 'BAD' } })],
+    ['mismatched signature', (request: Record<string, unknown>) => ({ ...request, eviction_consent: { ...consentOf(request), signature: bare('0') } })],
+    ['missing fence', (request: Record<string, unknown>) => {
+      const { fencing_digest: _fence, ...fields } = consentOf(request)
+      return { ...request, eviction_consent: signConsent(fields) }
+    }],
+    ['malformed fence', (request: Record<string, unknown>) => ({ ...request, eviction_consent: { ...consentOf(request), fencing_digest: 'BAD' } })],
+    ['wrong signed fence', (request: Record<string, unknown>) => {
+      const { signature: _signature, ...fields } = consentOf(request)
+      return { ...request, eviction_consent: signConsent({ ...fields, fencing_digest: bare('4') }) }
+    }],
+    ['changed signed source prestate', (request: Record<string, unknown>) => {
+      const { signature: _signature, ...fields } = consentOf(request)
+      return { ...request, eviction_consent: signConsent({ ...fields, source_prestate_digest: bare('4') }) }
+    }],
+    ['changed signed destination prestate', (request: Record<string, unknown>) => {
+      const { signature: _signature, ...fields } = consentOf(request)
+      return { ...request, eviction_consent: signConsent({ ...fields, destination_prestate_digest: bare('4') }) }
+    }],
+    ['expired signed grant', (request: Record<string, unknown>) => {
+      const { signature: _signature, ...fields } = consentOf(request)
+      return { ...request, eviction_consent: signConsent({ ...fields, expires_at: Date.now() - 1 }) }
+    }],
+    ['scope', (request: Record<string, unknown>) => ({ ...request, eviction_consent: { ...consentOf(request), scope_digest: bare('4') } })],
+    ['transaction', (request: Record<string, unknown>) => ({ ...request, eviction_consent: { ...consentOf(request), transaction_digest: bare('4') } })],
+    ['source route', (request: Record<string, unknown>) => ({ ...request, eviction_consent: { ...consentOf(request), source_route_id: 'qwen-local' } })],
+    ['source revision', (request: Record<string, unknown>) => ({ ...request, eviction_consent: { ...consentOf(request), source_revision_digest: bare('4') } })],
+    ['source target', (request: Record<string, unknown>) => ({ ...request, eviction_consent: { ...consentOf(request), source_target: 'prdg' } })],
+    ['destination route', (request: Record<string, unknown>) => ({ ...request, eviction_consent: { ...consentOf(request), destination_route_id: 'glm-official' } })],
+    ['destination revision', (request: Record<string, unknown>) => ({ ...request, eviction_consent: { ...consentOf(request), destination_revision_digest: bare('4') } })],
+    ['destination target', (request: Record<string, unknown>) => ({ ...request, eviction_consent: { ...consentOf(request), destination_target: 'prdg' } })],
+    ['source prestate', (request: Record<string, unknown>) => ({ ...request, eviction_consent: { ...consentOf(request), source_prestate_digest: bare('4') } })],
+    ['destination prestate', (request: Record<string, unknown>) => ({ ...request, eviction_consent: { ...consentOf(request), destination_prestate_digest: bare('4') } })],
+    ['expired', (request: Record<string, unknown>) => ({ ...request, eviction_consent: { ...consentOf(request), expires_at: Date.now() - 1 } })],
+  ])('denies %s eviction consent before stop mutation', async (_name, alter) => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    remote.freeVramMiB.set(1, 4_000)
+    const { adapter, manager, statePath } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const glm = context(grant, route('glm-official'), '9')
+    const qwen = context(grant, route('qwen-local'), '9')
+    await adapter.preflight(qwen)
+    await adapter.capturePrestate(qwen)
+    const eviction = await evictionEnvelope(manager, statePath)
     await adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' })
-    await adapter.stop(glm)
+    const before = remote.commands.length
+    await expect(manager.invoke('stage', alter(eviction))).rejects.toThrow()
+    expect(remote.commands).toHaveLength(before)
+    expect(remote.residentPort).toBe(18_081)
+    expect(JSON.parse(await readFile(statePath, 'utf8')).consumedEvictions).toEqual({})
+  })
+
+  it.each(['missing', 'invalid length', 'unreadable'])('denies eviction with %s key without breaking other stages', async (condition) => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    remote.freeVramMiB.set(1, 4_000)
+    const { adapter, manager, statePath } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const glm = context(grant, route('glm-official'), '9')
+    const qwen = context(grant, route('qwen-local'), '9')
+    await adapter.preflight(qwen)
+    await adapter.capturePrestate(qwen)
+    const eviction = await evictionEnvelope(manager, statePath)
+    const keyPath = `${statePath}.eviction-key`
+    if (condition === 'invalid length') await writeFile(keyPath, Buffer.alloc(31))
+    else {
+      await rm(keyPath)
+      if (condition === 'unreadable') await mkdir(keyPath)
+    }
+    await expect(adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' })).resolves.toMatchObject({ stage: 'drain' })
+    const before = remote.commands.length
+    await expect(manager.invoke('stage', eviction)).rejects.toThrow('STATE_CONFLICT')
+    expect(remote.commands).toHaveLength(before)
+    expect(remote.residentPort).toBe(18_081)
+    expect(JSON.parse(await readFile(statePath, 'utf8')).consumedEvictions).toEqual({})
+  })
+
+  it('rejects an already-consumed grant ID restored from durable state', async () => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    remote.freeVramMiB.set(1, 4_000)
+    const { adapter, manager, statePath } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const glm = context(grant, route('glm-official'), '9')
+    const qwen = context(grant, route('qwen-local'), '9')
+    await adapter.preflight(qwen)
+    await adapter.capturePrestate(qwen)
+    const eviction = await evictionEnvelope(manager, statePath)
+    await adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' })
+    const state = JSON.parse(await readFile(statePath, 'utf8'))
+    state.consumedEvictions[bare('3')] = bare('8')
+    await writeFile(statePath, JSON.stringify(state))
+    const before = remote.commands.length
+    await expect(manager.invoke('stage', eviction)).rejects.toThrow('STATE_CONFLICT')
+    expect(remote.commands).toHaveLength(before)
+    expect(remote.residentPort).toBe(18_081)
+  })
+
+  it.each(['IDLE_UNLOAD', 'SHUTDOWN'])('fails closed on %s stop', async (kind) => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    remote.freeVramMiB.set(1, 4_000)
+    const { manager, statePath } = await fixture(remote)
+    const lease = await manager.invoke('acquire', {
+      idempotency_key: bare('1'), ttl_ms: 60_000, targets: registry().targets,
+    })
+    const base = {
+      lease_id: lease.lease_id, fence: lease.fence, transaction_digest: bare('9'),
+      target: registry().targets[0], route_id: 'glm-official', exact_revision_digest: bare('a'), timeout_ms: 30_000,
+    }
+    await manager.invoke('begin', {
+      ...base, idempotency_key: bare('2'), scope_digest: bare('e'), transaction_kind: kind,
+    })
+    await manager.invoke('stage', { ...base, idempotency_key: bare('3'), stage: 'prestate' })
+    const before = remote.commands.length
+    await expect(manager.invoke('stage', { ...base, idempotency_key: bare('4'), stage: 'stop' }))
+      .rejects.toThrow('STATE_CONFLICT')
+    expect(remote.commands).toHaveLength(before)
+    expect(remote.residentPort).toBe(18_081)
+    expect(JSON.parse(await readFile(statePath, 'utf8')).consumedEvictions).toEqual({})
+  })
+
+  it('cleans up a failed destination and restores only the recorded source route', async () => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    remote.freeVramMiB.set(1, 4_000)
+    const { adapter, manager, statePath } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const glm = context(grant, route('glm-official'), '9')
+    const qwen = context(grant, route('qwen-local'), '9')
+    await adapter.preflight(qwen)
+    await adapter.capturePrestate(qwen)
+    const eviction = await evictionEnvelope(manager, statePath)
+    await adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' })
+    await manager.invoke('stage', eviction)
     await adapter.verifyStopped(glm)
     await adapter.start(qwen)
     remote.modelsError = 7

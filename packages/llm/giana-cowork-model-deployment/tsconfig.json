@@ -21,6 +21,15 @@
       "path": "../model-lifecycle-server-manager"
     },
     {
+      "path": "../../core/agent"
+    },
+    {
+      "path": "../../core/session"
+    },
+    {
+      "path": "../../interaction/user-approval"
+    },
+    {
       "path": "../../runtime-diagnostics/invariants"
     }
   ]

@@ -70,6 +70,17 @@ describe('ApprovalService.request', () => {
     expect(decided?.data['id']).toBe(asked?.data['id'])
   })
 
+  it('returns the exact durable decision ID to a transaction-bound caller', async () => {
+    const ctx = await mounted()
+    const { agent, appended } = fakeAgent()
+
+    const receipt = await ctx.approval.requestWithReceipt(requestOf(agent))
+
+    expect(receipt.outcome).toBe('unavailable')
+    expect(receipt.id).toBe(appended[0]?.data['id'])
+    expect(receipt.id).toBe(appended[1]?.data['id'])
+  })
+
   it('omits absent optional fields from the asked audit event', async () => {
     const ctx = await mounted()
     const { agent, appended } = fakeAgent()

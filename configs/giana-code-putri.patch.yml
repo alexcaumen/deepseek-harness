@@ -20,6 +20,8 @@
       name: '@deepseek-ai/dsh-model-lifecycle'
       config:
         preference: automatic
+        idleUnloadMs: 0
+        preserveResidentOnShutdown: true
 
     - id: giana-cowork-model-deployment
       name: '@deepseek-ai/dsh-giana-cowork-model-deployment'

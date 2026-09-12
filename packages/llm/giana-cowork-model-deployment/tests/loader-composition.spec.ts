@@ -95,6 +95,8 @@ it('boots from Loader while a held route remains inert at mount and dispatch', a
   ].join('\n'))
 
   ctx = new Context()
+  ctx.provide('agents', { get: () => undefined } as never)
+  ctx.provide('approval', { requestWithReceipt: () => Promise.resolve({ id: 'fixture', outcome: 'unavailable' }) } as never)
   ctx.baseUrl = pathToFileURL(root).href + '/'
   await ctx.plugin(Loader)
   ctx.loader.builtins.include = Include
@@ -116,9 +118,11 @@ it('boots from Loader while a held route remains inert at mount and dispatch', a
 
   expect([...ctx.loader.entries()].filter(entry => entry.fiber === undefined && !entry.disabled)).toEqual([])
   await vi.waitFor(() => { expect(lifecycle).toBeDefined() })
-  await expect(lifecycle!.acquireRoute({
-    sessionId: 'durable-session', selection: { provider: 'fixture-local', model: 'fixture-model' },
-  })).rejects.toMatchObject({ code: 'ROUTE_HELD' })
+  await vi.waitFor(async () => {
+    await expect(lifecycle!.acquireRoute({
+      sessionId: 'durable-session', selection: { provider: 'fixture-local', model: 'fixture-model' },
+    })).rejects.toMatchObject({ code: 'ROUTE_HELD' })
+  })
   await expect(access(managerScript)).rejects.toThrow()
   await expect(access(statePath)).rejects.toThrow()
   await expect(access(auditPath)).rejects.toThrow()

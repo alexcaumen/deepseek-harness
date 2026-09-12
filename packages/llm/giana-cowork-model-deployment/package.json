@@ -40,6 +40,7 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/dsh-agent": "workspace:^",
     "@deepseek-ai/cordis-plugin-include": "workspace:^",
     "@deepseek-ai/cordis-plugin-loader": "workspace:^",
     "@deepseek-ai/dsh-atomic-write": "workspace:^",
@@ -47,6 +48,7 @@
     "@deepseek-ai/dsh-model-lifecycle": "workspace:^",
     "@deepseek-ai/dsh-model-lifecycle-server-manager": "workspace:^",
     "@deepseek-ai/dsh-session": "workspace:^",
+    "@deepseek-ai/dsh-user-approval": "workspace:^",
     "@types/node": "^22.20.0",
     "vitest": "^4.1.8"
   }
