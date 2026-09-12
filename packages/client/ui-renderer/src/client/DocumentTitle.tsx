@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 
-const DEFAULT_CLIENT_TITLE = 'Giana CoWork'
+const DEFAULT_CLIENT_TITLE = 'Giana CoWork Preview'
 
 /** Props for the browser title projection. */
 export interface DocumentTitleProps {

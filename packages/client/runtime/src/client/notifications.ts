@@ -49,7 +49,7 @@ interface DesktopGlobals {
   }
 }
 
-const APP_TITLE = 'Giana CoWork'
+const APP_TITLE = 'Giana CoWork Preview'
 const DELIVERED_STORAGE_KEY = 'giana.code.putri.notifications.delivered.v1'
 
 function globals(): DesktopGlobals {
@@ -159,13 +159,13 @@ export function classifyNotification(
       )
     case 'stream/error':
       if (frame.error === undefined || typeof frame.error !== 'object' || frame.error === null) {
-        return makeCandidate('failed', `stream-error:${rpcId}`, undefined, 'Koneksi terputus. Buka Giana CoWork untuk melanjutkan.')
+        return makeCandidate('failed', `stream-error:${rpcId}`, undefined, 'Koneksi terputus. Buka Giana CoWork Preview untuk melanjutkan.')
       }
       return makeCandidate(
         'failed',
         `stream-error:${rpcId}`,
         undefined,
-        'Koneksi terputus. Buka Giana CoWork untuk melanjutkan.',
+        'Koneksi terputus. Buka Giana CoWork Preview untuk melanjutkan.',
       )
     default:
       return undefined

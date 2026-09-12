@@ -3,8 +3,8 @@ import { contextProducerLabel } from '../src/client/chat/ContextInjectionRow.tsx
 
 describe('context producer presentation', () => {
   it('projects upstream package provenance as the owned product name', () => {
-    expect(contextProducerLabel('@deepseek-ai/dsh-system-prompt')).toBe('Giana CoWork')
-    expect(contextProducerLabel('@deepseek-ai/dsh-client-runtime')).toBe('Giana CoWork')
+    expect(contextProducerLabel('@deepseek-ai/dsh-system-prompt')).toBe('Giana CoWork Preview')
+    expect(contextProducerLabel('@deepseek-ai/dsh-client-runtime')).toBe('Giana CoWork Preview')
   })
 
   it('preserves owned and user-facing producer labels', () => {

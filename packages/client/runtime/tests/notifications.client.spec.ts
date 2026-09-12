@@ -41,7 +41,7 @@ describe('desktop notifications', () => {
     const completed = classifyNotification(turnEnd({ kind: 'completed' }))
     expect(completed).toMatchObject({
       kind: 'completed',
-      title: 'Giana CoWork - Tugas selesai',
+      title: 'Giana CoWork Preview - Tugas selesai',
       body: 'Tugas Anda sudah selesai.',
       sessionId: 'session-1',
     })
@@ -81,7 +81,7 @@ describe('desktop notifications', () => {
       type: 'stream/error', error: { code: 'CLOSED', message: 'socket closed' },
     } as never, 'stream-rpc')
     expect(streamError).toMatchObject({
-      kind: 'failed', body: 'Koneksi terputus. Buka Giana CoWork untuk melanjutkan.',
+      kind: 'failed', body: 'Koneksi terputus. Buka Giana CoWork Preview untuk melanjutkan.',
     })
     expect(`${streamError?.key} ${streamError?.tag}`).not.toContain('socket closed')
     expect(`${streamError?.key} ${streamError?.tag}`).not.toContain('CLOSED')
