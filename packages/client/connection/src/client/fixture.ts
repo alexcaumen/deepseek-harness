@@ -1450,6 +1450,8 @@ export interface FixtureOptions {
   dropSessionCreateResponse?: boolean
   /** Order of the two successful create frames. */
   createFrameOrder?: 'session-first' | 'workspace-first'
+  /** Exact product welcome version an isolated HEQA journey has already acknowledged. */
+  welcomeNoticeVersion?: string
 }
 
 /** Inbox pump shared by both stream generators (FrameQueue pattern: ONE abort listener hung
@@ -2993,14 +2995,24 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
       describe: request => ok(request, {
         writable: true,
         hasDocument: true,
-        namespaces: [{
-          ns: 'llm-deepseek',
-          schema: {},
-          value: { apiKeyEnv: 'DEEPSEEK_API_KEY' },
-          applies: 'live',
-          secrets: [{ path: ['apiKey'], set: false }],
-          revision: 0,
-        }],
+        namespaces: [
+          {
+            ns: 'llm-deepseek',
+            schema: {},
+            value: { apiKeyEnv: 'DEEPSEEK_API_KEY' },
+            applies: 'live',
+            secrets: [{ path: ['apiKey'], set: false }],
+            revision: 0,
+          },
+          ...options.welcomeNoticeVersion === undefined ? [] : [{
+            ns: 'ui-onboarding',
+            schema: {},
+            value: { welcomeNoticeVersion: options.welcomeNoticeVersion },
+            applies: 'live' as const,
+            secrets: [],
+            revision: 0,
+          }],
+        ],
       }),
       // Native opens are deterministic no-op successes in this fixture, as is host.openPath.
       openDocument: request => ok(request, { opened: true as const }),
@@ -3276,11 +3288,15 @@ export class FixtureApiClient extends AbstractApiClient {
 function fixtureOptionsFromLocation(): FixtureOptions {
   if (typeof location === 'undefined') return {}
   const query = new URLSearchParams(location.search)
+  const welcomeNoticeVersion = query.get('fixtureWelcomeNoticeVersion')
   return {
     empty: query.get('fixture') === 'empty',
     rejectPrompt: query.get('fixturePrompt') === 'reject',
     failWorkspaceAttach: query.get('fixtureAttach') === 'fail',
     dropSessionCreateResponse: query.get('fixtureSessionCreate') === 'drop-response',
     createFrameOrder: query.get('fixtureFrames') === 'workspace-first' ? 'workspace-first' : 'session-first',
+    ...welcomeNoticeVersion === null
+      ? {}
+      : { welcomeNoticeVersion },
   }
 }

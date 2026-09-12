@@ -221,6 +221,15 @@ describe('createFixtureApi', () => {
       secrets: [{ path: ['apiKey'], set: false }],
     }])
 
+    const acknowledgedApi = createFixtureApi({ welcomeNoticeVersion: 'fixture-welcome-v1' })
+    const acknowledged = await acknowledgedApi.settings.describe(req({}))
+    if (!acknowledged.result.ok) throw new Error('acknowledged settings describe failed')
+    expect(acknowledged.result.value.namespaces).toContainEqual(expect.objectContaining({
+      ns: 'ui-onboarding',
+      value: { welcomeNoticeVersion: 'fixture-welcome-v1' },
+      secrets: [],
+    }))
+
     const initial = await api.credentials.describe(req({ refs: ['DEEPSEEK_API_KEY', 'TEST_API_KEY'] }))
     if (!initial.result.ok) throw new Error('credential describe failed')
     expect(initial.result.value.credentials).toEqual({
