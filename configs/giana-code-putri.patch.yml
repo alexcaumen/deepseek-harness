@@ -5,6 +5,7 @@
     onDemand:
       providers:
         - glm-local-r5300
+        - qwen-local-r5300
         - glm-uncensored-local-r5300
         - deepseek-vision-local-r5300
         - deepseek-vision-uncensored-local-r5300

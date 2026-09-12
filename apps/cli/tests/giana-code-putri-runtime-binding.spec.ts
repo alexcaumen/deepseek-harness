@@ -76,7 +76,25 @@ describe('Giana CoWork runtime binding', () => {
       ['subagent-claude-code', '@deepseek-ai/dsh-subagent-claude-code', undefined],
       ['mcp-tool-runtime', '@deepseek-ai/dsh-mcp-server-tool-runtime', undefined],
     ])
-    expect(configById(entries, 'model-lifecycle')).toEqual({ preference: 'automatic' })
+    expect(configById(entries, 'tools')).toMatchObject({
+      onDemand: {
+        providers: [
+          'glm-local-r5300',
+          'qwen-local-r5300',
+          'glm-uncensored-local-r5300',
+          'deepseek-vision-local-r5300',
+          'deepseek-vision-uncensored-local-r5300',
+        ],
+        alwaysAvailable: ['read', 'skill', 'skill_search'],
+        maxSearchResults: 4,
+        maxActiveTools: 16,
+      },
+    })
+    expect(configById(entries, 'model-lifecycle')).toEqual({
+      preference: 'automatic',
+      idleUnloadMs: 0,
+      preserveResidentOnShutdown: true,
+    })
     expect(configById(entries, 'giana-cowork-model-deployment')).toMatchObject({
       sshHost: 'r5300',
       principalId: 'alex',
