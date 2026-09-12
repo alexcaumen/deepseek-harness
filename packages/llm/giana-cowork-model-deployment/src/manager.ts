@@ -1505,8 +1505,9 @@ export class PreviewManager {
   private async routeProbe(route: ManagedRoute, budget: StageBudget): Promise<boolean> {
     if ((await this.processPresence(route, budget)).kind !== 'running') return false
     const body = JSON.stringify({ model: route.runtime.expectedModel, messages: [{ role: 'user', content: 'Reply with OK.' }], max_tokens: 4, stream: false })
-    const command = `curl -fsS --max-time 45 -H 'Content-Type: application/json' --data-binary ${shellQuote(body)} http://127.0.0.1:${route.runtime.remotePort}/v1/chat/completions`
-    const result = await this.remote(command, budget.remaining(55_000))
+    const timeoutSeconds = Math.max(1, Math.min(120, Math.floor((budget.remaining() - 15_000) / 1000)))
+    const command = `curl -fsS --max-time ${timeoutSeconds} -H 'Content-Type: application/json' --data-binary ${shellQuote(body)} http://127.0.0.1:${route.runtime.remotePort}/v1/chat/completions`
+    const result = await this.remote(command, budget.remaining((timeoutSeconds + 10) * 1000))
     if (result.code !== 0) return false
     try {
       const payload = record(JSON.parse(result.stdout) as unknown)

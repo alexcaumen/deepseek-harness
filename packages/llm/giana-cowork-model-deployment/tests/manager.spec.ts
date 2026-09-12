@@ -298,7 +298,7 @@ function registry(glmRuntime: Record<string, unknown> = scriptRuntime()) {
   })
 }
 
-async function fixture(remote: FakeRemote, configuredRegistry = registry()) {
+async function fixture(remote: FakeRemote, configuredRegistry = registry(), operationTimeoutMs = 30_000) {
   const directory = await mkdtemp(join(tmpdir(), 'gcp-manager-'))
   temporaryPaths.push(directory)
   const statePath = join(directory, 'state.json')
@@ -318,7 +318,7 @@ async function fixture(remote: FakeRemote, configuredRegistry = registry()) {
     issuerRef: `giana:issuer:sha256:${bare('1')}`,
     holderRef: `giana:holder:sha256:${bare('2')}`,
     admissionDigest: bare('3'), leaseTtlMs: 60_000,
-    operationTimeoutMs: 30_000, maxClockSkewMs: 1_000,
+    operationTimeoutMs, maxClockSkewMs: 1_000,
     idempotencyKey: () => (++key).toString(16).padStart(64, '0'),
   })
   return { adapter, args, manager, statePath, store }
@@ -794,7 +794,7 @@ describe('Giana CoWork Preview model manager', () => {
 
   it('switches from GLM to Qwen only after drain, stop, and verified release', async () => {
     const remote = new FakeRemote()
-    const { adapter } = await fixture(remote, registry(systemdRuntime()))
+    const { adapter } = await fixture(remote, registry(systemdRuntime()), 180_000)
     const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
     const glm = context(grant, route('glm-official'), 'f')
     await adapter.preflight(glm)
@@ -803,7 +803,10 @@ describe('Giana CoWork Preview model manager', () => {
     await adapter.health(glm)
     await adapter.probe(glm)
 
-    const qwen = context(grant, route('qwen-local'), '9')
+    const qwen = {
+      ...context(grant, { ...route('qwen-local'), stageTimeoutsMs: { probe: 180_000 } }, '9'),
+      deadlineAt: Date.now() + 180_000,
+    }
     await expect(adapter.preflight(qwen)).resolves.toMatchObject({ ok: true })
     await expect(adapter.capturePrestate(qwen)).resolves.toMatchObject({ residency: { kind: 'RESIDENT', routeId: 'glm-official' } })
     await adapter.drain({ ...glm, transactionDigest: qwen.transactionDigest, nextRoute: qwen.route, nextTarget: 'r5300' })
@@ -812,6 +815,7 @@ describe('Giana CoWork Preview model manager', () => {
     await adapter.start(qwen)
     await adapter.health(qwen)
     await adapter.probe(qwen)
+    expect(remote.commands.some(command => command.includes('--max-time 120') && command.includes(':8000/v1/chat/completions'))).toBe(true)
     await adapter.release(grant, 'SETTLED', new AbortController().signal)
 
     expect(remote.residentPort).toBe(8_000)
