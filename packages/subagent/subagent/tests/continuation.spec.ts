@@ -258,7 +258,12 @@ describe('SubagentRuntime.startContinuable', () => {
   })
 
   it('publishes the reserved child id and appends the pre-turn descriptor', async () => {
-    const { ctx, parent } = await setup([textResponse('answer')])
+    const { ctx, parent, adapter } = await setup([textResponse('answer')])
+    ctx.llm.registerAdapter(['resolved'], adapter)
+    vi.spyOn(parent.session, 'requestContext').mockReturnValue({
+      provider: 'resolved',
+      model: 'resolved-model',
+    })
     const started = await ctx.subagents.startContinuable(startSpec(parent))
     await waitNoActivation(ctx, started.childId)
 
@@ -273,8 +278,8 @@ describe('SubagentRuntime.startContinuable', () => {
       mode: 'continuable',
       provider: 'spawn',
       label: 'child task',
-      agentProvider: 'mock',
-      agentModel: 'mock',
+      agentProvider: 'resolved',
+      agentModel: 'resolved-model',
     })
     // Model-hidden: the descriptor never carries surface metadata.
     expect('surfaceOp' in descriptor).toBe(false)
