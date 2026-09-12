@@ -873,12 +873,25 @@ export class ModelLifecycleRuntime extends Service {
     abortIfRequested(request.signal)
     const target = await this.selectTarget(registration, request, scope, transactionDigest, receipts)
     const context = this.stageContext(registration, target, request, scope, transactionDigest)
-    const previous = this.active
+    let previous = this.active
     let prestate: ModelLifecyclePrestateReceipt
     try {
       prestate = await this.runStage('prestate', context, bounded =>
         registration.driver.capturePrestate(bounded))
       assertStageReceipt('prestate', prestate, context)
+      if (previous === undefined) {
+        const preserved = this.exactAdmittedResident(prestate, target)
+        if (preserved !== undefined && preserved !== registration) {
+          previous = {
+            registration: preserved,
+            target,
+            healthDigest: prestate.digest,
+            scope,
+            activatedAt: Date.now(),
+          }
+          this.active = previous
+        }
+      }
       this.assertResidency(
         prestate,
         previous?.target === target ? previous : undefined,
@@ -1492,6 +1505,21 @@ export class ModelLifecycleRuntime extends Service {
       && resident.kind === 'RESIDENT'
       && resident.routeId === route.id
       && resident.revisionDigest === route.revisionDigest
+  }
+
+  /** Reconcile a deliberately preserved resident only when its admitted route and revision are exact. */
+  private exactAdmittedResident(
+    receipt: ModelLifecyclePrestateReceipt,
+    target: ModelComputeTarget,
+  ): Registration | undefined {
+    const resident = receipt.residency
+    if (resident.kind !== 'RESIDENT') return undefined
+    const registration = this.byRoute.get(resident.routeId)
+    return registration?.route.allowExactResidentAdoption === true
+      && registration.route.revisionDigest === resident.revisionDigest
+      && registration.route.targets.includes(target)
+      ? registration
+      : undefined
   }
 
   /** A fresh process adopts residency only when the immutable route explicitly admits an exact route/revision match. */

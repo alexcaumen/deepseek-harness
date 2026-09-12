@@ -617,6 +617,67 @@ describe('governed local-model lifecycle', () => {
     await second.release()
   })
 
+  it('reconciles an exact admitted preserved resident before a restarted user-approved switch', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const qwen = route('qwen', 'qwen', ['r5300'], { allowExactResidentAdoption: true })
+    const glm = route('glm', 'glm', ['r5300'], { allowExactResidentAdoption: true })
+    const log: string[] = []
+    ctx.modelLifecycle.register(qwen, driver(log))
+    ctx.modelLifecycle.register(glm, driver(log))
+    simulatedHosts.get(log)!.set('r5300', {
+      kind: 'RESIDENT', routeId: qwen.id, revisionDigest: qwen.revisionDigest,
+    })
+    const ask = vi.fn(async (request: ModelEvictionConsentRequest) => ({
+      id: 'f'.repeat(64),
+      fencing_digest: request.resourceLease.fencingDigest,
+      signature: 'e'.repeat(64),
+      scope_digest: request.scope.digest,
+      transaction_digest: request.transactionDigest,
+      source_route_id: request.sourceRoute.id,
+      source_revision_digest: request.sourceRoute.revisionDigest,
+      source_target: request.sourceTarget,
+      destination_route_id: request.destinationRoute.id,
+      destination_revision_digest: request.destinationRoute.revisionDigest,
+      destination_target: request.destinationTarget,
+      source_prestate_digest: request.sourcePrestate.digest,
+      destination_prestate_digest: request.destinationPrestate.digest,
+      expires_at: Date.now() + 30_000,
+    }))
+    ctx.modelLifecycle.installResources(fixtureResources())
+    ctx.modelLifecycle.installAuthority({
+      classifyProvider: provider => provider === 'local' ? 'GOVERNED_LOCAL' : 'UNMANAGED_EXTERNAL',
+      resolve: request => ({
+        kind: 'GOVERNED',
+        route: request.selection.model === qwen.selection.model ? qwen : glm,
+        scope: executionScope({ sessionId: request.sessionId ?? 'session-1' }),
+      }),
+      record: async () => {},
+      requestEvictionConsent: ask,
+    })
+
+    const lease = await ctx.modelLifecycle.acquireRoute({ selection: glm.selection })
+
+    expect(ask).toHaveBeenCalledWith(expect.objectContaining({
+      sourceRoute: qwen,
+      sourceTarget: 'r5300',
+      destinationRoute: glm,
+      destinationTarget: 'r5300',
+    }), expect.any(AbortSignal))
+    expect(log).toEqual([
+      'preflight:glm:r5300',
+      'prestate:glm:r5300',
+      'prestate:qwen:r5300',
+      'drain:qwen:r5300',
+      'stop:qwen:r5300',
+      'verify-stopped:qwen:r5300',
+      'start:glm:r5300',
+      'health:glm:r5300',
+      'probe:glm:r5300',
+    ])
+    expect(ctx.modelLifecycle.snapshot()).toMatchObject({ phase: 'IN_USE', active: { routeId: 'glm' } })
+    await lease.release()
+  })
+
   it.each([false, true])('requires a transaction-bound GCP consent before draining a resident (approved=%s)', async (approved) => {
     const ctx = await lifecycle({ idleUnloadMs: 0 })
     const qwen = route('qwen', 'qwen', ['r5300'])
