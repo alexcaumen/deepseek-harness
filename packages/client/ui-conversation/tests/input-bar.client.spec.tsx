@@ -1124,6 +1124,37 @@ describe('running and lock semantics', () => {
     }
   })
 
+  it('previews quote and origin on hover and focus of the inline annotation chip', () => {
+    const result = bench()
+    act(() => {
+      expect(result.shell.actions.addResponseAnnotation({
+        messageId: 'assistant-inline' as never,
+        text: 'source quote',
+        startOffset: 4,
+        endOffset: 16,
+      })).toBe(true)
+    })
+    const chip = result.view.container.querySelector<HTMLElement>('[data-annotation-inline-chip="1"]')
+    expect(chip?.textContent).toBe('@Annotation 1')
+    expect(chip?.getAttribute('tabindex')).toBe('0')
+    expect(chip?.getAttribute('aria-label')).toBe('批注 1 来源：source quote')
+    expect(chip?.closest('[aria-hidden="true"]')).toBeNull()
+    if (chip === null) throw new Error('inline annotation chip missing')
+
+    fireEvent.mouseEnter(chip)
+    expect(result.view.getByRole('tooltip').textContent).toBe('批注 1 来源：source quote')
+    fireEvent.mouseLeave(chip)
+    expect(result.view.queryByRole('tooltip')).toBeNull()
+    fireEvent.focus(chip)
+    expect(result.view.getByRole('tooltip').textContent).toBe('批注 1 来源：source quote')
+    fireEvent.blur(chip)
+    expect(result.view.queryByRole('tooltip')).toBeNull()
+    result.textarea.focus()
+    fireEvent.mouseDown(chip)
+    expect(document.activeElement).toBe(result.textarea)
+    expect(result.textarea.value).toBe('@Annotation 1 ')
+  })
+
   it('running keeps Send available and applies the busy-state Queue policy on click', () => {
     const { textarea, button, interruptButton, stop, sink } = bench({ running: true, draft: '排队消息' })
     expect(textarea.disabled).toBe(false)

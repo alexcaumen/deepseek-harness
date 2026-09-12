@@ -170,6 +170,7 @@ export class InputMachine {
   dispatch(ev: InputEvent): readonly InputEffect[] {
     switch (ev.type) {
       case 'draft-changed': return this.onDraftChanged(ev.draft, ev.editRange)
+      case 'restore-draft': return this.onRestoreDraft(ev.draft, ev.references)
       case 'begin-command': return this.onBeginCommand(ev.claim, ev.span)
       case 'insert-ref': return this.onInsertRef(ev.reference, ev.span)
       case 'consume-token': return this.onConsumeToken(ev.guard)
@@ -257,6 +258,23 @@ export class InputMachine {
   }
 
   // ---- draft transactions ----
+
+  private onRestoreDraft(
+    draft: string,
+    references: readonly (EditSelection & { readonly reference: ReferenceInsert })[],
+  ): InputEffect[] {
+    if (this.draft !== '' || this.phase !== 'plain' || this.occurrences.length > 0) return []
+    let end = 0
+    for (const item of references) {
+      if (!Number.isSafeInteger(item.start) || !Number.isSafeInteger(item.end)
+        || item.start < end || item.end > draft.length || item.end <= item.start
+        || draft.slice(item.start, item.end) !== referenceDraftText(item.reference)) return []
+      end = item.end
+    }
+    this.occurrences = references.map(item => this.mint(item.reference, item.start, item.end - item.start))
+    this.adopt(draft)
+    return []
+  }
 
   private onDraftChanged(draft: string, editRange?: EditRange): InputEffect[] {
     if (draft === this.draft) return []

@@ -14,6 +14,7 @@ import type {
 } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { QueueRow } from '../contract/queue.ts'
 import type { InputSubmitMode } from '../contract/composer-submission.ts'
+import type { PersistedResponseAnnotation } from '../response-annotation.ts'
 
 /** Browser-runtime identity of one unsent image draft. */
 export type DraftAttachmentId = Branded<'DraftAttachmentId'>
@@ -85,7 +86,7 @@ export interface SessionInputResolver {
  */
 export interface InputActions {
   /** Single public draft write path (full next draft; occurrence math via diff scan). */
-  setDraft(text: string): void
+  setDraft(text: string, annotations?: readonly PersistedResponseAnnotation[]): void
   /** Add selected response text as a numbered structured reference. */
   addResponseAnnotation(annotation: ResponseAnnotationDraft): boolean
   /** Append ordered browser-owned image ids; busy admission phases refuse. */
@@ -266,6 +267,8 @@ export interface SubmitAttempt {
 export type InputEvent =
   /** Full next draft from the textarea; editRange narrows the occurrence math (absent → diff scan). */
   | { readonly type: 'draft-changed'; readonly draft: string; readonly editRange?: EditRange }
+  /** Bootstrap a persisted draft and its validated structured references without an undo unit. */
+  | { readonly type: 'restore-draft'; readonly draft: string; readonly references: readonly (EditSelection & { readonly reference: ReferenceInsert })[] }
   | { readonly type: 'begin-command'; readonly claim: CommandClaim; readonly span: TokenSpan }
   /** Place one inline reference at the span and mint the occurrence (scoped insert-reference event payload). */
   | { readonly type: 'insert-ref'; readonly reference: ReferenceInsert; readonly span: TokenSpan }

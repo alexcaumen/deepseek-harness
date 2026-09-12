@@ -994,6 +994,7 @@ export function InputBar({
       return []
     }
   }) ?? []
+  const annotationByOccurrence = new Map(responseAnnotations.map(annotation => [annotation.occurrenceId, annotation]))
   const navigateToAnnotation = (annotation: ResponseAnnotationPayload): void => {
     const markers = [...document.querySelectorAll<HTMLElement>(
       `[data-response-annotation-marker="${annotation.index}"]`,
@@ -1019,12 +1020,12 @@ export function InputBar({
     // claim token only leads).
     let cursor = 0
     const pushPlain = (upTo: number): void => {
-      if (upTo > cursor) backdrop.push(draft.slice(cursor, upTo))
+      if (upTo > cursor) backdrop.push(<span key={`plain-${cursor}`} aria-hidden>{draft.slice(cursor, upTo)}</span>)
       cursor = upTo
     }
     if (deco.token !== null) {
       backdrop.push(
-        <mark key="token" className={css.hlToken} data-decoration="token">
+        <mark key="token" className={css.hlToken} data-decoration="token" aria-hidden>
           {draft.slice(deco.token.start, deco.token.end)}
         </mark>,
       )
@@ -1042,27 +1043,54 @@ export function InputBar({
       pushPlain(b.at)
       if (b.kind === 'chip') {
         const chip = b.chip
-        backdrop.push(
-          <span
-            key={`chip-${chip.occurrenceId}`}
-            className={clsx(css.chip, chip.invalid && css.chipInvalid)}
-            data-decoration="chip"
-            data-reference-appearance={chip.appearance}
-            data-occurrence={chip.occurrenceId}
-            data-invalid={chip.invalid || undefined}
-            title={chip.label}
-          >
-            {chip.appearance === undefined
-              ? chip.text[0]
-              : (
-                <span className={css.chipTrigger}>
-                  <span className={css.chipTriggerGlyph}>{chip.text[0]}</span>
-                  <ReferenceIcon kind={chip.appearance} size={16} className={css.chipIcon} />
-                </span>
-              )}
-            <span>{chip.text.slice(1)}</span>
-          </span>,
-        )
+        const annotation = annotationByOccurrence.get(chip.occurrenceId)
+        const chipText = <>{chip.appearance === undefined
+          ? chip.text[0]
+          : (
+            <span className={css.chipTrigger}>
+              <span className={css.chipTriggerGlyph}>{chip.text[0]}</span>
+              <ReferenceIcon kind={chip.appearance} size={16} className={css.chipIcon} />
+            </span>
+          )}<span>{chip.text.slice(1)}</span></>
+        backdrop.push(annotation === undefined
+          ? (
+            <span
+              key={`chip-${chip.occurrenceId}`}
+              className={clsx(css.chip, chip.invalid && css.chipInvalid)}
+              data-decoration="chip"
+              data-reference-appearance={chip.appearance}
+              data-occurrence={chip.occurrenceId}
+              data-invalid={chip.invalid || undefined}
+              title={chip.label}
+              aria-hidden
+            >
+              {chipText}
+            </span>
+          )
+          : (
+            <Tooltip
+              key={`chip-${chip.occurrenceId}`}
+              label={t('annotation.sourceMarker', { index: annotation.index, text: annotation.text })}
+              side="top"
+              maxWidth={320}
+            >
+              <span
+                className={clsx(css.chip, css.annotationInlineChip)}
+                data-decoration="chip"
+                data-annotation-inline-chip={annotation.index}
+                data-occurrence={chip.occurrenceId}
+                role="note"
+                tabIndex={0}
+                aria-label={t('annotation.sourceMarker', { index: annotation.index, text: annotation.text })}
+                onMouseDown={(event) => {
+                  event.preventDefault()
+                  inputRef.current?.focus({ preventScroll: true })
+                }}
+              >
+                {chipText}
+              </span>
+            </Tooltip>
+          ))
         cursor = chip.offset + chip.length
       } else {
         // Plain-range highlight: the glyphs stay the
@@ -1074,7 +1102,7 @@ export function InputBar({
         // key by occurrenceId, the identity their occurrence table owns.
         const text = draft.slice(b.ref.start, b.ref.end)
         backdrop.push(
-          <mark key={`ref-${b.ordinal}`} className={css.textRef} data-decoration="text-ref">
+          <mark key={`ref-${b.ordinal}`} className={css.textRef} data-decoration="text-ref" aria-hidden>
             {b.ref.appearance === 'folder'
               ? (
                 <>
@@ -1100,7 +1128,7 @@ export function InputBar({
       // dictionary and keep the machine's own hint, so the call is wide.
       const translated = (t as Translate)(hintKey)
       const displayHint = translated !== hintKey ? translated : deco.hint
-      backdrop.push(<span key="hint" className={css.hint} data-decoration="hint">{displayHint}</span>)
+      backdrop.push(<span key="hint" className={css.hint} data-decoration="hint" aria-hidden>{displayHint}</span>)
     }
   }
 
@@ -1197,7 +1225,7 @@ export function InputBar({
         <div ref={scrollRef} className={css.scroll} data-input-scroll>
           <div className={css.grow}>
             <div
-              aria-hidden
+              aria-hidden={responseAnnotations.length === 0}
               className={clsx(css.backdrop, textareaDisabled && css.backdropDisabled)}
               data-input-backdrop
               data-disabled={textareaDisabled || undefined}

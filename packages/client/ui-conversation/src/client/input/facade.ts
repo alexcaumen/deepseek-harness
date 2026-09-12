@@ -17,10 +17,11 @@ import type {
   PasteComponent, QueuedMessage, ResponseAnnotationDraft, SessionInput, SubmitAttempt,
 } from './contract.ts'
 import type { InputSubmitMode } from '../contract/composer-submission.ts'
-import { InputMachine, projectClipboard } from './machine.ts'
+import { InputMachine, referenceDraftText } from './machine.ts'
 import {
-  RESPONSE_ANNOTATION_SOURCE, responseAnnotationIndex, responseAnnotationReference,
+  RESPONSE_ANNOTATION_SOURCE, parseResponseAnnotationPayload, responseAnnotationIndex, responseAnnotationReference,
 } from './response-annotation.ts'
+import type { PersistedResponseAnnotation } from '../response-annotation.ts'
 
 /** Popup face the shell needs (dismissal only; typed structurally to avoid a value import). */
 export interface PopupDismissFace {
@@ -91,7 +92,7 @@ export class SessionInputShell implements SessionInput {
   readonly notices: SnapshotStore<InputNotice | null> = createSnapshotStore<InputNotice | null>(null)
   /** The public provide-channel action face (one stable identity per session). */
   readonly actions: InputActions = {
-    setDraft: (text) => { this.setDraft(text) },
+    setDraft: (text, annotations) => { this.restoreDraft(text, annotations) },
     addResponseAnnotation: annotation => this.addResponseAnnotation(annotation),
     addImages: ids => this.addImages(ids),
     removeImage: (id) => { this.removeImage(id) },
@@ -140,8 +141,9 @@ export class SessionInputShell implements SessionInput {
   /** One image-only send at a time: Enter during the Host round-trip is a no-op. */
   private imageSendInFlight = false
   private disposed = false
-  /** Draft persistence mirror (chat store write; receives the clipboard projection, never display-only ranges). */
-  private mirrorFn: ((text: string) => void) | undefined
+  /** Draft persistence mirror (other references use clipboard text; annotations retain their display form). */
+  private mirrorFn: ((text: string, annotations?: readonly PersistedResponseAnnotation[]) => void) | undefined
+  private lastMirroredAnnotations: readonly PersistedResponseAnnotation[] = []
 
   constructor(private readonly deps: SessionInputDeps) {
     this.state = createSnapshotStore<InputState>(this.compose())
@@ -158,6 +160,33 @@ export class SessionInputShell implements SessionInput {
    */
   setDraft(text: string, editRange?: EditRange): void {
     this.run(this.core.dispatch({ type: 'draft-changed', draft: text, ...(editRange !== undefined ? { editRange } : {}) }))
+  }
+
+  /** Rebuild only valid annotation references from the persisted display draft. */
+  private restoreDraft(text: string, annotations?: readonly PersistedResponseAnnotation[]): void {
+    if (!Array.isArray(annotations) || annotations.length === 0 || this.snapshot.draft !== '') {
+      this.setDraft(text)
+      return
+    }
+    const references: { start: number; end: number; reference: ReferenceInsert }[] = []
+    for (const item of annotations) {
+      try {
+        if (!Number.isSafeInteger(item.offset) || item.offset < 0) continue
+        const reference = responseAnnotationReference(parseResponseAnnotationPayload(item.ref))
+        const end = item.offset + referenceDraftText(reference).length
+        if (text.slice(item.offset, end) !== referenceDraftText(reference)) continue
+        references.push({ start: item.offset, end, reference })
+      } catch {
+        // A stale persisted sidecar cannot prevent recovery of the authored text.
+      }
+    }
+    references.sort((a, b) => a.start - b.start)
+    const disjoint: typeof references = []
+    for (const item of references) {
+      if (item.start >= (disjoint.at(-1)?.end ?? 0)) disjoint.push(item)
+    }
+    this.run(this.core.dispatch({ type: 'restore-draft', draft: text, references: disjoint }))
+    if (this.snapshot.draft === '') this.setDraft(text)
   }
 
   /** Append ordered image ids unless an admission transaction is locked. */
@@ -445,7 +474,7 @@ export class SessionInputShell implements SessionInput {
    * @param write - store draft write.
    * @returns the unbind disposer.
    */
-  bindMirror(write: (text: string) => void): () => void {
+  bindMirror(write: (text: string, annotations?: readonly PersistedResponseAnnotation[]) => void): () => void {
     this.mirrorFn = write
     return () => {
       if (this.mirrorFn === write) this.mirrorFn = undefined
@@ -637,10 +666,28 @@ export class SessionInputShell implements SessionInput {
   private publish(): void {
     const next = this.compose()
     this.state.set(next)
-    const mirroredDraft = projectClipboard(next)
-    if (mirroredDraft !== this.lastMirroredDraft) {
+    let mirroredDraft = ''
+    let cursor = 0
+    const annotations: PersistedResponseAnnotation[] = []
+    for (const occurrence of next.occurrences) {
+      mirroredDraft += next.draft.slice(cursor, occurrence.offset)
+      if (occurrence.source === RESPONSE_ANNOTATION_SOURCE) {
+        annotations.push({ offset: mirroredDraft.length, ref: occurrence.ref })
+        mirroredDraft += next.draft.slice(occurrence.offset, occurrence.offset + occurrence.length)
+      } else {
+        mirroredDraft += occurrence.clipboardText
+      }
+      cursor = occurrence.offset + occurrence.length
+    }
+    mirroredDraft += next.draft.slice(cursor)
+    if (mirroredDraft !== this.lastMirroredDraft
+      || annotations.length !== this.lastMirroredAnnotations.length
+      || annotations.some((item, index) => item.offset !== this.lastMirroredAnnotations[index]?.offset
+        || item.ref !== this.lastMirroredAnnotations[index]?.ref)) {
       this.lastMirroredDraft = mirroredDraft
-      this.mirrorFn?.(mirroredDraft)
+      this.lastMirroredAnnotations = annotations
+      if (annotations.length > 0) this.mirrorFn?.(mirroredDraft, annotations)
+      else this.mirrorFn?.(mirroredDraft)
     }
   }
 }

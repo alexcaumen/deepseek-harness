@@ -1,0 +1,18 @@
+:root {
+  --dsh-composer-card-max-width: 520px;
+  --dsh-composer-side-clearance: 16px;
+  --dsh-composer-text-max-height: 336px;
+  --dsw-font-family: "Segoe UI", Arial, sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: #f5f7f8; color: #202a30; font: 16px/1.5 "Segoe UI", Arial, sans-serif; }
+main { width: min(100%, 760px); min-height: 100vh; margin: 0 auto; padding: 48px 24px; }
+.response { width: 292px; margin: 0 0 56px 24px; padding: 16px 20px 20px; background: #fff; border-left: 3px solid #247b80; }
+.response p { margin: 8px 0 0; overflow-wrap: normal; }
+.eyebrow { color: #53636a; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+.composer { width: min(100%, 560px); }
+@media (max-width: 480px) {
+  main { padding: 30px 12px; }
+  .response { width: min(292px, calc(100% - 12px)); margin-left: 0; }
+  .composer { width: 100%; }
+}

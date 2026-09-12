@@ -1,5 +1,7 @@
 /** Shared conversation view, selection, and store-state contracts. */
 
+import type { PersistedResponseAnnotation } from '../response-annotation.ts'
+
 /** Tool call identity as carried on the wire (branded upstream in connection). */
 export type CallId = string
 
@@ -21,6 +23,8 @@ export interface ChatStoreState {
   selection: SelectionTarget | null
   /** Composer draft (persisted; survives session switches and reloads). */
   draft: string
+  /** Optional for drafts persisted before structured annotations were supported. */
+  draftAnnotations?: readonly PersistedResponseAnnotation[]
   /** Active conversation view id ('conversation.view' entry id); null falls back to Chat. */
   view: string | null
   /**

@@ -20,6 +20,12 @@ export interface ResponseAnnotationPresentation extends ResponseAnnotationPayloa
   readonly displayEnd: number
 }
 
+/** Structured reference retained beside the persisted display-only draft. */
+export interface PersistedResponseAnnotation {
+  readonly offset: number
+  readonly ref: string
+}
+
 function responseAnnotationPayload(
   record: Record<string, unknown>,
   messageIdKey: 'messageId' | 'sourceMessageId',

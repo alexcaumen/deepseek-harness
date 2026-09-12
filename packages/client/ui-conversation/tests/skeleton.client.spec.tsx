@@ -30,6 +30,7 @@ import type {
   ComposerBarOwnerProps, ConversationHeaderLineageOwnerProps,
 } from '../src/client/contract/slots.ts'
 import type { ViewTab } from '../src/client/contract/views.ts'
+import type { PersistedResponseAnnotation } from '../src/client/response-annotation.ts'
 
 /** Machine-backed wiring over a sink spy. */
 function fakeWiring() {
@@ -103,6 +104,8 @@ function mount(
     composerBlock?: { reason: string }
     /** Mutable view ledger used by registration-order regressions. */
     viewTabs?: ViewTab[]
+    /** Draft state reconstructed from the persisted per-session chat store. */
+    storedDraft?: { text: string; annotations?: readonly PersistedResponseAnnotation[] }
   } = {},
 ) {
   const root = sid('root')
@@ -134,7 +137,7 @@ function mount(
   const session = createSnapshotStore<ConversationSnapshot>(snapshot)
   const useSession = bindSnapshotSelector(session)
   const chat = createChatStore().create()
-  chat.actions.setDraft('ordinary draft')
+  chat.actions.setDraft(options.storedDraft?.text ?? 'ordinary draft', options.storedDraft?.annotations)
   const { wiring, sink } = fakeWiring()
   const useInput = bindSnapshotSelector(wiring.state)
   const inputActions = wiring.actions
@@ -346,6 +349,19 @@ describe('ConversationRoot resident composer', () => {
     expect(b.sink).toHaveBeenCalledWith('ordinary revised', [], 'queue', expect.any(AbortSignal))
     expect((b.view.getByRole('button', { name: 'Child' }) as HTMLButtonElement).disabled).toBe(true)
     expect(b.view.queryByText('Root')).toBeNull()
+  })
+
+  it('restores structured annotation occurrences through the session mount hook', () => {
+    const annotation = {
+      offset: 0,
+      ref: JSON.stringify({ index: 1, messageId: 'assistant-1', text: 'selected quote', startOffset: 2, endOffset: 16 }),
+    }
+    const b = mount(conversationSnapshot(), undefined, undefined, {
+      storedDraft: { text: '@Annotation 1 compare', annotations: [annotation] },
+    })
+    expect((b.view.getByRole('textbox') as HTMLTextAreaElement).value).toBe('@Annotation 1 compare')
+    expect(b.view.container.querySelector('[data-annotation-inline-chip="1"]')).toBeTruthy()
+    expect(b.chat.store.getSnapshot().draftAnnotations).toEqual([annotation])
   })
 
   it('shows hierarchy only for subagents and opens their ordinary owner', () => {

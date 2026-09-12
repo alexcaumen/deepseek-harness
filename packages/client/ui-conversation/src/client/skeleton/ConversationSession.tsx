@@ -182,11 +182,12 @@ export function ConversationSession({
   const blank = useSession(s => s.blank)
   const inputState = useInput(s => s)
   const storedDraft = useStore(s => s.draft)
+  const storedAnnotations = useStore(s => s.draftAnnotations)
   // `?? null`: persisted snapshots from before the inspect field rehydrate without it.
   const inspect = useStore(s => s.inspect ?? null)
 
   useEffect(() => {
-    if (inputState.draft === '' && storedDraft !== '') inputActions.setDraft(storedDraft)
+    if (inputState.draft === '' && storedDraft !== '') inputActions.setDraft(storedDraft, storedAnnotations)
     const unmirror = bindDraftMirror(actions.setDraft)
     return () => { unmirror() }
     // Mount-only (deps pinned to inputActions): later store writes come from
