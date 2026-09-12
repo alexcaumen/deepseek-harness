@@ -82,6 +82,23 @@ describe('startInProcessRun', () => {
     await run.dispose()
   })
 
+  it('inherits the parent latest assembled route after a session-local switch', async () => {
+    const { ctx, parent, adapter } = await setup([textResponse('parent answer'), textResponse('child answer')])
+    ctx.llm.registerAdapter(['selected'], adapter)
+    ctx.on('agent/request', async ({ agent }, next) => agent === parent
+      ? { ...await next(), provider: 'selected', model: 'selected-model', maxTokens: 321 }
+      : next())
+    parent.followup(createUserMessage({ content: [{ type: 'text', text: 'parent question' }], source: { kind: 'user' } }))
+    await parent.whenIdle()
+
+    const run = await startInProcessRun(request(parent), {})
+    expect(ctx.agents.get(run.id)!.options).toMatchObject({
+      provider: 'selected', model: 'selected-model', maxTokens: 321,
+    })
+    await expect(run.result).resolves.toMatchObject({ stopReason: 'completed' })
+    await run.dispose()
+  })
+
   it('reports a prompt a pre-step rejection discarded as refusal, not completion', async () => {
     const { ctx, parent } = await setup([])
     // A UserPromptSubmit deny or a policy plugin: the child claims its prompt,
