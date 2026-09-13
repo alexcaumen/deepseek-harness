@@ -285,10 +285,19 @@ export interface PreviewEndpointController {
 export type PreviewEndpointProcessSpawner = (executable: string, args: readonly string[]) => ChildProcess
 
 class ManagerError extends Error {
-  constructor(readonly code: 'INVALID_REQUEST' | 'BUSY' | 'TARGET_UNAVAILABLE' | 'LEASE_MISMATCH' | 'STATE_CONFLICT' | 'REMOTE_FAILURE' | 'UNKNOWN_COMMIT') {
+  constructor(
+    readonly code: 'INVALID_REQUEST' | 'BUSY' | 'TARGET_UNAVAILABLE' | 'LEASE_MISMATCH' | 'STATE_CONFLICT' | 'REMOTE_FAILURE' | 'UNKNOWN_COMMIT',
+    readonly failureDetail?: StageFailureDetail,
+  ) {
     super(code)
     this.name = 'ManagerError'
   }
+}
+
+interface StageFailureDetail {
+  readonly substage: 'HOST_LEASE_ASSERTION' | 'DEVICE_RECOVERY_PRECHECK' | 'DEVICE_RECOVERY_DISPATCH'
+  readonly remote_code?: number
+  readonly reset_invocation: 'NOT_STARTED' | 'STARTED' | 'UNKNOWN'
 }
 
 class StageBudget {
@@ -2011,7 +2020,11 @@ export class PreviewManager {
     catch (error: unknown) {
       outcome = {
         status: error instanceof ManagerError && error.code === 'UNKNOWN_COMMIT' ? 'QUARANTINED' : 'FAIL',
-        decision: 'FAILED', evidence: { stage, error: error instanceof ManagerError ? error.code : 'REMOTE_FAILURE' },
+        decision: 'FAILED', evidence: {
+          stage, error: error instanceof ManagerError ? error.code : 'REMOTE_FAILURE',
+          ...(error instanceof ManagerError && error.failureDetail !== undefined
+            ? { failure_detail: error.failureDetail } : {}),
+        },
       }
     }
 
@@ -2375,8 +2388,19 @@ export class PreviewManager {
       'now=$(date +%s%3N); [ "$current_expires" -gt "$now" ] || exit 76',
       "printf 'CURRENT\\n'",
     ].join('; ')
-    const result = await this.remote(target, command, budget.remaining(15_000))
-    if (result.code !== 0 || !/^CURRENT\s*$/u.test(result.stdout)) throw new ManagerError('UNKNOWN_COMMIT')
+    let result: PreviewManagerRemoteResult
+    try {
+      result = await this.remote(target, command, budget.remaining(15_000))
+    } catch {
+      throw new ManagerError('UNKNOWN_COMMIT', {
+        substage: 'HOST_LEASE_ASSERTION', reset_invocation: 'NOT_STARTED',
+      })
+    }
+    if (result.code !== 0 || !/^CURRENT\s*$/u.test(result.stdout)) {
+      throw new ManagerError('UNKNOWN_COMMIT', {
+        substage: 'HOST_LEASE_ASSERTION', remote_code: result.code, reset_invocation: 'NOT_STARTED',
+      })
+    }
   }
 
   private async runFencedMutation(
@@ -2446,35 +2470,59 @@ export class PreviewManager {
       }
       if (result?.code === 0 && result.stdout.trim() === 'GCP_DEVICE_RECOVERY_PRECHECKED') break
       if (![75, 78, 255].includes(result?.code ?? 255) || attempt === 3) {
-        throw new ManagerError('REMOTE_FAILURE')
+        throw new ManagerError('REMOTE_FAILURE', {
+          substage: 'DEVICE_RECOVERY_PRECHECK',
+          ...(result === undefined ? {} : { remote_code: result.code }),
+          reset_invocation: 'NOT_STARTED',
+        })
       }
       const retryDelayMs = Math.min(250 * attempt, budget.remaining())
       await new Promise(resolve => setTimeout(resolve, retryDelayMs))
     }
     if (result?.code !== 0 || result.stdout.trim() !== 'GCP_DEVICE_RECOVERY_PRECHECKED') {
-      throw new ManagerError('REMOTE_FAILURE')
+      throw new ManagerError('REMOTE_FAILURE', {
+        substage: 'DEVICE_RECOVERY_PRECHECK',
+        ...(result === undefined ? {} : { remote_code: result.code }),
+        reset_invocation: 'NOT_STARTED',
+      })
     }
 
     for (const device of consent.devices) {
       const reset = [
         `now=$(date +%s%3N); [ ${consent.expires_at} -gt "$now" ] && [ "$current_expires" -gt "$now" ] || exit 76`,
-        `row=$(nvidia-smi --query-gpu=index,uuid,gpu_recovery_action --format=csv,noheader,nounits -i ${device.index})`,
+        `target_index=${device.index}`,
+        `target_uuid=${shellQuote(device.uuid)}`,
+        'row=$(nvidia-smi --query-gpu=index,uuid,gpu_recovery_action --format=csv,noheader,nounits -i "$target_index")',
         `[ "$row" = ${shellQuote(`${device.index}, ${device.uuid}, Reset`)} ] || exit 76`,
         'apps=$(nvidia-smi --query-compute-apps=pid,gpu_uuid --format=csv,noheader,nounits) || exit 76',
         `if printf '%s\\n' "$apps" | awk -F',' -v uuid=${shellQuote(device.uuid)} '{ gsub(/^[ \\t]+|[ \\t]+$/, "", $1); gsub(/^[ \\t]+|[ \\t]+$/, "", $2); if ($2 == uuid && $1 ~ /^[0-9]+$/) found=1 } END { exit found ? 0 : 1 }'; then exit 76; fi`,
+        `other_apps_before=$(printf '%s\\n' "$apps" | awk -F',' -v uuid=${shellQuote(device.uuid)} '{ gsub(/^[ \\t]+|[ \\t]+$/, "", $1); gsub(/^[ \\t]+|[ \\t]+$/, "", $2); if ($2 != uuid && $1 ~ /^[0-9]+$/) print $1 "," $2 }' | sort)`,
         `now=$(date +%s%3N); [ ${consent.expires_at} -gt "$now" ] && [ "$current_expires" -gt "$now" ] || exit 76`,
-        `if ! sudo -n nvidia-smi --gpu-reset -i ${device.index}; then exit 77; fi`,
-        `row=$(nvidia-smi --query-gpu=index,uuid,gpu_recovery_action --format=csv,noheader,nounits -i ${device.index})`,
+        `printf 'GCP_DEVICE_RECOVERY_STARTED ${device.index} ${device.uuid}\\n'`,
+        `sudo -n nvidia-smi --gpu-reset -i ${device.index} >/dev/null 2>&1 || exit 77`,
+        'row=$(nvidia-smi --query-gpu=index,uuid,gpu_recovery_action --format=csv,noheader,nounits -i "$target_uuid")',
         `[ "$row" = ${shellQuote(`${device.index}, ${device.uuid}, None`)} ] || exit 76`,
+        'apps=$(nvidia-smi --query-compute-apps=pid,gpu_uuid --format=csv,noheader,nounits) || exit 76',
+        `other_apps_after=$(printf '%s\\n' "$apps" | awk -F',' -v uuid=${shellQuote(device.uuid)} '{ gsub(/^[ \\t]+|[ \\t]+$/, "", $1); gsub(/^[ \\t]+|[ \\t]+$/, "", $2); if ($2 != uuid && $1 ~ /^[0-9]+$/) print $1 "," $2 }' | sort)`,
+        '[ "$other_apps_after" = "$other_apps_before" ] || exit 76',
         `printf 'GCP_DEVICE_RECOVERY_APPLIED ${device.index} ${device.uuid}\\n'`,
       ].join('; ')
       try {
         result = await this.runFencedMutation(route.target, lease, reset, budget.remaining())
       } catch {
-        throw new ManagerError('UNKNOWN_COMMIT')
+        throw new ManagerError('UNKNOWN_COMMIT', {
+          substage: 'DEVICE_RECOVERY_DISPATCH', reset_invocation: 'UNKNOWN',
+        })
       }
+      const started = `GCP_DEVICE_RECOVERY_STARTED ${device.index} ${device.uuid}`
       const marker = `GCP_DEVICE_RECOVERY_APPLIED ${device.index} ${device.uuid}`
-      if (result.code !== 0 || result.stdout.trim() !== marker) throw new ManagerError('UNKNOWN_COMMIT')
+      const output = result.stdout.trim().split(/\r?\n/u)
+      if (result.code !== 0 || canonicalJson(output) !== canonicalJson([started, marker])) {
+        throw new ManagerError('UNKNOWN_COMMIT', {
+          substage: 'DEVICE_RECOVERY_DISPATCH', remote_code: result.code,
+          reset_invocation: output.includes(started) ? 'STARTED' : 'NOT_STARTED',
+        })
+      }
     }
   }
 
@@ -3037,6 +3085,11 @@ export class PreviewManager {
           : outcome.decision === 'SOURCE_RESTORED'
             ? 'MODEL_STAGE_NOT_APPLIED_SOURCE_RESTORED'
             : 'MODEL_STAGE_FAILED',
+        ...outcome.status !== 'PASS'
+          && typeof outcome.evidence === 'object' && outcome.evidence !== null
+          && 'failure_detail' in outcome.evidence
+          ? { failure_detail: (outcome.evidence as { failure_detail: StageFailureDetail }).failure_detail }
+          : {},
         ...stage === 'prestate' && outcome.decision === 'RESIDENT'
           ? { resident_route_id: (outcome.evidence as { route: ManagedRoute }).route.id,
             resident_revision_digest: (outcome.evidence as { route: ManagedRoute }).route.revisionDigest } : {},

@@ -64,6 +64,7 @@ class FakeRemote {
   prdgHostFence = 0
   prdgHostLease: { id: string; fence: number; expiresAt: number } | undefined
   hostLeaseBusy = false
+  currentResult: PreviewManagerRemoteResult | undefined
   acquireFailureTarget: 'r5300' | 'prdg' | undefined
   releaseFailureTarget: 'r5300' | 'prdg' | undefined
   systemdIdentityMismatch = false
@@ -135,6 +136,7 @@ class FakeRemote {
       return { code: 0, stdout: 'RELEASED\n' }
     }
     if (command.includes("printf 'CURRENT")) {
+      if (this.currentResult !== undefined) return this.currentResult
       const lease = /expected_lease='([a-f0-9]{64})'/u.exec(command)
       const fence = /expected_fence=(\d+)/u.exec(command)
       const current = target === 'prdg' ? this.prdgHostLease : this.hostLease
@@ -160,17 +162,18 @@ class FakeRemote {
       const expiryChecks = [...command.matchAll(/\[ (\d+) -gt "\$now" \] &&/gu)]
       const expiresAt = expiryChecks.at(-1)?.[1]
       if (expiresAt !== undefined && Number(expiresAt) <= Date.now()) return { code: 76, stdout: '' }
-      if (this.deviceResetError !== undefined) return { code: this.deviceResetError, stdout: '' }
       const reset = /--gpu-reset -i (\d+)/u.exec(command)
       if (reset === null) return { code: 76, stdout: '' }
       const index = reset[1]
+      const uuid = /GCP_DEVICE_RECOVERY_APPLIED \d+ (GPU-[A-Fa-f0-9-]+)/u.exec(command)?.[1]
+      if (uuid === undefined) return { code: 76, stdout: '' }
+      if (this.deviceResetError !== undefined) {
+        return { code: this.deviceResetError, stdout: `GCP_DEVICE_RECOVERY_STARTED ${index} ${uuid}\n` }
+      }
       this.telemetry = this.telemetry?.split('\n').map(line =>
         line.startsWith(`${index}, `) ? line.replace(', Reset,', ', None,') : line).join('\n')
       this.onDeviceReset?.()
-      const uuid = /GCP_DEVICE_RECOVERY_APPLIED \d+ (GPU-[A-Fa-f0-9-]+)/u.exec(command)?.[1]
-      return uuid === undefined
-        ? { code: 76, stdout: '' }
-        : { code: 0, stdout: `GCP_DEVICE_RECOVERY_APPLIED ${index} ${uuid}\n` }
+      return { code: 0, stdout: `GCP_DEVICE_RECOVERY_STARTED ${index} ${uuid}\nGCP_DEVICE_RECOVERY_APPLIED ${index} ${uuid}\n` }
     }
     if (command.includes('MemAvailable')) {
       this.onTelemetry?.()
@@ -1213,6 +1216,9 @@ describe('Giana CoWork Preview model manager', () => {
     })
     const reset = remote.commands.find(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))
     expect(reset).toContain('sudo -n nvidia-smi --gpu-reset -i 1')
+    expect(reset).toContain('GCP_DEVICE_RECOVERY_STARTED 1 GPU-1')
+    expect(reset).toContain('>/dev/null 2>&1')
+    expect(reset).toContain('other_apps_after')
     expect(reset).toContain('--query-compute-apps=pid,gpu_uuid')
     expect(reset).toContain('GPU-1')
     expect(remote.telemetry).toContain('GPU-1, None')
@@ -1380,12 +1386,37 @@ describe('Giana CoWork Preview model manager', () => {
     const remote = new FakeRemote()
     remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reset, 45000\nAPPS\n'
     remote.deviceResetError = 255
-    const { adapter, statePath } = await fixture(remote, registry(), 30_000, approveRecovery)
+    const { adapter, statePath, transportResults } = await fixture(remote, registry(), 30_000, approveRecovery)
     const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
 
     await expect(adapter.preflight(context(grant, route('glm-official'), 'f'))).rejects.toThrow()
     expect(remote.commands.some(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))).toBe(true)
+    expect(transportResults.at(-1)).toMatchObject({
+      stage_receipt: {
+        status: 'QUARANTINED',
+        failure_detail: {
+          substage: 'DEVICE_RECOVERY_DISPATCH', remote_code: 255, reset_invocation: 'STARTED',
+        },
+      },
+    })
     expect(JSON.parse(await readFile(statePath, 'utf8')).lease.quarantined).toBe(true)
+  })
+
+  it('records host-lease assertion failures separately from device recovery dispatch', async () => {
+    const remote = new FakeRemote()
+    remote.currentResult = { code: 76, stdout: '' }
+    const { adapter, transportResults } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('glm-official'), 'f'))).rejects.toThrow()
+    expect(transportResults.at(-1)).toMatchObject({
+      stage_receipt: {
+        status: 'QUARANTINED',
+        failure_detail: {
+          substage: 'HOST_LEASE_ASSERTION', remote_code: 76, reset_invocation: 'NOT_STARTED',
+        },
+      },
+    })
   })
 
   it('stops before resetting a second GPU when the first reset fails', async () => {

@@ -128,6 +128,11 @@ interface WireStageReceipt {
   readonly resident_revision_digest?: string
   readonly recovery_state_digest?: string
   readonly recovery_devices?: readonly unknown[]
+  readonly failure_detail?: {
+    readonly substage: 'HOST_LEASE_ASSERTION' | 'DEVICE_RECOVERY_PRECHECK' | 'DEVICE_RECOVERY_DISPATCH'
+    readonly remote_code?: number
+    readonly reset_invocation: 'NOT_STARTED' | 'STARTED' | 'UNKNOWN'
+  }
 }
 
 interface WireReceipt {
@@ -854,6 +859,14 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
     if (receipt.stage_receipt !== undefined) {
       assertBareDigest(receipt.stage_receipt.evidence_digest)
       if (typeof receipt.stage_receipt.error_class !== 'string') {
+        throw new ServerManagerAdapterError('CONTRACT_INVALID')
+      }
+      const detail = receipt.stage_receipt.failure_detail
+      if (detail !== undefined
+        && (!['HOST_LEASE_ASSERTION', 'DEVICE_RECOVERY_PRECHECK', 'DEVICE_RECOVERY_DISPATCH'].includes(detail.substage)
+          || !['NOT_STARTED', 'STARTED', 'UNKNOWN'].includes(detail.reset_invocation)
+          || (detail.remote_code !== undefined
+            && (!Number.isSafeInteger(detail.remote_code) || detail.remote_code < 0 || detail.remote_code > 255)))) {
         throw new ServerManagerAdapterError('CONTRACT_INVALID')
       }
     }
