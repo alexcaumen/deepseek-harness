@@ -118,6 +118,7 @@ interface LeaseState {
 }
 
 interface TransactionState {
+  settlement: 'ACTIVE' | 'AWAITING_PUBLICATION' | 'COMPENSATING' | 'COMMITTED'
   readonly digest: string
   readonly kind: TransactionKind
   readonly scopeDigest: string
@@ -548,9 +549,13 @@ function parseState(value: unknown): ManagerState {
         'digest', 'kind', 'scopeDigest', 'nextAllowed', 'cleanCancelable', 'terminal', 'started', 'sequence',
         'allowedRoutes', 'destinationRouteId', 'sourceRouteId', 'destinationPrestateCaptured', 'recovery',
         'startedRouteId', 'adoptedResidentRouteId', 'lastStoppedRouteId', 'inFlight',
-        'destinationPrestateDigest', 'sourcePrestateDigest',
+        'destinationPrestateDigest', 'sourcePrestateDigest', 'settlement',
       ])
       const kind = stringField(candidate.kind) as TransactionKind
+      const settlement = stringField(candidate.settlement) as TransactionState['settlement']
+      if (!['ACTIVE', 'AWAITING_PUBLICATION', 'COMPENSATING', 'COMMITTED'].includes(settlement)) {
+        throw new ManagerError('STATE_CONFLICT')
+      }
       if (!['MODEL_ROUTE', 'IDLE_UNLOAD', 'SHUTDOWN'].includes(kind)
         || !Array.isArray(candidate.nextAllowed)
         || typeof candidate.cleanCancelable !== 'boolean'
@@ -575,7 +580,9 @@ function parseState(value: unknown): ManagerState {
       }
       const allowedStages = STAGES.filter(stage => allowedRoutes[stage] !== undefined)
       if (canonicalJson(nextAllowed) !== canonicalJson(allowedStages)
-        || candidate.terminal !== (nextAllowed.length === 0)) throw new ManagerError('STATE_CONFLICT')
+        || candidate.terminal !== (nextAllowed.length === 0 && settlement !== 'AWAITING_PUBLICATION')) {
+        throw new ManagerError('STATE_CONFLICT')
+      }
       const optionalRoute = (route: unknown): string | undefined => route === undefined
         ? undefined
         : stringField(route, SAFE_TOKEN)
@@ -589,6 +596,15 @@ function parseState(value: unknown): ManagerState {
       const sourceRouteId = optionalRoute(candidate.sourceRouteId)
       const adoptedResidentRouteId = optionalRoute(candidate.adoptedResidentRouteId)
       const lastStoppedRouteId = optionalRoute(candidate.lastStoppedRouteId)
+      if ((settlement === 'AWAITING_PUBLICATION' || settlement === 'COMMITTED')
+        && (kind !== 'MODEL_ROUTE' || candidate.recovery || nextAllowed.length !== 0
+          || destinationRouteId === undefined
+          || (startedRouteId !== destinationRouteId && adoptedResidentRouteId !== destinationRouteId))) {
+        throw new ManagerError('STATE_CONFLICT')
+      }
+      if (settlement === 'COMPENSATING' && (!candidate.recovery || kind !== 'MODEL_ROUTE')) {
+        throw new ManagerError('STATE_CONFLICT')
+      }
       const structurallyAdopted = kind === 'MODEL_ROUTE'
         && candidate.destinationPrestateCaptured
         && !candidate.started
@@ -604,15 +620,16 @@ function parseState(value: unknown): ManagerState {
         || adoptedResidentRouteId !== sourceRouteId
         || !candidate.destinationPrestateCaptured
         || candidate.recovery
-        || candidate.cleanCancelable
+        || (candidate.cleanCancelable && (nextAllowed.includes('probe') || inFlight !== undefined))
         || lastStoppedRouteId !== undefined
-        || (!candidate.terminal && !(nextAllowed.length === 1
+        || (!candidate.terminal && settlement !== 'AWAITING_PUBLICATION' && !(nextAllowed.length === 1
           && (nextAllowed[0] === 'health' || nextAllowed[0] === 'probe')
           && allowedRoutes[nextAllowed[0]]?.length === 1
           && allowedRoutes[nextAllowed[0]]?.[0] === adoptedResidentRouteId)))) {
         throw new ManagerError('STATE_CONFLICT')
       }
       transactions[key] = {
+        settlement,
         digest: stringField(candidate.digest, BARE_DIGEST),
         kind,
         scopeDigest: stringField(candidate.scopeDigest, BARE_DIGEST),
@@ -971,6 +988,7 @@ export class PreviewManager {
       if (operation === 'release') return await this.release(envelope, key)
       if (operation === 'begin') return await this.begin(envelope, key)
       if (operation === 'cancel-clean') return await this.cancelClean(envelope, key)
+      if (operation === 'settle-activation') return await this.settleActivation(envelope, key)
       if (operation === 'stage') return await this.stage(envelope, key)
       throw new ManagerError('INVALID_REQUEST')
     } catch (error: unknown) {
@@ -1066,6 +1084,7 @@ export class PreviewManager {
         throw new ManagerError('BUSY')
       }
       const transaction: TransactionState = {
+        settlement: 'ACTIVE',
         digest: transactionDigest, kind, scopeDigest,
         nextAllowed: kind === 'MODEL_ROUTE' ? ['preflight'] : ['prestate'],
         cleanCancelable: true, terminal: false, started: false, sequence: 1,
@@ -1096,6 +1115,59 @@ export class PreviewManager {
     })
   }
 
+  private async settleActivation(envelope: Record<string, unknown>, key: string): Promise<Readonly<Record<string, unknown>>> {
+    const disposition = stringField(envelope.disposition)
+    if (disposition !== 'COMMIT' && disposition !== 'COMPENSATE') throw new ManagerError('INVALID_REQUEST')
+    return this.store.run(async (state) => {
+      const lease = this.boundLease(state, envelope)
+      const transaction = this.transaction(state, envelope)
+      const destination = this.routeById.get(transaction.destinationRouteId ?? '')
+      if (transaction.kind !== 'MODEL_ROUTE' || transaction.terminal || transaction.inFlight !== undefined
+        || transaction.sequence !== integerField(envelope.expected_sequence, 1)
+        || transaction.scopeDigest !== stringField(envelope.scope_digest, BARE_DIGEST)
+        || destination === undefined || destination.id !== envelope.route_id
+        || destination.revisionDigest !== envelope.exact_revision_digest
+        || canonicalJson(envelope.target) !== canonicalJson(lease.targetDescriptors.find(target => target.class === destination.target))) {
+        throw new ManagerError('STATE_CONFLICT')
+      }
+      if (disposition === 'COMMIT') {
+        if (transaction.settlement !== 'AWAITING_PUBLICATION') throw new ManagerError('STATE_CONFLICT')
+        transaction.settlement = 'COMMITTED'
+      } else {
+        if (transaction.settlement !== 'ACTIVE' && transaction.settlement !== 'AWAITING_PUBLICATION') {
+          throw new ManagerError('STATE_CONFLICT')
+        }
+        if (transaction.adoptedResidentRouteId !== undefined) {
+          if (transaction.settlement !== 'AWAITING_PUBLICATION') throw new ManagerError('STATE_CONFLICT')
+          // Read-only adoption failed publication; it never authorizes stopping the resident.
+          transaction.settlement = 'ACTIVE'
+        } else {
+          const destinationNeedsStop = transaction.startedRouteId === destination.id
+            || (transaction.recovery && transaction.allowedRoutes.stop?.includes(destination.id) === true)
+          const sourceCanRestart = transaction.sourceRouteId !== undefined
+            && transaction.sourceRouteId !== destination.id
+            && transaction.lastStoppedRouteId === transaction.sourceRouteId
+            && transaction.allowedRoutes.start?.includes(destination.id) === true
+          if (!destinationNeedsStop && !sourceCanRestart) throw new ManagerError('STATE_CONFLICT')
+          const restoration = destinationNeedsStop ? { stop: [destination.id] }
+            : transaction.sourceRouteId === undefined ? undefined : { start: [transaction.sourceRouteId] }
+          if (restoration === undefined) throw new ManagerError('STATE_CONFLICT')
+          transaction.recovery = true
+          transaction.settlement = 'COMPENSATING'
+          transaction.nextAllowed = this.setAllowed(transaction, restoration)
+        }
+      }
+      transaction.cleanCancelable = false
+      transaction.terminal = transaction.nextAllowed.length === 0
+      transaction.sequence += 1
+      const result = this.transactionReceipt(lease, transaction,
+        disposition === 'COMMIT' ? 'ACTIVATION_COMMITTED' : 'COMPENSATION_AUTHORIZED')
+      this.remember(state, 'settle-activation', key, result)
+      await this.store.persist()
+      return result
+    })
+  }
+
   private async stage(envelope: Record<string, unknown>, key: string): Promise<Readonly<Record<string, unknown>>> {
     const stage = stringField(envelope.stage) as Stage
     if (!STAGES.includes(stage)) throw new ManagerError('INVALID_REQUEST')
@@ -1114,13 +1186,13 @@ export class PreviewManager {
       const covered = lease.targetDescriptors.find(descriptor => descriptor.class === targetName)
       if (covered === undefined || canonicalJson(target) !== canonicalJson(covered)) throw new ManagerError('LEASE_MISMATCH')
       const transaction = this.transaction(state, envelope)
-      const probeAfterHealthyStart = stage === 'probe' && transaction.terminal && transaction.started
-      if ((!transaction.nextAllowed.includes(stage) && !probeAfterHealthyStart) || transaction.inFlight !== undefined
+      if (!transaction.nextAllowed.includes(stage) || transaction.terminal || transaction.inFlight !== undefined
         || lease.expiresAt <= Date.now() || !this.routeAllowed(transaction, stage, route)) {
         throw new ManagerError('STATE_CONFLICT')
       }
       if (stage === 'stop') {
         if (transaction.kind !== 'MODEL_ROUTE') throw new ManagerError('STATE_CONFLICT')
+        if (transaction.recovery && transaction.settlement !== 'COMPENSATING') throw new ManagerError('STATE_CONFLICT')
         const evictsExisting = transaction.sourceRouteId === route.id
           && transaction.destinationRouteId !== route.id && !transaction.recovery
         if (evictsExisting) {
@@ -1150,6 +1222,7 @@ export class PreviewManager {
         }
       } else if (envelope.eviction_consent !== undefined) throw new ManagerError('INVALID_REQUEST')
       hostLease = { leaseId: lease.leaseId, fence: lease.fence }
+      if (stage !== 'preflight' && stage !== 'prestate') transaction.cleanCancelable = false
       transaction.inFlight = stage
       await this.store.persist()
     })
@@ -1177,9 +1250,10 @@ export class PreviewManager {
       }
       delete transaction.inFlight
       transaction.sequence += 1
-      transaction.cleanCancelable = stage === 'preflight' && outcome.status === 'PASS' && outcome.decision === 'UNAVAILABLE'
+      transaction.cleanCancelable = transaction.cleanCancelable
+        && (stage === 'preflight' || stage === 'prestate') && outcome.status === 'PASS'
       transaction.nextAllowed = this.advanceTransaction(stage, route, outcome, transaction)
-      transaction.terminal = transaction.nextAllowed.length === 0
+      transaction.terminal = transaction.nextAllowed.length === 0 && transaction.settlement !== 'AWAITING_PUBLICATION'
       const result = this.stageReceipt(lease, transaction, route, stage, outcome)
       if (stage === 'prestate' && outcome.status === 'PASS') {
         const receiptDigest = stringField(result.receiptDigest, SHA256_DIGEST).slice(7)
@@ -1755,6 +1829,7 @@ export class PreviewManager {
   ): Stage[] {
     if (outcome.status === 'QUARANTINED') return this.setAllowed(transaction, {})
     if (outcome.status !== 'PASS') {
+      if (transaction.settlement === 'COMPENSATING') return this.setAllowed(transaction, {})
       if (stage === 'start' || stage === 'health' || stage === 'probe') {
         if ((stage === 'health' || stage === 'probe') && transaction.adoptedResidentRouteId === route.id) {
           return this.setAllowed(transaction, {})
@@ -1762,7 +1837,10 @@ export class PreviewManager {
         if (route.id === transaction.destinationRouteId) transaction.recovery = true
         return this.setAllowed(transaction, { stop: [route.id] })
       }
-      if (stage === 'stop') return this.setAllowed(transaction, { 'verify-stopped': [route.id] })
+      if (stage === 'stop') {
+        transaction.lastStoppedRouteId = route.id
+        return this.setAllowed(transaction, { 'verify-stopped': [route.id] })
+      }
       return this.setAllowed(transaction, {})
     }
 
@@ -1839,6 +1917,9 @@ export class PreviewManager {
         ? this.setAllowed(transaction, { probe: [route.id] })
         : this.setAllowed(transaction, {})
     }
+    if (stage === 'probe' && transaction.kind === 'MODEL_ROUTE' && !transaction.recovery) {
+      transaction.settlement = 'AWAITING_PUBLICATION'
+    }
     return this.setAllowed(transaction, {})
   }
 
@@ -1876,6 +1957,9 @@ export class PreviewManager {
     const base = { ...this.withoutDigest(this.leaseReceipt(lease, state)),
       transaction_digest: transaction.digest, transaction_kind: transaction.kind,
       scope_digest: transaction.scopeDigest,
+      transaction_sequence: transaction.sequence, activation_settlement: transaction.settlement,
+      ...(transaction.adoptedResidentRouteId === undefined ? {}
+        : { adopted_resident_route_id: transaction.adoptedResidentRouteId }),
       state_machine_digest: digest({ transaction: transaction.digest, sequence: transaction.sequence, state }),
       next_allowed_stages: transaction.nextAllowed,
     }

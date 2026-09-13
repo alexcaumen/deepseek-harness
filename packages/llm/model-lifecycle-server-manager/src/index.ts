@@ -40,6 +40,7 @@ export type ServerManagerOperation =
   | 'release'
   | 'begin'
   | 'cancel-clean'
+  | 'settle-activation'
   | 'stage'
 
 /** Credential-owning transport injected by an admitted deployment. */
@@ -109,6 +110,9 @@ interface WireReceipt {
   readonly transaction_kind?: string
   readonly scope_digest?: string
   readonly state_machine_digest?: string
+  readonly transaction_sequence?: number
+  readonly activation_settlement?: string
+  readonly adopted_resident_route_id?: string
   readonly next_allowed_stages?: readonly string[]
   readonly stage_receipt?: WireStageReceipt
   readonly error_class?: string
@@ -131,6 +135,8 @@ interface TransactionState {
   readonly begin: Promise<void>
   cleanCancelable: boolean
   terminal: boolean
+  lastReceipt?: WireReceipt
+  unresolved?: boolean
 }
 
 /** Sanitized adapter failure; wire payloads and credential details are omitted. */
@@ -351,6 +357,71 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
     this.leases.delete(grant.leaseRef)
   }
 
+  async cancelPreparation(context: ModelLifecycleStageContext): Promise<void> {
+    const state = this.lease(context.resourceLease)
+    const transaction = state.transactions.get(bareDigest(context.transactionDigest))
+    if (transaction === undefined) return
+    if (transaction.scopeDigest !== bareDigest(context.scope.digest)
+      || transaction.kind !== context.transactionKind) {
+      throw new ServerManagerAdapterError('CONTRACT_INVALID')
+    }
+    await transaction.begin
+    if (transaction.terminal) return
+    if (transaction.lastReceipt?.activation_settlement === 'AWAITING_PUBLICATION'
+      && transaction.lastReceipt.adopted_resident_route_id === context.route.id) {
+      await this.settleActivation(context, 'COMPENSATE')
+      return
+    }
+    if (!transaction.cleanCancelable) throw new ServerManagerAdapterError('CONTRACT_INVALID')
+    const timeoutMs = Math.floor(context.deadlineAt - this.now())
+    if (timeoutMs < 1 || context.signal.aborted) throw new ServerManagerAdapterError('TRANSPORT_UNAVAILABLE')
+    const receipt = await this.invoke('cancel-clean', {
+      ...this.boundRequest(state),
+      idempotency_key: this.key(),
+      timeout_ms: Math.min(timeoutMs, this.operationTimeoutMs),
+      transaction_digest: transaction.digest,
+      cancellation_generation: state.wire.generation,
+    }, context.signal)
+    this.validateTransactionReceipt(receipt, state, transaction, 'TRANSACTION_CANCELLED_CLEAN')
+    state.wire = receipt
+    transaction.terminal = true
+  }
+
+  async settleActivation(context: ModelLifecycleStageContext, disposition: 'COMMIT' | 'COMPENSATE'): Promise<void> {
+    const state = this.lease(context.resourceLease)
+    const transaction = state.transactions.get(bareDigest(context.transactionDigest))
+    if (transaction === undefined || transaction.scopeDigest !== bareDigest(context.scope.digest)
+      || transaction.kind !== context.transactionKind) throw new ServerManagerAdapterError('CONTRACT_INVALID')
+    await transaction.begin
+    const sequence = transaction.lastReceipt?.transaction_sequence
+    if (transaction.unresolved || transaction.terminal || !finiteInteger(sequence, 1)) {
+      throw new ServerManagerAdapterError('CONTRACT_INVALID')
+    }
+    const timeoutMs = Math.floor(context.deadlineAt - this.now())
+    if (timeoutMs < 1 || context.signal.aborted) throw new ServerManagerAdapterError('TRANSPORT_UNAVAILABLE')
+    transaction.unresolved = true
+    const receipt = await this.invoke('settle-activation', {
+      ...this.boundRequest(state), idempotency_key: this.key(),
+      timeout_ms: Math.min(timeoutMs, this.operationTimeoutMs),
+      transaction_digest: transaction.digest, scope_digest: transaction.scopeDigest,
+      expected_sequence: sequence, disposition,
+      route_id: context.route.id, exact_revision_digest: bareDigest(context.route.revisionDigest),
+      target: this.target(context.target),
+    }, context.signal)
+    this.validateTransactionReceipt(receipt, state, transaction,
+      disposition === 'COMMIT' ? 'ACTIVATION_COMMITTED' : 'COMPENSATION_AUTHORIZED')
+    if (receipt.transaction_sequence !== Number(sequence) + 1
+      || (disposition === 'COMMIT' ? receipt.activation_settlement !== 'COMMITTED'
+        : receipt.activation_settlement !== 'COMPENSATING' && receipt.activation_settlement !== 'ACTIVE')) {
+      throw new ServerManagerAdapterError('CONTRACT_INVALID')
+    }
+    transaction.lastReceipt = receipt
+    transaction.terminal = receipt.next_allowed_stages?.length === 0
+      && receipt.activation_settlement !== 'AWAITING_PUBLICATION'
+    transaction.unresolved = false
+    state.wire = receipt
+  }
+
   capturePrestate(context: ModelLifecycleStageContext): Promise<ModelLifecyclePrestateReceipt> {
     return this.stage(context, 'prestate').then(({ wire, receipt }) => {
       const stage = wire.stage_receipt
@@ -443,6 +514,9 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
     }
     const state = this.lease(context.resourceLease)
     const transaction = await this.transaction(state, context)
+    if (transaction.unresolved) throw new ServerManagerAdapterError('CONTRACT_INVALID')
+    transaction.unresolved = true
+    if (stage !== 'preflight' && stage !== 'prestate') transaction.cleanCancelable = false
     const wire = await this.invoke('stage', {
       ...this.boundRequest(state),
       idempotency_key: this.key(),
@@ -470,10 +544,12 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
     const stageReceipt = wire.stage_receipt
     if (stageReceipt === undefined) throw new ServerManagerAdapterError('CONTRACT_INVALID')
     transaction.cleanCancelable = transaction.cleanCancelable
-      && stage === 'preflight'
+      && (stage === 'preflight' || stage === 'prestate')
       && stageReceipt.status === 'PASS'
-      && stageReceipt.decision === 'UNAVAILABLE'
     transaction.terminal = Array.isArray(wire.next_allowed_stages) && wire.next_allowed_stages.length === 0
+      && wire.activation_settlement !== 'AWAITING_PUBLICATION'
+    transaction.lastReceipt = wire
+    transaction.unresolved = false
     state.wire = wire
     return {
       wire,
@@ -523,13 +599,10 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
       terminal: false,
     })
     state.transactions.set(digest, transaction)
-    try {
-      await begin
-      return transaction
-    } catch (error: unknown) {
-      state.transactions.delete(digest)
-      throw error
-    }
+    // A lost begin reply may have left a durable host transaction. Retain its
+    // rejected promise so cleanup cannot mistake it for an undispatched request.
+    await begin
+    return transaction
   }
 
   private async invoke(

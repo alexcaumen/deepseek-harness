@@ -10,6 +10,10 @@ Expired unresolved transactions and quarantined leases retain ownership. Quarant
 
 ## Model Experience
 
+Read-only preflight and prestate retain clean-cancellation eligibility until another stage starts. Rejecting, cancelling or timing out eviction approval settles preparation without stopping the source model or releasing its ownership lease. The manager rejects cancellation while a stage is in flight and retains uncertain mutations for reconciliation. Restart parsing accepts clean preparation of an exact resident; it does not accept clean cancellation of health/probe work in flight.
+
+Successful destination probe enters `AWAITING_PUBLICATION`, not a terminal transaction. The fenced `settle-activation` operation commits only that state, or authorizes one compensation path from verified source stop or an attempted destination activation. Compensation stops and verifies only the destination before restoring the recorded source; a failed compensation stage closes that path without another restore cycle. Existing signed, single-use eviction consent remains required for the original source stop. Stale sequences, wrong scope/route/revision/target, in-flight stages, quarantine and committed transactions reject compensation. Restart parsing requires explicit settlement state; existing transaction records without it are rejected, never inferred as committed. See the [compensation decision record](docs/compensation-alignment.md).
+
 This plugin adds no prompt text or tool schemas. It gates local model dispatch, so admission and startup add latency before inference. It does not implement prompt-prefix caching, context reduction or KV-cache sharing. Offload and memory requirements are explicit route configuration, not automatic hardware pooling.
 
 ## Known Limitations and Deferred Work

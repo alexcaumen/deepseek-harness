@@ -292,6 +292,19 @@ export interface ModelDrainContext extends ModelLifecycleStageContext {
 
 /** Host-specific mechanism. Implementations must not choose fallback targets. */
 export interface ModelLifecycleDriver {
+  /**
+   * Commit published activation, or authorize bounded compensation before publication commits.
+   * Stateful drivers fence this decision to the original transaction and reject unresolved stages.
+   * @param context - Original transaction with fresh cleanup cancellation/deadline.
+   * @param disposition - COMMIT only after READY and session publication; COMPENSATE only after definite failure.
+   */
+  settleActivation?(context: ModelLifecycleStageContext, disposition: 'COMMIT' | 'COMPENSATE'): Promise<void>
+  /**
+   * Settle rejected preparation without releasing ownership of an existing resident.
+   * Stateful drivers must reject cancellation after any resource mutation or while a stage is unresolved.
+   * @param context - Original transaction and fence with fresh cleanup cancellation/deadline.
+   */
+  cancelPreparation?(context: ModelLifecycleStageContext): Promise<void>
   capturePrestate(context: ModelLifecycleStageContext): Promise<ModelLifecyclePrestateReceipt>
   preflight(context: ModelLifecycleStageContext): Promise<ModelCapacityDecision>
   drain(context: ModelDrainContext): Promise<ModelLifecycleStageReceipt>
@@ -779,6 +792,26 @@ export class ModelLifecycleRuntime extends Service {
     } catch (error: unknown) {
       const rolledBack = error instanceof RolledBackLifecycleFailure
       const failure = rolledBack ? error.failure : error
+      if (!rolledBack && !this.tainted && !activation.started && this.resourceLease !== undefined
+        && registration !== undefined && scope !== undefined && transactionDigest !== undefined) {
+        const driver = registration.driver
+        const cancelPreparation = driver.cancelPreparation
+        if (cancelPreparation !== undefined) {
+          try {
+            const target = receipts.at(-1)?.target ?? registration.route.targets[0]
+            if (target === undefined) throw new Error('Preparation target is unavailable for cancellation')
+            const context = this.stageContext(registration, target, {
+              ...request, signal: this.resourceLease.signal,
+            }, scope, transactionDigest)
+            await this.runAuthorityOperation('preparation cancellation', this.resourceLease.signal,
+              signal => cancelPreparation.call(driver, { ...context, signal }))
+          } catch {
+            // A rejected cancellation does not prove the host transaction is settled.
+            this.tainted = true
+            this.phase = 'TAINTED'
+          }
+        }
+      }
       const tainted = this.tainted
       if (!rolledBack && !tainted) this.phase = this.active === undefined ? 'IDLE' : 'READY'
       if (
@@ -949,6 +982,7 @@ export class ModelLifecycleRuntime extends Service {
         receiptDigests: receipts.map(receipt => receipt.digest),
       })
       this.publishEffectiveRoute(registration, request, target, scope, transactionDigest, receipts)
+      await this.settleActivation(registration, target, request, scope, transactionDigest, 'COMMIT')
       return this.routeLease(registration, target, scope, transactionDigest, receipts, authority, release)
     }
 
@@ -991,6 +1025,7 @@ export class ModelLifecycleRuntime extends Service {
         receiptDigests: receipts.map(receipt => receipt.digest),
       })
       this.publishEffectiveRoute(registration, request, target, scope, transactionDigest, receipts)
+      await this.settleActivation(registration, target, request, scope, transactionDigest, 'COMMIT')
       return this.routeLease(registration, target, scope, transactionDigest, receipts, authority, release)
     }
 
@@ -1158,9 +1193,11 @@ export class ModelLifecycleRuntime extends Service {
         receiptDigests: receipts.map(receipt => receipt.digest),
       })
       this.publishEffectiveRoute(registration, request, target, scope, transactionDigest, receipts)
+      await this.settleActivation(registration, target, request, scope, transactionDigest, 'COMMIT')
       return this.routeLease(registration, target, scope, transactionDigest, receipts, authority, release)
     } catch (error: unknown) {
-      if (error instanceof AuditPersistenceFailure && error.settlementUnknown) {
+      if ((error instanceof AuditPersistenceFailure && error.settlementUnknown)
+        || (error instanceof ModelLifecycleError && error.code === 'RUNTIME_TAINTED')) {
         // The READY write may still settle after its local deadline. Preserve the
         // physically ready route under quarantine instead of creating a false
         // durable READY record by rolling the host back underneath it.
@@ -1562,6 +1599,7 @@ export class ModelLifecycleRuntime extends Service {
       ...request.sessionId === undefined ? {} : { sessionId: request.sessionId },
       ...request.preference === undefined ? {} : { preference: request.preference },
     }
+    await this.settleActivation(targetRegistration, target, cleanupRequest, scope, transactionDigest, 'COMPENSATE')
     if (targetStartAttempted) {
       const targetContext = this.stageContext(targetRegistration, target, cleanupRequest, scope, transactionDigest)
       try {
@@ -1610,6 +1648,29 @@ export class ModelLifecycleRuntime extends Service {
       }
     }
     if (failures.length > 0) throw new AggregateError(failures, 'model lifecycle rollback failed')
+  }
+
+  private async settleActivation(
+    registration: Registration,
+    target: ModelComputeTarget,
+    request: AcquireModelRouteRequest,
+    scope: ModelExecutionScope,
+    transactionDigest: string,
+    disposition: 'COMMIT' | 'COMPENSATE',
+  ): Promise<void> {
+    const settle = registration.driver.settleActivation
+    if (settle === undefined) return
+    const { signal: _signal, ...cleanupRequest } = request
+    const context = this.stageContext(registration, target, cleanupRequest, scope, transactionDigest)
+    try {
+      await this.runAuthorityOperation('activation settlement', context.signal,
+        signal => settle.call(registration.driver, { ...context, signal }, disposition))
+    } catch (error: unknown) {
+      // Publication already succeeded before COMMIT dispatch; even a lost reply must not undo it.
+      this.tainted = true
+      this.phase = 'TAINTED'
+      throw lifecycleError('RUNTIME_TAINTED', 'Local model activation settlement is uncertain', error)
+    }
   }
 
   private async record(authority: ModelLifecycleAuthority, record: ModelLifecycleAuditRecord): Promise<void> {

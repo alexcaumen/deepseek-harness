@@ -2,9 +2,16 @@ import { createHash, createHmac } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import Loader from '@deepseek-ai/cordis-plugin-loader'
+import Include from '@deepseek-ai/cordis-plugin-include'
+import Lifecycle, { createModelExecutionScopeDigest } from '@deepseek-ai/dsh-model-lifecycle'
+import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type {
   GovernedModelRoute,
+  ModelEvictionConsentRequest,
   ModelExecutionScope,
   ModelLifecycleStageContext,
   ResourceLeaseGrant,
@@ -400,8 +407,345 @@ afterEach(async () => {
 })
 
 describe('Giana CoWork Preview model manager', () => {
+  it('settles unpublished read-only adoption without authorizing resident eviction', async () => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    const { adapter, statePath } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const selected = context(grant, route('glm-official'), 'f')
+    await adapter.preflight(selected)
+    await adapter.capturePrestate(selected)
+    await adapter.health(selected)
+    await adapter.probe(selected)
+    await adapter.cancelPreparation(selected)
+    await expect(new PreviewManagerStateStore(statePath).load()).resolves.toBeUndefined()
+    expect(Object.values(JSON.parse(await readFile(statePath, 'utf8')).transactions))
+      .toEqual([expect.objectContaining({ terminal: true, recovery: false, adoptedResidentRouteId: 'glm-official' })])
+    expect(remote.residentPort).toBe(18_081)
+    expect(remote.commands.some(command => command.includes('GCP_SCRIPT_MUTATION_APPLIED'))).toBe(false)
+    await adapter.release(grant, 'SETTLED', new AbortController().signal)
+    expect(remote.hostLease).toBeUndefined()
+  })
+
+  it.each(['COMMIT', 'COMPENSATE'] as const)('fences %s to one acknowledged pending publication', async (disposition) => {
+    const remote = new FakeRemote()
+    const { adapter, manager, statePath } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const selected = context(grant, route('glm-official'), 'f')
+    await adapter.preflight(selected)
+    await adapter.capturePrestate(selected)
+    const state = JSON.parse(await readFile(statePath, 'utf8'))
+    const base = {
+      lease_id: state.lease.leaseId, fence: state.lease.fence, transaction_digest: bare('f'),
+      route_id: 'glm-official', exact_revision_digest: bare('a'), target: registry().targets[0], timeout_ms: 30_000,
+    }
+    await expect(manager.invoke('settle-activation', { ...base, disposition, scope_digest: bare('e'),
+      expected_sequence: state.transactions[bare('f')].sequence, idempotency_key: bare('4') })).rejects.toThrow('STATE_CONFLICT')
+    await adapter.start(selected)
+    await adapter.health(selected)
+    await adapter.probe(selected)
+    await expect(adapter.cancelPreparation(selected)).rejects.toThrow()
+    const pending = JSON.parse(await readFile(statePath, 'utf8')).transactions[bare('f')]
+    expect(pending).toMatchObject({ settlement: 'AWAITING_PUBLICATION', terminal: false })
+    await expect(new PreviewManagerStateStore(statePath).load()).resolves.toBeUndefined()
+    const request = { ...base, expected_sequence: pending.sequence, scope_digest: bare('e'),
+      disposition, idempotency_key: bare('8') }
+    const before = remote.commands.length
+    for (const mismatch of [
+      { expected_sequence: 1 }, { scope_digest: bare('0') }, { fence: state.lease.fence + 1 },
+      { route_id: 'qwen-local' }, { exact_revision_digest: bare('b') },
+      { target: { ...registry().targets[0], identity_digest: bare('0') } },
+    ]) {
+      await expect(manager.invoke('settle-activation', { ...request, ...mismatch })).rejects.toThrow()
+    }
+    await expect(manager.invoke('stage', { ...base, stage: 'stop', idempotency_key: bare('9') }))
+      .rejects.toThrow('STATE_CONFLICT')
+    expect(remote.commands).toHaveLength(before)
+    const result = await manager.invoke('settle-activation', request)
+    await expect(manager.invoke('settle-activation', request)).resolves.toEqual(result)
+    await expect(new PreviewManagerStateStore(statePath).load()).resolves.toBeUndefined()
+    await expect(manager.invoke('settle-activation', { ...request, expected_sequence: result.transaction_sequence,
+      disposition: 'COMPENSATE', idempotency_key: bare('a') })).rejects.toThrow('STATE_CONFLICT')
+    expect(remote.commands).toHaveLength(before)
+    if (disposition === 'COMPENSATE') {
+      await manager.invoke('stage', { ...base, stage: 'stop', idempotency_key: bare('b') })
+      await manager.invoke('stage', { ...base, stage: 'verify-stopped', idempotency_key: bare('c') })
+      expect(remote.residentPort).toBeUndefined()
+    } else expect(remote.residentPort).toBe(18_081)
+  })
+
+  it.each(['cancel-after-stop', 'cancel-after-start', 'cancel-after-probe', 'ready-failure', 'session-failure',
+    'ready-timeout', 'lost-probe', 'lost-commit', 'lost-compensation', 'restore-health-failure', 'success'] as const)(
+    'compensates %s through Loader, runtime, adapter and manager', async (failure) => {
+      const remote = new FakeRemote()
+      remote.residentPort = 18_081
+      remote.freeVramMiB.set(1, 4_000)
+      const { adapter, manager, statePath } = await fixture(remote)
+      const ctx = new Context()
+      const controller = new AbortController()
+      const routes = [route('glm-official'), route('qwen-local')].map(selected => ({
+        ...selected, allowExactResidentAdoption: true,
+      }))
+      const fields = { workId: 'work', principalId: 'alex', tenantId: 'giana', sessionId: 'session' }
+      const stages: string[] = []
+      const settlements: string[] = []
+      const auditOutcomes: string[] = []
+      let settleAudit: (() => void) | undefined
+      const invoke = manager.invoke.bind(manager)
+      vi.spyOn(manager, 'invoke').mockImplementation(async (operation, request) => {
+        const envelope = request as Record<string, unknown>
+        if (operation === 'stage') stages.push(`${envelope.route_id}:${envelope.stage}`)
+        if (operation === 'settle-activation') settlements.push(String(envelope.disposition))
+        const result = await invoke(operation, request)
+        if (operation === 'stage' && envelope.route_id === 'qwen-local') {
+          if ((failure === 'cancel-after-start' && envelope.stage === 'start')
+            || (failure === 'cancel-after-probe' && envelope.stage === 'probe')) controller.abort()
+          if (failure === 'lost-probe' && envelope.stage === 'probe') throw new Error('fixture lost probe reply')
+        }
+        if (failure === 'restore-health-failure' && operation === 'stage'
+          && envelope.route_id === 'glm-official' && envelope.stage === 'start') remote.modelsError = 7
+        if (operation === 'settle-activation' && ((failure === 'lost-commit' && envelope.disposition === 'COMMIT')
+          || (failure === 'lost-compensation' && envelope.disposition === 'COMPENSATE'))) {
+          throw new Error('fixture lost settlement reply')
+        }
+        return result
+      })
+      const consumer = {
+        name: 'test-compensation', inject: ['modelLifecycle', 'sessions'],
+        apply(inner: Context) {
+          const session = inner.sessions.create(SessionId('session'))
+          const append = session.append.bind(session)
+          vi.spyOn(session, 'append').mockImplementation((...args) => {
+            if (failure === 'session-failure' && args[0] === 'model-lifecycle/effective-route') {
+              throw new Error('fixture definite session publication failure')
+            }
+            return Reflect.apply(append, session, args)
+          })
+          for (const selected of routes) inner.modelLifecycle.register(selected, adapter)
+          inner.modelLifecycle.installResources(adapter)
+          inner.modelLifecycle.installAuthority({
+            classifyProvider: () => 'GOVERNED_LOCAL',
+            resolve: () => ({ kind: 'GOVERNED', route: routes[1]!,
+              scope: { ...fields, digest: createModelExecutionScopeDigest(fields) } }),
+            requestEvictionConsent: async (request) => {
+              const consent = {
+                id: bare('4'), expires_at: Date.now() + 10_000,
+                scope_digest: request.scope.digest, transaction_digest: request.transactionDigest,
+                fencing_digest: request.resourceLease.fencingDigest,
+                source_route_id: request.sourceRoute.id, source_revision_digest: request.sourceRoute.revisionDigest,
+                source_target: request.sourceTarget, source_prestate_digest: request.sourcePrestate.digest,
+                destination_route_id: request.destinationRoute.id,
+                destination_revision_digest: request.destinationRoute.revisionDigest,
+                destination_target: request.destinationTarget, destination_prestate_digest: request.destinationPrestate.digest,
+              }
+              const wire = Object.fromEntries(Object.entries(consent).map(([key, value]) =>
+                [key, typeof value === 'string' && value.startsWith('sha256:') ? value.slice(7) : value]))
+              return { ...consent, signature: signConsent(wire).signature }
+            },
+            record: async (entry) => {
+              auditOutcomes.push(entry.outcome)
+              if (failure === 'ready-timeout' && entry.outcome === 'READY') {
+                await new Promise<void>((resolve) => { settleAudit = resolve })
+              }
+              if (['ready-failure', 'lost-compensation', 'restore-health-failure'].includes(failure) && entry.outcome === 'READY') {
+                throw new Error('fixture definite READY failure')
+              }
+            },
+          })
+        },
+      }
+      try {
+        const configPath = statePath + '.cordis.yml'
+        await writeFile(configPath, [
+          '- name: sessions', '- name: lifecycle',
+          '  config: { preserveResidentOnShutdown: true, idleUnloadMs: 0, stageTimeoutMs: 1000 }',
+          '- name: test-compensation', '',
+        ].join('\n'))
+        ctx.baseUrl = pathToFileURL(join(statePath, '..')).href + '/'
+        await ctx.plugin(Loader)
+        ctx.loader.builtins.include = Include
+        const modules = new Map<string, unknown>([['sessions', SessionStore], ['lifecycle', Lifecycle], ['test-compensation', consumer]])
+        ctx.loader.internal = { version: 'v2', async import(name: string) {
+          if (!modules.has(name)) throw new Error('Unexpected fixture plugin: ' + name)
+          return modules.get(name)
+        } } as unknown as NonNullable<typeof ctx.loader.internal>
+        await ctx.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configPath).href } })
+        await ctx.loader.await()
+        if (failure === 'cancel-after-stop') remote.onStopMutation = async () => { controller.abort() }
+        const acquisition = ctx.modelLifecycle.acquireRoute({
+          sessionId: 'session', selection: routes[1]!.selection, signal: controller.signal,
+        })
+        if (failure === 'success') {
+          await (await acquisition).release()
+          expect(remote.residentPort).toBe(8_000)
+          expect(settlements).toEqual(['COMMIT'])
+          expect(auditOutcomes).toEqual(['READY', 'RELEASED'])
+          expect(Object.values(JSON.parse(await readFile(statePath, 'utf8')).transactions))
+            .toEqual([expect.objectContaining({ terminal: true, settlement: 'COMMITTED' })])
+          return
+        }
+        const code = failure.startsWith('cancel-') ? 'ABORTED'
+          : failure === 'ready-failure' || failure === 'ready-timeout' ? 'AUDIT_FAILED'
+            : failure === 'lost-commit' ? 'RUNTIME_TAINTED'
+              : failure.startsWith('lost-') || failure === 'restore-health-failure' ? 'ROLLBACK_FAILED'
+                : 'SESSION_PUBLICATION_FAILED'
+        await expect(acquisition).rejects.toMatchObject({ code })
+        const state = JSON.parse(await readFile(statePath, 'utf8'))
+        if (failure.startsWith('lost-') || failure === 'ready-timeout' || failure === 'restore-health-failure') {
+          expect(ctx.modelLifecycle.snapshot().phase).toBe('TAINTED')
+          expect(state.lease.quarantined).toBe(true)
+          expect(remote.residentPort).toBe(failure === 'restore-health-failure' ? 18_081 : 8_000)
+          expect(stages.filter(stage => stage === 'glm-official:start'))
+            .toHaveLength(failure === 'restore-health-failure' ? 1 : 0)
+          expect(settlements).toEqual(failure === 'lost-commit' ? ['COMMIT']
+            : failure === 'lost-compensation' || failure === 'restore-health-failure' ? ['COMPENSATE'] : [])
+          expect(ctx.sessions.get(SessionId('session'))!.events.filter(event => event.type === 'model-lifecycle/effective-route'))
+            .toHaveLength(failure === 'lost-commit' ? 1 : 0)
+          return
+        }
+        expect(remote.residentPort).toBe(18_081)
+        expect(settlements).toEqual(['COMPENSATE'])
+        expect(stages.slice(-3)).toEqual(['glm-official:start', 'glm-official:health', 'glm-official:probe'])
+        expect(stages.includes('qwen-local:probe')).toBe(failure !== 'cancel-after-stop' && failure !== 'cancel-after-start')
+        expect(ctx.sessions.get(SessionId('session'))!.events.filter(event => event.type === 'model-lifecycle/effective-route')).toEqual([])
+        expect(Object.values(JSON.parse(await readFile(statePath, 'utf8')).transactions))
+          .toEqual([expect.objectContaining({ terminal: true, recovery: true })])
+      } finally {
+        settleAudit?.()
+        await ctx.fiber.dispose()
+      }
+    },
+  )
+
+  it.each(['denied', 'cancelled', 'expired', 'lost-begin'] as const)('settles or quarantines %s preparation through Loader, runtime and manager', async (outcome) => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    remote.freeVramMiB.set(1, 4_000)
+    const { adapter, manager, statePath } = await fixture(remote)
+    const ctx = new Context()
+    const routes = [route('glm-official'), route('qwen-local')].map(selected => ({
+      ...selected, allowExactResidentAdoption: true,
+    }))
+    const fields = { workId: 'work', principalId: 'alex', tenantId: 'giana', sessionId: 'session' }
+    const auditOutcomes: string[] = []
+    const controller = new AbortController()
+    const consent = vi.fn(async (_request: ModelEvictionConsentRequest, signal: AbortSignal): Promise<null> => {
+      if (outcome === 'cancelled') controller.abort()
+      if (outcome === 'expired') await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
+      return null
+    })
+    const consumer = {
+      name: 'test-composed-manager', inject: ['modelLifecycle', 'sessions'],
+      apply(inner: Context) {
+        inner.sessions.create(SessionId('session'))
+        for (const selected of routes) inner.modelLifecycle.register(selected, adapter)
+        inner.modelLifecycle.installResources(adapter)
+        inner.modelLifecycle.installAuthority({
+          classifyProvider: () => 'GOVERNED_LOCAL',
+          resolve: request => ({
+            kind: 'GOVERNED',
+            route: routes.find(selected => selected.selection.model === request.selection.model)!,
+            scope: { ...fields, digest: createModelExecutionScopeDigest(fields) },
+          }),
+          requestEvictionConsent: consent,
+          record: async (entry) => { auditOutcomes.push(entry.outcome) },
+        })
+      },
+    }
+    try {
+      const configPath = statePath + '.cordis.yml'
+      await writeFile(configPath, [
+        '- name: sessions',
+        '- name: lifecycle',
+        '  config: { preserveResidentOnShutdown: true, idleUnloadMs: 0, stageTimeoutMs: 1000 }',
+        '- name: test-composed-manager', '',
+      ].join('\n'))
+      ctx.baseUrl = pathToFileURL(join(statePath, '..')).href + '/'
+      await ctx.plugin(Loader)
+      ctx.loader.builtins.include = Include
+      const modules = new Map<string, unknown>([['sessions', SessionStore], ['lifecycle', Lifecycle], ['test-composed-manager', consumer]])
+      ctx.loader.internal = { version: 'v2', async import(name: string) {
+        if (!modules.has(name)) throw new Error('Unexpected fixture plugin: ' + name)
+        return modules.get(name)
+      } } as unknown as NonNullable<typeof ctx.loader.internal>
+      await ctx.loader.create({ name: 'cordis:include', config: { path: pathToFileURL(configPath).href } })
+      await ctx.loader.await()
+      expect([...ctx.loader.entries()].filter(entry => entry.fiber === undefined && !entry.disabled)).toEqual([])
+      if (outcome === 'lost-begin') {
+        const first = await ctx.modelLifecycle.acquireRoute({ sessionId: 'session', selection: routes[0]!.selection })
+        await first.release()
+        const invoke = manager.invoke.bind(manager)
+        vi.spyOn(manager, 'invoke').mockImplementation(async (operation, request) => {
+          const result = await invoke(operation, request)
+          if (operation === 'begin') throw new Error('fixture dropped committed begin reply')
+          return result
+        })
+        await expect(ctx.modelLifecycle.acquireRoute({ sessionId: 'session', selection: routes[1]!.selection }))
+          .rejects.toMatchObject({ code: 'PREFLIGHT_FAILED' })
+        expect(ctx.modelLifecycle.snapshot().phase).toBe('TAINTED')
+        expect(JSON.parse(await readFile(statePath, 'utf8')).lease.quarantined).toBe(true)
+        expect(remote.residentPort).toBe(18_081)
+        expect(consent).not.toHaveBeenCalled()
+        await expect(ctx.modelLifecycle.acquireRoute({ sessionId: 'session', selection: routes[0]!.selection }))
+          .rejects.toMatchObject({ code: 'RUNTIME_TAINTED' })
+        return
+      }
+      await expect(ctx.modelLifecycle.acquireRoute({
+        sessionId: 'session', selection: routes[1]!.selection, signal: controller.signal,
+      })).rejects.toMatchObject({ code: outcome === 'denied' ? 'EVICTION_NOT_APPROVED' : outcome === 'cancelled' ? 'ABORTED' : 'PREFLIGHT_FAILED' })
+      expect(consent).toHaveBeenCalledOnce()
+      expect(ctx.sessions.get(SessionId('session'))!.events.filter(event => event.type === 'model-lifecycle/effective-route')).toEqual([])
+      const state = JSON.parse(await readFile(statePath, 'utf8'))
+      expect(Object.values(state.transactions)).toEqual([expect.objectContaining({ terminal: true })])
+      const reuse = await ctx.modelLifecycle.acquireRoute({ sessionId: 'session', selection: routes[0]!.selection })
+      expect(reuse.managed).toBe(true)
+      await reuse.release()
+      expect(remote.residentPort).toBe(18_081)
+      expect(remote.commands.some(command => command.includes('GCP_SCRIPT_MUTATION_APPLIED')
+        || command.includes('GCP_DOCKER_MUTATION_APPLIED'))).toBe(false)
+      const publishedRoutes = ctx.sessions.get(SessionId('session'))!.events
+        .filter(event => event.type === 'model-lifecycle/effective-route')
+        .map(event => ({ routeId: event.data.routeId, target: event.data.target }))
+      expect({ auditOutcomes, publishedRoutes }).toMatchInlineSnapshot(`
+        {
+          "auditOutcomes": [
+            "REJECTED",
+            "READY",
+            "RELEASED",
+          ],
+          "publishedRoutes": [
+            {
+              "routeId": "glm-official",
+              "target": "r5300",
+            },
+          ],
+        }
+      `)
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('exports canonical JSON with sorted keys and ASCII string escaping', () => {
     expect(canonicalJson({ z: 'caf\u00e9', a: { y: 2, x: 1 } })).toBe('{"a":{"x":1,"y":2},"z":"caf\\u00e9"}')
+  })
+
+  it('rejects clean cancellation at both adapter and manager after start', async () => {
+    const remote = new FakeRemote()
+    const { adapter, manager, statePath } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const selected = context(grant, route('glm-official'), 'f')
+    await adapter.preflight(selected)
+    await adapter.capturePrestate(selected)
+    await adapter.start(selected)
+    await expect(adapter.cancelPreparation(selected)).rejects.toThrow()
+    const state = JSON.parse(await readFile(statePath, 'utf8'))
+    await expect(manager.invoke('cancel-clean', {
+      lease_id: state.lease.leaseId, fence: state.lease.fence,
+      transaction_digest: bare('f'), idempotency_key: bare('5'), timeout_ms: 30_000,
+    })).rejects.toThrow('STATE_CONFLICT')
+    expect(remote.residentPort).toBe(18_081)
+    await adapter.release(grant, 'UNCERTAIN', new AbortController().signal)
   })
 
   it.each([7, 22, 28, 124, 255])('does not treat process ownership failure %i as free resources', async (code) => {
@@ -768,6 +1112,7 @@ describe('Giana CoWork Preview model manager', () => {
     await expect(adapter.start(ctx)).resolves.toMatchObject({ stage: 'start' })
     await expect(adapter.health(ctx)).resolves.toMatchObject({ ok: true })
     await expect(adapter.probe(ctx)).resolves.toMatchObject({ ok: true })
+    await adapter.settleActivation(ctx, 'COMMIT')
     await adapter.release(grant, 'SETTLED', new AbortController().signal)
 
     expect(remote.residentPort).toBe(18_081)
@@ -787,6 +1132,7 @@ describe('Giana CoWork Preview model manager', () => {
     })
     await expect(adapter.health(ctx)).resolves.toMatchObject({ ok: true })
     await expect(adapter.probe(ctx)).resolves.toMatchObject({ ok: true })
+    await adapter.settleActivation(ctx, 'COMMIT')
     await expect(adapter.release(grant, 'SETTLED', new AbortController().signal)).resolves.toBeUndefined()
 
     expect(remote.residentPort).toBe(18_081)
@@ -809,6 +1155,7 @@ describe('Giana CoWork Preview model manager', () => {
       })
       await expect(adapter.health(ctx)).resolves.toMatchObject({ ok: true })
       await expect(adapter.probe(ctx)).resolves.toMatchObject({ ok: true })
+      await adapter.settleActivation(ctx, 'COMMIT')
     }
     await expect(adapter.release(grant, 'SETTLED', new AbortController().signal)).resolves.toBeUndefined()
 
@@ -848,6 +1195,7 @@ describe('Giana CoWork Preview model manager', () => {
     await adapter.start(glm)
     await adapter.health(glm)
     await adapter.probe(glm)
+    await adapter.settleActivation(glm, 'COMMIT')
 
     const qwen = {
       ...context(grant, { ...route('qwen-local'), stageTimeoutsMs: { probe: 180_000 } }, '9'),
@@ -867,6 +1215,7 @@ describe('Giana CoWork Preview model manager', () => {
     await adapter.start(qwen)
     await adapter.health(qwen)
     await adapter.probe(qwen)
+    await adapter.settleActivation(qwen, 'COMMIT')
     expect(remote.commands.some(command => command.includes('--max-time 120') && command.includes(':8000/v1/chat/completions'))).toBe(true)
     await adapter.release(grant, 'SETTLED', new AbortController().signal)
 
@@ -1025,7 +1374,12 @@ describe('Giana CoWork Preview model manager', () => {
     await adapter.capturePrestate(qwen)
     const count = remote.commands.length
 
-    await expect(adapter.stop(qwen)).rejects.toThrow()
+    const state = JSON.parse(await readFile(statePath, 'utf8'))
+    await expect(manager.invoke('stage', {
+      lease_id: state.lease.leaseId, fence: state.lease.fence, transaction_digest: bare('9'),
+      target: registry().targets[0], route_id: 'qwen-local', exact_revision_digest: bare('b'),
+      stage: 'stop', idempotency_key: bare('6'), timeout_ms: 30_000,
+    })).rejects.toThrow('STATE_CONFLICT')
     expect(remote.commands).toHaveLength(count)
     const eviction = await evictionEnvelope(manager, statePath)
     await adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' })
@@ -1196,6 +1550,7 @@ describe('Giana CoWork Preview model manager', () => {
     await expect(adapter.health(qwen)).resolves.toMatchObject({ ok: false })
     remote.modelsError = undefined
 
+    await adapter.settleActivation(qwen, 'COMPENSATE')
     await adapter.stop(qwen)
     await adapter.verifyStopped(qwen)
     await adapter.start(glm)
@@ -1219,6 +1574,7 @@ describe('Giana CoWork Preview model manager', () => {
     await adapter.capturePrestate(glm)
     remote.freeVramMiB.set(1, 100)
     await expect(adapter.start(glm)).rejects.toThrow()
+    await adapter.settleActivation(glm, 'COMPENSATE')
     await adapter.stop(glm)
     await adapter.verifyStopped(glm)
     await adapter.release(grant, 'SETTLED', new AbortController().signal)
