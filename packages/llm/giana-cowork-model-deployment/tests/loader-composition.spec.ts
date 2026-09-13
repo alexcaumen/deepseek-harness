@@ -74,6 +74,12 @@ it('boots from Loader while a held route remains inert at mount and dispatch', a
   }
   const mismatchedConfig = Object.assign({}, config, { admissionDigest: bare('3') })
   expect(() => {
+    Deployment.apply({} as Context, Object.assign({}, config, { localProviderIds: ['fixture-local', 'fixture-local'] }))
+  }).toThrow('local provider identities are duplicated or omit a route')
+  expect(() => {
+    Deployment.apply({} as Context, Object.assign({}, config, { localProviderIds: ['other-local'] }))
+  }).toThrow('local provider identities are duplicated or omit a route')
+  expect(() => {
     Deployment.apply({} as Context, mismatchedConfig)
   }).toThrow('admission receipt digest does not match')
   const availableRoute = Object.assign({}, config.routes[0]!, { disposition: 'AVAILABLE' as const })

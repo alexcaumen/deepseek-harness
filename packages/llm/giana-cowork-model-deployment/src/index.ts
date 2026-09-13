@@ -87,6 +87,8 @@ export interface Config {
   readonly maxClockSkewMs: number
   readonly targets: TargetConfig[]
   readonly routes: RouteConfig[]
+  /** Known local provider namespaces, including variants held before route admission. */
+  readonly localProviderIds?: string[]
   readonly managerScript?: string
 }
 
@@ -130,6 +132,7 @@ export const Config: z<Config> = z.object({
   maxClockSkewMs: z.number().step(1).min(0),
   targets: z.array(targetSchema).min(1),
   routes: z.array(routeSchema).min(1),
+  localProviderIds: z.array(z.string().min(1)).default(undefined as unknown as string[]),
   managerScript: z.string().default(undefined as unknown as string),
 })
 
@@ -172,6 +175,13 @@ function validate(config: Config): void {
   }
   const ids = new Set<string>()
   const selections = new Set<string>()
+  if (config.localProviderIds !== undefined) {
+    const localProviders = new Set(config.localProviderIds)
+    if (localProviders.size !== config.localProviderIds.length
+      || config.routes.some(route => !localProviders.has(route.provider))) {
+      throw new Error('GCP model deployment local provider identities are duplicated or omit a route')
+    }
+  }
   for (const route of config.routes) {
     const key = `${route.provider}\u0000${route.model}`
     if (ids.has(route.id) || selections.has(key)
@@ -254,7 +264,10 @@ export function createPreviewAuthority(
   routes: readonly GovernedModelRoute[],
   key: Buffer,
 ): ModelLifecycleAuthority {
-  const providers = new Set(routes.map(route => route.selection.provider))
+  const providers = new Set([
+    ...routes.map(route => route.selection.provider),
+    ...(config.localProviderIds ?? []),
+  ])
   const bySelection = new Map(routes.map(route => [`${route.selection.provider}\u0000${route.selection.model}`, route]))
   const audit = new DurableAuditWriter(config.auditPath)
   return {

@@ -48,6 +48,12 @@
           - class: r5300
             identityDigest: 49426230ec7354353db3c1f8ea8880803701b00ce8cdd8c15dfbaccb087bd2c7
             currentnessDigest: 40ba00bc258fee097427502c53a317b791fc001cf8462e41c6ce042fa9507ec7
+        localProviderIds:
+          - glm-local-r5300
+          - qwen-local-r5300
+          - glm-uncensored-local-r5300
+          - deepseek-vision-local-r5300
+          - deepseek-vision-uncensored-local-r5300
         routes:
           - id: glm53-official-fp8
             provider: glm-local-r5300

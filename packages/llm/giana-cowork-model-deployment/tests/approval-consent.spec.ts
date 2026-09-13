@@ -21,6 +21,22 @@ const route = (id: string, digit: string): GovernedModelRoute => ({
   allowRamCpuOffload: false,
 })
 
+it('holds declared local variants without admitted routes while preserving external providers', () => {
+  const ctx = {} as Context
+  const authority = createPreviewAuthority(ctx, {
+    workId: 'work', principalId: 'alex', tenantId: 'gcp', auditPath: 'N:/fixture/audit.jsonl',
+    localProviderIds: ['local', 'glm-uncensored-local-r5300', 'deepseek-vision-local-r5300'],
+  } as Config, [route('glm', 'c')], key)
+  expect(authority.classifyProvider('local')).toBe('GOVERNED_LOCAL')
+  expect(authority.classifyProvider('glm-uncensored-local-r5300')).toBe('GOVERNED_LOCAL')
+  expect(authority.classifyProvider('deepseek-vision-local-r5300')).toBe('GOVERNED_LOCAL')
+  expect(authority.resolve({
+    selection: { provider: 'glm-uncensored-local-r5300', model: 'unadmitted' },
+    sessionId: 'session-1',
+  })).toMatchObject({ kind: 'HELD' })
+  expect(authority.classifyProvider('deepseek-official')).toBe('UNMANAGED_EXTERNAL')
+})
+
 function consentRequest(): ModelEvictionConsentRequest {
   const scopeFields = { workId: 'work', principalId: 'alex', tenantId: 'gcp', sessionId: 'session-1' }
   const scope = { ...scopeFields, digest: createModelExecutionScopeDigest(scopeFields) }
@@ -67,10 +83,9 @@ it.each(['rejected', 'unavailable', 'allowed-once'] as const)(
     const grant = await authority.requestEvictionConsent!(request, new AbortController().signal)
 
     expect(requestWithReceipt).toHaveBeenCalledTimes(1)
-    expect(requestWithReceipt.mock.calls[0]?.[0]).toMatchObject({
-      toolName: 'giana-cowork-preview:model-switch',
-      reason: expect.stringContaining('Stop resident qwen on r5300 and load glm on r5300'),
-    })
+    const approvalPrompt = requestWithReceipt.mock.calls[0]?.[0] as { toolName?: string; reason?: string } | undefined
+    expect(approvalPrompt?.toolName).toBe('giana-cowork-preview:model-switch')
+    expect(approvalPrompt?.reason).toContain('Stop resident qwen on r5300 and load glm on r5300')
     if (outcome !== 'allowed-once') {
       expect(grant).toBeNull()
       return
