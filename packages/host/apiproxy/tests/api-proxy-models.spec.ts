@@ -23,6 +23,7 @@ import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import type { RpcRequest } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
 import { createApiProxy } from '../src/api-proxy.ts'
+import ApiProxyService from '../src/index.ts'
 
 let nextRpc = 1
 function request<P>(payload: P): RpcRequest<P> {
@@ -499,6 +500,89 @@ describe('Web session model selection', () => {
     expect(catalog.current).toEqual({ provider: 'deleted-gateway', model: 'deleted-model' })
     expect(catalog.groups.flatMap(group => group.models.map(model => `${group.id}/${model.id}`)))
       .not.toContain('deleted-gateway/deleted-model')
+    await ctx.fiber.dispose()
+  })
+
+  it('does not publish or save a selection until preparation completes, including a late cancellation', async () => {
+    const { ctx, sessionId } = await harness()
+    const releases: Array<() => void> = []
+    const prepare = vi.fn(() => new Promise<void>((resolve) => { releases.push(resolve) }))
+    const save = vi.fn(() => Promise.resolve())
+    const api = createApiProxy(ctx, {
+      defaultModelSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-chat' }),
+      prepareModelSelection: prepare,
+      saveDefaultModelSelection: save,
+      cwd: '/tmp',
+    })
+    const cancelled = new AbortController()
+    const first = api.sessions.selectModel(request({
+      sessionId, provider: 'deepseek-official', model: 'deepseek-reasoner',
+    }), cancelled.signal)
+    await vi.waitFor(() => { expect(prepare).toHaveBeenCalledTimes(1) })
+    expect(expectValue(await api.sessions.models(request({ sessionId }))).current)
+      .toEqual({ provider: 'deepseek-official', model: 'deepseek-chat' })
+    expect(save).not.toHaveBeenCalled()
+    cancelled.abort()
+    releases.shift()?.()
+    expect((await first).result).toMatchObject({ ok: false, error: { code: 'cancelled' } })
+    expect(expectValue(await api.sessions.models(request({ sessionId }))).current)
+      .toEqual({ provider: 'deepseek-official', model: 'deepseek-chat' })
+
+    const second = api.sessions.selectModel(request({
+      sessionId, provider: 'deepseek-official', model: 'deepseek-reasoner',
+    }))
+    await vi.waitFor(() => { expect(prepare).toHaveBeenCalledTimes(2) })
+    releases.shift()?.()
+    expect(expectValue(await second).selected).toMatchObject({
+      provider: 'deepseek-official', model: 'deepseek-reasoner',
+    })
+    expect(save).toHaveBeenCalledTimes(1)
+    await ctx.fiber.dispose()
+  })
+
+  it('preserves the prior selection when governed preparation rejects', async () => {
+    const { ctx, sessionId } = await harness()
+    const save = vi.fn(() => Promise.resolve())
+    const api = createApiProxy(ctx, {
+      defaultModelSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-chat' }),
+      prepareModelSelection: () => Promise.reject(new Error('GPU capacity unavailable')),
+      saveDefaultModelSelection: save,
+      cwd: '/tmp',
+    })
+    expect((await api.sessions.selectModel(request({
+      sessionId, provider: 'deepseek-official', model: 'deepseek-reasoner',
+    }))).result).toMatchObject({
+      ok: false, error: { code: 'model-unavailable', message: 'GPU capacity unavailable' },
+    })
+    expect(expectValue(await api.sessions.models(request({ sessionId }))).current)
+      .toEqual({ provider: 'deepseek-official', model: 'deepseek-chat' })
+    expect(save).not.toHaveBeenCalled()
+    await ctx.fiber.dispose()
+  })
+
+  it('prepares the selected route through the mounted gateway lifecycle before returning success', async () => {
+    const { ctx, sessionId } = await harness()
+    const release = vi.fn(() => Promise.resolve())
+    const acquireRoute = vi.fn((_request: {
+      selection: { provider: string; model: string }
+      sessionId: string
+      signal: AbortSignal
+    }) => Promise.resolve({ release }))
+    ctx.provide('agentDefaultModel' as never, {
+      currentSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-chat' }),
+      saveSelection: () => Promise.resolve(),
+    } as never)
+    ctx.provide('modelLifecycle' as never, { acquireRoute } as never)
+    const gateway = new ApiProxyService(ctx, ApiProxyService.Config({}))
+    expect(expectValue(await gateway.sessions.selectModel(request({
+      sessionId, provider: 'deepseek-official', model: 'deepseek-reasoner',
+    }))).selected).toMatchObject({ provider: 'deepseek-official', model: 'deepseek-reasoner' })
+    expect(acquireRoute).toHaveBeenCalledTimes(1)
+    const prepared = acquireRoute.mock.calls[0]?.[0]
+    expect(prepared?.selection).toMatchObject({ provider: 'deepseek-official', model: 'deepseek-reasoner' })
+    expect(prepared?.sessionId).toBe(String(sessionId))
+    expect(prepared?.signal).toBeInstanceOf(AbortSignal)
+    expect(release).toHaveBeenCalledTimes(1)
     await ctx.fiber.dispose()
   })
 })

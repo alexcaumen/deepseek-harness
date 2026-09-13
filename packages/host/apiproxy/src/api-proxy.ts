@@ -590,6 +590,8 @@ export interface ApiProxyDefaults {
    * and undoing it because storage failed would be the worse outcome.
    */
   saveDefaultModelSelection?: (selection: ModelSelection) => Promise<void>
+  /** Prepare a governed local route before publishing a new session selection. */
+  prepareModelSelection?: (sessionId: SessionId, selection: ModelSelection, signal: AbortSignal) => Promise<void>
   /** Default project directory for new sessions whose create request carries no cwd. */
   cwd: string
   /** Native open-with-default-application; injectable for carrier tests. */
@@ -2191,7 +2193,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         return ok(request, { current: { ...current }, routable, groups, failures })
       },
 
-      async selectModel(request) {
+      async selectModel(request, signal) {
         const { sessionId, provider, model, reasoningEffort } = request.payload
         const found = await agentFor(sessionId)
         if ('error' in found) return err(request, found.error)
@@ -2211,6 +2213,11 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
                 ? {}
                 : { reasoningEffort: resolved.reasoningEffort },
             }
+            if (signal?.aborted) return err(request, { code: 'cancelled', message: 'Model selection was cancelled', details: {} })
+            await defaults.prepareModelSelection?.(
+              sessionId, selected, signal ?? new AbortController().signal,
+            )
+            if (signal?.aborted) return err(request, { code: 'cancelled', message: 'Model selection was cancelled', details: {} })
             selectionFor(found.agent).current = selected
             try {
               await defaults.saveDefaultModelSelection?.(selected)
@@ -2221,6 +2228,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
             }
             return ok(request, { selected: { ...selected } })
           } catch (error: unknown) {
+            if (signal?.aborted) return err(request, { code: 'cancelled', message: 'Model selection was cancelled', details: {} })
             return err(request, {
               code: 'model-unavailable',
               message: error instanceof Error ? error.message : String(error),

@@ -303,7 +303,7 @@ export interface SessionsApi {
     provider: string
     model: string
     reasoningEffort?: string
-  }>):
+  }>, signal?: AbortSignal):
   Promise<RpcResponse<{ selected: ModelSelection }>>
 
   /**
