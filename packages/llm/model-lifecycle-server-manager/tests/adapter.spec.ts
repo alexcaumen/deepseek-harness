@@ -11,6 +11,8 @@ import { ModelLifecycleStageRejectedError } from '@deepseek-ai/dsh-model-lifecyc
 import {
   ServerManagerAdapterError,
   ServerManagerModelLifecycleAdapter,
+  type ServerManagerDeviceRecoveryConsentGrant,
+  type ServerManagerDeviceRecoveryRequest,
   type ServerManagerOperation,
   type ServerManagerTransport,
 } from '../src/index.ts'
@@ -62,7 +64,7 @@ class FixtureTransport implements ServerManagerTransport {
   readonly calls: Call[] = []
   now = 1_000_000
   sequence = 0
-  preflight: 'AVAILABLE' | 'UNAVAILABLE' = 'AVAILABLE'
+  preflight: 'AVAILABLE' | 'UNAVAILABLE' | 'RECOVERY_REQUIRED' = 'AVAILABLE'
   health: 'HEALTHY' | 'UNHEALTHY' = 'HEALTHY'
   corruptNext = false
   duplicateTargetsNext = false
@@ -123,7 +125,8 @@ class FixtureTransport implements ServerManagerTransport {
       })
     } else if (operation === 'stage') {
       const stage = String(request.stage)
-      const decision = this.decision(stage)
+      const decision = stage === 'preflight' && this.preflight === 'RECOVERY_REQUIRED'
+        && request.device_recovery_consent !== undefined ? 'AVAILABLE' : this.decision(stage)
       const unhealthy = (stage === 'health' || stage === 'probe') && decision === 'UNHEALTHY'
       Object.assign(base, this.transaction, {
         state: unhealthy ? 'STAGE_FAILED_RECOVERY_REQUIRED' : 'STAGE_SUCCEEDED',
@@ -138,6 +141,10 @@ class FixtureTransport implements ServerManagerTransport {
           decision,
           evidence_digest: bare((++this.sequence % 15).toString(16)),
           error_class: unhealthy ? `${stage.toUpperCase()}_UNHEALTHY` : '',
+          ...(decision === 'RECOVERY_REQUIRED' ? {
+            recovery_state_digest: bare('e'),
+            recovery_devices: [{ index: 1, uuid: 'GPU-1', action: 'Reset' }],
+          } : {}),
         },
       })
     } else if (operation === 'cancel-clean') {
@@ -196,7 +203,13 @@ class FixtureTransport implements ServerManagerTransport {
   }
 }
 
-function adapter(transport: FixtureTransport, key = { value: 0 }): ServerManagerModelLifecycleAdapter {
+function adapter(
+  transport: FixtureTransport,
+  key = { value: 0 },
+  requestDeviceRecoveryConsent?: (
+    request: ServerManagerDeviceRecoveryRequest,
+  ) => Promise<ServerManagerDeviceRecoveryConsentGrant | null>,
+): ServerManagerModelLifecycleAdapter {
   return new ServerManagerModelLifecycleAdapter({
     transport,
     targets: TARGETS,
@@ -208,6 +221,7 @@ function adapter(transport: FixtureTransport, key = { value: 0 }): ServerManager
     maxClockSkewMs: 1_000,
     now: () => transport.now,
     idempotencyKey: () => (++key.value).toString(16).padStart(64, '0'),
+    ...(requestDeviceRecoveryConsent === undefined ? {} : { requestDeviceRecoveryConsent }),
   })
 }
 
@@ -334,6 +348,56 @@ describe('Server Manager model lifecycle gateway', () => {
       'acquire', 'begin', 'stage', 'cancel-clean', 'release',
     ])
     expect(transport.calls.at(-1)?.request.outcome).toBe('SETTLED')
+  })
+
+  it('requires an exact allowed-once grant before replaying preflight with device recovery', async () => {
+    const transport = new FixtureTransport()
+    transport.preflight = 'RECOVERY_REQUIRED'
+    const approve = vi.fn(async (request: ServerManagerDeviceRecoveryRequest) => ({
+      id: bare('f'),
+      fencing_digest: request.context.resourceLease.fencingDigest,
+      scope_digest: request.context.scope.digest,
+      transaction_digest: request.context.transactionDigest,
+      route_id: request.context.route.id,
+      revision_digest: request.context.route.revisionDigest,
+      target: request.context.target,
+      preflight_receipt_digest: request.preflightReceipt.digest,
+      recovery_state_digest: request.recoveryStateDigest,
+      devices: request.devices,
+      expires_at: transport.now + 30_000,
+      signature: bare('a'),
+    }))
+    const gateway = adapter(transport, { value: 0 }, approve)
+    const grant = await gateway.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(gateway.preflight(context(grant))).resolves.toMatchObject({ ok: true })
+
+    expect(approve).toHaveBeenCalledTimes(1)
+    expect(approve.mock.calls[0]?.[0]).toMatchObject({
+      recoveryStateDigest: prefixed('e'),
+      devices: [{ index: 1, uuid: 'GPU-1', action: 'Reset' }],
+    })
+    const stages = transport.calls.filter(call => call.operation === 'stage')
+    expect(stages).toHaveLength(2)
+    expect(stages[0]?.request.device_recovery_consent).toBeUndefined()
+    expect(stages[1]?.request.device_recovery_consent).toMatchObject({
+      route_id: 'qwen-local', target: 'r5300', recovery_state_digest: bare('e'),
+    })
+  })
+
+  it('does not replay recovery preflight when native approval rejects', async () => {
+    const transport = new FixtureTransport()
+    transport.preflight = 'RECOVERY_REQUIRED'
+    const reject = vi.fn(async () => null)
+    const gateway = adapter(transport, { value: 0 }, reject)
+    const grant = await gateway.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(gateway.preflight(context(grant))).resolves.toEqual({
+      ok: false,
+      reason: 'Selected compute target device reset was not approved',
+    })
+    expect(reject).toHaveBeenCalledTimes(1)
+    expect(transport.calls.filter(call => call.operation === 'stage')).toHaveLength(1)
   })
 
   it('binds successful lifecycle receipts to one transaction and fence', async () => {

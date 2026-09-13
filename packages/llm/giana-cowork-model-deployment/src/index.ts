@@ -24,6 +24,8 @@ import {
 import {
   installServerManagerLifecycle,
   ServerManagerStdioTransport,
+  type ServerManagerDeviceRecoveryConsentGrant,
+  type ServerManagerDeviceRecoveryRequest,
   type ServerManagerTargetIdentity,
 } from '@deepseek-ai/dsh-model-lifecycle-server-manager'
 import { canonicalJson } from './manager.js'
@@ -389,6 +391,60 @@ export function createPreviewAuthority(
   }
 }
 
+/** Bind one exact hardware reset to the native approval receipt and active resource lease. */
+export function createDeviceRecoveryConsentRequester(ctx: Context, key: Buffer) {
+  return async (
+    request: ServerManagerDeviceRecoveryRequest,
+    signal: AbortSignal,
+  ): Promise<ServerManagerDeviceRecoveryConsentGrant | null> => {
+    const { context } = request
+    const agent = ctx.agents.get(context.scope.sessionId as SessionId)
+    if (agent === undefined) return null
+    const devices = request.devices.map(device => `GPU${device.index} (${device.uuid})`).join(', ')
+    const decision = await ctx.approval.requestWithReceipt({
+      agent,
+      toolName: 'giana-cowork-preview:gpu-reset',
+      reason: `Reset ${devices} on ${context.target} before loading ${context.route.selection.model}? The reset is limited to idle GPUs; rejecting leaves hardware and resident models unchanged.`,
+      signal,
+    })
+    if (decision.outcome !== 'allowed-once' || signal.aborted) return null
+    const id = createHash('sha256').update([
+      decision.id,
+      context.scope.digest,
+      context.transactionDigest,
+      request.preflightReceipt.digest,
+      request.recoveryStateDigest,
+      canonicalJson(request.devices),
+    ].join('\u0000')).digest('hex')
+    const now = Date.now()
+    const expiresAt = Math.min(now + 300_000, context.resourceLease.expiresAt)
+    if (expiresAt <= now + 2_000) return null
+    const wire = {
+      id,
+      fencing_digest: bare(context.resourceLease.fencingDigest),
+      scope_digest: bare(context.scope.digest),
+      transaction_digest: bare(context.transactionDigest),
+      route_id: context.route.id,
+      revision_digest: bare(context.route.revisionDigest),
+      target: context.target,
+      preflight_receipt_digest: bare(request.preflightReceipt.digest),
+      recovery_state_digest: bare(request.recoveryStateDigest),
+      devices: request.devices,
+      expires_at: expiresAt,
+    }
+    return {
+      ...wire,
+      fencing_digest: context.resourceLease.fencingDigest,
+      scope_digest: context.scope.digest,
+      transaction_digest: context.transactionDigest,
+      revision_digest: context.route.revisionDigest,
+      preflight_receipt_digest: request.preflightReceipt.digest,
+      recovery_state_digest: request.recoveryStateDigest,
+      signature: createHmac('sha256', key).update(canonicalJson(wire)).digest('hex'),
+    }
+  }
+}
+
 /** Install the preview-only lifecycle deployment without touching a model at mount time. */
 export function apply(ctx: Context, input: Config): void {
   const config = Config(input)
@@ -412,6 +468,7 @@ export function apply(ctx: Context, input: Config): void {
         transport, targets, issuerRef: config.issuerRef, holderRef: config.holderRef,
         admissionDigest: config.admissionDigest, leaseTtlMs: config.leaseTtlMs,
         operationTimeoutMs: config.operationTimeoutMs, maxClockSkewMs: config.maxClockSkewMs,
+        requestDeviceRecoveryConsent: createDeviceRecoveryConsentRequester(ctx, key),
       },
     )
     return async () => {

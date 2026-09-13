@@ -19,6 +19,8 @@ import type {
 } from '@deepseek-ai/dsh-model-lifecycle/src/index.ts'
 import {
   ServerManagerModelLifecycleAdapter,
+  type ServerManagerDeviceRecoveryConsentGrant,
+  type ServerManagerDeviceRecoveryRequest,
   type ServerManagerOperation,
   type ServerManagerTransport,
 } from '@deepseek-ai/dsh-model-lifecycle-server-manager/src/index.ts'
@@ -75,6 +77,10 @@ class FakeRemote {
   lingeringListener = false
   listenerOwnershipMismatch = false
   freeVramMiB = new Map([[0, 42_000], [1, 46_000]])
+  deviceResetError: number | undefined
+  deviceResetReject = false
+  onDeviceReset: (() => void) | undefined
+  onDeviceResetTelemetry: (() => void) | undefined
   readonly commands: string[] = []
 
   readonly run = async (target: 'r5300' | 'prdg' | 'ram-cpu', command: string): Promise<PreviewManagerRemoteResult> => {
@@ -127,6 +133,27 @@ class FakeRemote {
       return current === undefined || lease === null || fence === null
         || current.id !== lease[1] || current.fence !== Number(fence[1])
         ? { code: 76, stdout: '' } : { code: 0, stdout: 'CURRENT\n' }
+    }
+    if (command.includes('GCP_DEVICE_RECOVERY_PRECHECKED')) {
+      return { code: 0, stdout: 'GCP_DEVICE_RECOVERY_PRECHECKED\n' }
+    }
+    if (command.includes('GCP_DEVICE_RECOVERY_APPLIED')) {
+      if (this.deviceResetReject) throw new Error('reset dispatch failed')
+      this.onDeviceResetTelemetry?.()
+      const expiryChecks = [...command.matchAll(/\[ (\d+) -gt "\$now" \] &&/gu)]
+      const expiresAt = expiryChecks.at(-1)?.[1]
+      if (expiresAt !== undefined && Number(expiresAt) <= Date.now()) return { code: 76, stdout: '' }
+      if (this.deviceResetError !== undefined) return { code: this.deviceResetError, stdout: '' }
+      const reset = /--gpu-reset -i (\d+)/u.exec(command)
+      if (reset === null) return { code: 76, stdout: '' }
+      const index = reset[1]
+      this.telemetry = this.telemetry?.split('\n').map(line =>
+        line.startsWith(`${index}, `) ? line.replace(', Reset,', ', None,') : line).join('\n')
+      this.onDeviceReset?.()
+      const uuid = /GCP_DEVICE_RECOVERY_APPLIED \d+ (GPU-[A-Fa-f0-9-]+)/u.exec(command)?.[1]
+      return uuid === undefined
+        ? { code: 76, stdout: '' }
+        : { code: 0, stdout: `GCP_DEVICE_RECOVERY_APPLIED ${index} ${uuid}\n` }
     }
     if (command.includes('MemAvailable')) {
       this.onTelemetry?.()
@@ -443,7 +470,14 @@ function dualTargetRegistry() {
   })
 }
 
-async function fixture(remote: FakeRemote, configuredRegistry = registry(), operationTimeoutMs = 30_000) {
+async function fixture(
+  remote: FakeRemote,
+  configuredRegistry = registry(),
+  operationTimeoutMs = 30_000,
+  requestDeviceRecoveryConsent?: (
+    request: ServerManagerDeviceRecoveryRequest,
+  ) => Promise<ServerManagerDeviceRecoveryConsentGrant | null>,
+) {
   const directory = await mkdtemp(join(tmpdir(), 'gcp-manager-'))
   temporaryPaths.push(directory)
   const statePath = join(directory, 'state.json')
@@ -481,6 +515,7 @@ async function fixture(remote: FakeRemote, configuredRegistry = registry(), oper
     admissionDigest: bare('3'), leaseTtlMs: 60_000,
     operationTimeoutMs, maxClockSkewMs: 1_000,
     idempotencyKey: () => (++key).toString(16).padStart(64, '0'),
+    ...(requestDeviceRecoveryConsent === undefined ? {} : { requestDeviceRecoveryConsent }),
   })
   return { adapter, args, endpoints, manager, statePath, store, transportResults }
 }
@@ -510,6 +545,35 @@ function context(grant: ResourceLeaseGrant, selected: GovernedModelRoute, transa
     route: selected, target: 'r5300', scope: scope(), transactionKind: 'MODEL_ROUTE',
     transactionDigest: prefixed(transaction), resourceLease: grant,
     deadlineAt: Date.now() + 30_000, signal: new AbortController().signal,
+  }
+}
+
+async function approveRecovery(
+  request: ServerManagerDeviceRecoveryRequest,
+): Promise<ServerManagerDeviceRecoveryConsentGrant> {
+  const wire = {
+    id: bare('7'),
+    fencing_digest: request.context.resourceLease.fencingDigest.slice(7),
+    scope_digest: request.context.scope.digest.slice(7),
+    transaction_digest: request.context.transactionDigest.slice(7),
+    route_id: request.context.route.id,
+    revision_digest: request.context.route.revisionDigest.slice(7),
+    target: request.context.target,
+    preflight_receipt_digest: request.preflightReceipt.digest.slice(7),
+    recovery_state_digest: request.recoveryStateDigest.slice(7),
+    devices: request.devices,
+    expires_at: Math.min(Date.now() + 10_000, request.context.resourceLease.expiresAt),
+  }
+  const signed = signConsent(wire)
+  return {
+    ...wire,
+    fencing_digest: request.context.resourceLease.fencingDigest,
+    scope_digest: request.context.scope.digest,
+    transaction_digest: request.context.transactionDigest,
+    revision_digest: request.context.route.revisionDigest,
+    preflight_receipt_digest: request.preflightReceipt.digest,
+    recovery_state_digest: request.recoveryStateDigest,
+    signature: signed.signature,
   }
 }
 
@@ -1114,6 +1178,162 @@ describe('Giana CoWork Preview model manager', () => {
     await expect(adapter.preflight(context(grant, route('glm-official'), 'f')))
       .resolves.toMatchObject({ ok: false })
     expect(remote.commands.some(command => command.includes('start-glm') || command.includes('stop-glm'))).toBe(false)
+  })
+
+  it('resets only the exact idle R5300 GPU after an allowed-once grant, then reprobes capacity', async () => {
+    const remote = new FakeRemote()
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reset, 45000\nAPPS\n[N/A], GPU-1, [N/A]\n'
+    const approve = vi.fn(approveRecovery)
+    const { adapter } = await fixture(remote, registry(), 30_000, approve)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('glm-official'), 'f')))
+      .resolves.toMatchObject({ ok: true })
+
+    expect(approve).toHaveBeenCalledTimes(1)
+    expect(approve.mock.calls[0]?.[0]).toMatchObject({
+      devices: [{ index: 1, uuid: 'GPU-1', action: 'Reset' }],
+    })
+    const reset = remote.commands.find(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))
+    expect(reset).toContain('sudo -n nvidia-smi --gpu-reset -i 1')
+    expect(reset).toContain('--query-compute-apps=pid,gpu_uuid')
+    expect(reset).toContain('GPU-1')
+    expect(remote.telemetry).toContain('GPU-1, None')
+  })
+
+  it('never offers or performs reset when the affected GPU has a real compute process', async () => {
+    const remote = new FakeRemote()
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reset, 45000\nAPPS\n5010, GPU-1, 2506\n'
+    const approve = vi.fn(approveRecovery)
+    const { adapter } = await fixture(remote, registry(), 30_000, approve)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('glm-official'), 'f')))
+      .resolves.toMatchObject({ ok: false })
+    expect(approve).not.toHaveBeenCalled()
+    expect(remote.commands.some(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))).toBe(false)
+  })
+
+  it('does not perform reset when the native approval is rejected', async () => {
+    const remote = new FakeRemote()
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reset, 45000\nAPPS\n'
+    const reject = vi.fn(async () => null)
+    const { adapter } = await fixture(remote, registry(), 30_000, reject)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('glm-official'), 'f')))
+      .resolves.toMatchObject({ ok: false })
+    expect(reject).toHaveBeenCalledTimes(1)
+    expect(remote.commands.some(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))).toBe(false)
+  })
+
+  it('rejects a recovery grant with an invalid signature before resetting a device', async () => {
+    const remote = new FakeRemote()
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reset, 45000\nAPPS\n'
+    const invalid = vi.fn(async (request: ServerManagerDeviceRecoveryRequest) => ({
+      ...await approveRecovery(request), signature: bare('0'),
+    }))
+    const { adapter } = await fixture(remote, registry(), 30_000, invalid)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('glm-official'), 'f'))).rejects.toThrow()
+    expect(invalid).toHaveBeenCalledTimes(1)
+    expect(remote.commands.some(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))).toBe(false)
+  })
+
+  it('quarantines the lease when an approved device reset has an uncertain outcome', async () => {
+    const remote = new FakeRemote()
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reset, 45000\nAPPS\n'
+    remote.deviceResetError = 255
+    const { adapter, statePath } = await fixture(remote, registry(), 30_000, approveRecovery)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('glm-official'), 'f'))).rejects.toThrow()
+    expect(remote.commands.some(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))).toBe(true)
+    expect(JSON.parse(await readFile(statePath, 'utf8')).lease.quarantined).toBe(true)
+  })
+
+  it('stops before resetting a second GPU when the first reset fails', async () => {
+    const remote = new FakeRemote()
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, Reset, 42000\n1, GPU-1, Reset, 45000\nAPPS\n'
+    remote.deviceResetError = 77
+    const { adapter, statePath } = await fixture(remote, registry(), 30_000, approveRecovery)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('qwen-local'), 'f'))).rejects.toThrow()
+    const resets = remote.commands.filter(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))
+    expect(resets).toHaveLength(1)
+    expect(resets[0]).toContain('--gpu-reset -i 0')
+    expect(JSON.parse(await readFile(statePath, 'utf8')).lease.quarantined).toBe(true)
+  })
+
+  it('revalidates approval expiry before every GPU reset', async () => {
+    const remote = new FakeRemote()
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, Reset, 42000\n1, GPU-1, Reset, 45000\nAPPS\n'
+    const startedAt = Date.now()
+    remote.onDeviceReset = () => { vi.spyOn(Date, 'now').mockReturnValue(startedAt + 20_000) }
+    const { adapter, statePath } = await fixture(remote, registry(), 30_000, approveRecovery)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('qwen-local'), 'f'))).rejects.toThrow()
+    const resets = remote.commands.filter(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))
+    expect(resets).toHaveLength(2)
+    expect(resets[0]).toContain('--gpu-reset -i 0')
+    expect(resets[1]).toContain('--gpu-reset -i 1')
+    expect(remote.telemetry).toContain('0, GPU-0, None')
+    expect(remote.telemetry).toContain('1, GPU-1, Reset')
+    expect(JSON.parse(await readFile(statePath, 'utf8')).lease.quarantined).toBe(true)
+  })
+
+  it('revalidates approval expiry after same-device telemetry and immediately before reset', async () => {
+    const remote = new FakeRemote()
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reset, 45000\nAPPS\n'
+    const startedAt = Date.now()
+    remote.onDeviceResetTelemetry = () => { vi.spyOn(Date, 'now').mockReturnValue(startedAt + 20_000) }
+    const { adapter, statePath } = await fixture(remote, registry(), 30_000, approveRecovery)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('glm-official'), 'f'))).rejects.toThrow()
+    expect(remote.commands.filter(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))).toHaveLength(1)
+    expect(remote.telemetry).toContain('1, GPU-1, Reset')
+    expect(JSON.parse(await readFile(statePath, 'utf8')).lease.quarantined).toBe(true)
+  })
+
+  it('quarantines a rejected reset dispatch because its commit state is unknown', async () => {
+    const remote = new FakeRemote()
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reset, 45000\nAPPS\n'
+    remote.deviceResetReject = true
+    const { adapter, statePath } = await fixture(remote, registry(), 30_000, approveRecovery)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('glm-official'), 'f'))).rejects.toThrow()
+    expect(remote.commands.some(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))).toBe(true)
+    expect(JSON.parse(await readFile(statePath, 'utf8')).lease.quarantined).toBe(true)
+  })
+
+  it('rejects a recovery grant after a newer preflight supersedes its evidence', async () => {
+    const remote = new FakeRemote()
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reset, 45000\nAPPS\n'
+    const current = {} as { manager: PreviewManager; statePath: string }
+    const approve = vi.fn(async (request: ServerManagerDeviceRecoveryRequest) => {
+      remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reboot, 45000\nAPPS\n'
+      const state = JSON.parse(await readFile(current.statePath, 'utf8'))
+      await current.manager.invoke('stage', {
+        idempotency_key: bare('d'), lease_id: state.lease.leaseId, fence: state.lease.fence,
+        transaction_digest: bare('f'), stage: 'preflight', route_id: 'glm-official',
+        exact_revision_digest: bare('a'), target: registry().targets[0],
+        timeout_ms: 30_000, deadline_at: Date.now() + 30_000,
+      })
+      return approveRecovery(request)
+    })
+    const prepared = await fixture(remote, registry(), 30_000, approve)
+    current.manager = prepared.manager
+    current.statePath = prepared.statePath
+    const grant = await prepared.adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(prepared.adapter.preflight(context(grant, route('glm-official'), 'f'))).rejects.toThrow()
+    expect(approve).toHaveBeenCalledTimes(1)
+    expect(remote.commands.some(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))).toBe(false)
   })
 
   it('rechecks GPU recovery action at start before mutating a model', async () => {

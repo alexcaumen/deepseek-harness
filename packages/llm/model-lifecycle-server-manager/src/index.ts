@@ -61,6 +61,37 @@ export interface ServerManagerTargetIdentity {
   readonly currentnessDigest: string
 }
 
+/** One exact GPU recovery action reported by the resource owner. */
+export interface ServerManagerDeviceRecoveryRequirement {
+  readonly index: number
+  readonly uuid: string
+  readonly action: 'Reset'
+}
+
+/** Immutable request presented to the deployment's native approval surface. */
+export interface ServerManagerDeviceRecoveryRequest {
+  readonly context: ModelLifecycleStageContext
+  readonly preflightReceipt: ModelLifecycleStageReceipt
+  readonly recoveryStateDigest: string
+  readonly devices: readonly ServerManagerDeviceRecoveryRequirement[]
+}
+
+/** One expiring, exact-device grant minted after an allowed-once decision. */
+export interface ServerManagerDeviceRecoveryConsentGrant {
+  readonly id: string
+  readonly fencing_digest: string
+  readonly scope_digest: string
+  readonly transaction_digest: string
+  readonly route_id: string
+  readonly revision_digest: string
+  readonly target: ResourceLeaseTarget
+  readonly preflight_receipt_digest: string
+  readonly recovery_state_digest: string
+  readonly devices: readonly ServerManagerDeviceRecoveryRequirement[]
+  readonly expires_at: number
+  readonly signature: string
+}
+
 /** Exact admitted deployment binding; no field is inferred by this gateway. */
 export interface ServerManagerAdapterOptions {
   readonly transport: ServerManagerTransport
@@ -74,6 +105,11 @@ export interface ServerManagerAdapterOptions {
   readonly maxClockSkewMs: number
   readonly now?: () => number
   readonly idempotencyKey?: () => string
+  /** Optional native approval bridge for an exact, owner-reported device reset. */
+  readonly requestDeviceRecoveryConsent?: (
+    request: ServerManagerDeviceRecoveryRequest,
+    signal: AbortSignal,
+  ) => Promise<ServerManagerDeviceRecoveryConsentGrant | null>
 }
 
 interface WireTarget {
@@ -90,6 +126,8 @@ interface WireStageReceipt {
   readonly error_class: string
   readonly resident_route_id?: string
   readonly resident_revision_digest?: string
+  readonly recovery_state_digest?: string
+  readonly recovery_devices?: readonly unknown[]
 }
 
 interface WireReceipt {
@@ -177,6 +215,62 @@ function bareDigest(value: string): string {
   return value.slice('sha256:'.length)
 }
 
+function recoveryDevices(value: unknown): readonly ServerManagerDeviceRecoveryRequirement[] {
+  if (!Array.isArray(value) || value.length === 0) throw new ServerManagerAdapterError('CONTRACT_INVALID')
+  const devices = value.map((candidate): ServerManagerDeviceRecoveryRequirement => {
+    if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      throw new ServerManagerAdapterError('CONTRACT_INVALID')
+    }
+    const input = candidate as Record<string, unknown>
+    if (Object.keys(input).some(key => !['index', 'uuid', 'action'].includes(key))
+      || typeof input.index !== 'number' || !Number.isSafeInteger(input.index) || input.index < 0
+      || typeof input.uuid !== 'string' || !/^GPU-[A-Fa-f0-9-]+$/u.test(input.uuid)
+      || input.action !== 'Reset') {
+      throw new ServerManagerAdapterError('CONTRACT_INVALID')
+    }
+    return Object.freeze({ index: input.index, uuid: input.uuid, action: 'Reset' as const })
+  })
+  if (new Set(devices.map(device => device.index)).size !== devices.length
+    || new Set(devices.map(device => device.uuid)).size !== devices.length) {
+    throw new ServerManagerAdapterError('CONTRACT_INVALID')
+  }
+  return Object.freeze([...devices].sort((left, right) => left.index - right.index))
+}
+
+function validRecoveryConsent(
+  consent: ServerManagerDeviceRecoveryConsentGrant | null,
+  context: ModelLifecycleStageContext,
+  preflightReceiptDigest: string,
+  recoveryStateDigest: string,
+  devices: readonly ServerManagerDeviceRecoveryRequirement[],
+  now: number,
+): consent is ServerManagerDeviceRecoveryConsentGrant {
+  if (consent === null) return false
+  try {
+    assertBareDigest(consent.id)
+    assertBareDigest(consent.signature)
+    assertPrefixedDigest(consent.fencing_digest)
+    assertPrefixedDigest(consent.scope_digest)
+    assertPrefixedDigest(consent.transaction_digest)
+    assertPrefixedDigest(consent.revision_digest)
+    assertPrefixedDigest(consent.preflight_receipt_digest)
+    assertPrefixedDigest(consent.recovery_state_digest)
+  } catch {
+    return false
+  }
+  return consent.expires_at > now
+    && consent.expires_at <= context.resourceLease.expiresAt
+    && consent.fencing_digest === context.resourceLease.fencingDigest
+    && consent.scope_digest === context.scope.digest
+    && consent.transaction_digest === context.transactionDigest
+    && consent.route_id === context.route.id
+    && consent.revision_digest === context.route.revisionDigest
+    && consent.target === context.target
+    && consent.preflight_receipt_digest === preflightReceiptDigest
+    && consent.recovery_state_digest === recoveryStateDigest
+    && JSON.stringify(consent.devices) === JSON.stringify(devices)
+}
+
 function prefixedDigest(value: string): string {
   assertBareDigest(value)
   return `sha256:${value}`
@@ -245,6 +339,7 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
   private readonly maxClockSkewMs: number
   private readonly now: () => number
   private readonly idempotencyKey: () => string
+  private readonly requestDeviceRecoveryConsent: ServerManagerAdapterOptions['requestDeviceRecoveryConsent']
   private readonly leases = new Map<string, LeaseState>()
 
   constructor(options: ServerManagerAdapterOptions) {
@@ -260,6 +355,7 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
     this.now = options.now ?? Date.now
     this.idempotencyKey = options.idempotencyKey ?? (() =>
       createHash('sha256').update(randomBytes(32)).digest('hex'))
+    this.requestDeviceRecoveryConsent = options.requestDeviceRecoveryConsent
     assertBareDigest(this.admissionDigest)
     if (!this.issuerRef || !this.holderRef
       || !finiteInteger(this.leaseTtlMs, 2)
@@ -475,15 +571,41 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
     })
   }
 
-  preflight(context: ModelLifecycleStageContext): Promise<ModelCapacityDecision> {
-    return this.stage(context, 'preflight').then(({ wire, receipt }) => {
-      const stage = wire.stage_receipt
-      if (stage?.status === 'PASS' && stage.decision === 'AVAILABLE') return { ok: true, receipt }
-      if (stage?.status === 'PASS' && stage.decision === 'UNAVAILABLE') {
-        return { ok: false, reason: 'Selected compute target is unavailable' }
-      }
+  async preflight(context: ModelLifecycleStageContext): Promise<ModelCapacityDecision> {
+    const first = await this.stage(context, 'preflight')
+    const stage = first.wire.stage_receipt
+    if (stage?.status === 'PASS' && stage.decision === 'AVAILABLE') return { ok: true, receipt: first.receipt }
+    if (stage?.status === 'PASS' && stage.decision === 'UNAVAILABLE') {
+      return { ok: false, reason: 'Selected compute target is unavailable' }
+    }
+    if (stage?.status !== 'PASS' || stage.decision !== 'RECOVERY_REQUIRED') {
       throw new ServerManagerAdapterError('STAGE_REJECTED')
-    })
+    }
+    const recoveryStateDigest = prefixedDigest(this.digest(stage.recovery_state_digest))
+    const devices = recoveryDevices(stage.recovery_devices)
+    const requestConsent = this.requestDeviceRecoveryConsent
+    if (requestConsent === undefined) {
+      return { ok: false, reason: 'Selected compute target requires an approved device reset' }
+    }
+    const consent = await requestConsent({
+      context,
+      preflightReceipt: first.receipt,
+      recoveryStateDigest,
+      devices,
+    }, context.signal)
+    if (!validRecoveryConsent(consent, context, first.receipt.digest, recoveryStateDigest, devices, this.now())) {
+      return { ok: false, reason: 'Selected compute target device reset was not approved' }
+    }
+    const recovered = await this.stage(context, 'preflight', consent)
+    if (recovered.wire.stage_receipt?.status === 'PASS'
+      && recovered.wire.stage_receipt.decision === 'AVAILABLE') {
+      return { ok: true, receipt: recovered.receipt }
+    }
+    if (recovered.wire.stage_receipt?.status === 'PASS'
+      && recovered.wire.stage_receipt.decision === 'UNAVAILABLE') {
+      return { ok: false, reason: 'Selected compute target remains unavailable after device reset' }
+    }
+    throw new ServerManagerAdapterError('STAGE_REJECTED')
   }
 
   drain(context: ModelDrainContext): Promise<ModelLifecycleStageReceipt> {
@@ -546,6 +668,7 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
   private async stage(
     context: ModelLifecycleStageContext,
     stage: ModelLifecycleStage,
+    deviceRecoveryConsent?: ServerManagerDeviceRecoveryConsentGrant,
   ): Promise<{ wire: WireReceipt; receipt: ModelLifecycleStageReceipt }> {
     const timeoutMs = Math.floor(context.deadlineAt - this.now())
     if (timeoutMs < 1 || context.signal.aborted) {
@@ -555,7 +678,9 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
     const transaction = await this.transaction(state, context)
     if (transaction.unresolved) throw new ServerManagerAdapterError('CONTRACT_INVALID')
     transaction.unresolved = true
-    if (stage !== 'preflight' && stage !== 'prestate') transaction.cleanCancelable = false
+    if (stage !== 'preflight' && stage !== 'prestate' || deviceRecoveryConsent !== undefined) {
+      transaction.cleanCancelable = false
+    }
     const wire = await this.invoke('stage', {
       ...this.boundRequest(state),
       idempotency_key: this.key(),
@@ -577,6 +702,17 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
           destination_revision_digest: bareDigest(context.evictionConsent.destination_revision_digest),
           source_prestate_digest: bareDigest(context.evictionConsent.source_prestate_digest),
           destination_prestate_digest: bareDigest(context.evictionConsent.destination_prestate_digest),
+        } }
+        : {}),
+      ...(stage === 'preflight' && deviceRecoveryConsent !== undefined
+        ? { device_recovery_consent: {
+          ...deviceRecoveryConsent,
+          fencing_digest: bareDigest(deviceRecoveryConsent.fencing_digest),
+          scope_digest: bareDigest(deviceRecoveryConsent.scope_digest),
+          transaction_digest: bareDigest(deviceRecoveryConsent.transaction_digest),
+          revision_digest: bareDigest(deviceRecoveryConsent.revision_digest),
+          preflight_receipt_digest: bareDigest(deviceRecoveryConsent.preflight_receipt_digest),
+          recovery_state_digest: bareDigest(deviceRecoveryConsent.recovery_state_digest),
         } }
         : {}),
     }, context.signal)

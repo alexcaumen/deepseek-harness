@@ -5,7 +5,8 @@ import { createModelExecutionScopeDigest } from '@deepseek-ai/dsh-model-lifecycl
 import type {
   GovernedModelRoute, ModelEvictionConsentRequest, ModelLifecyclePrestateReceipt,
 } from '@deepseek-ai/dsh-model-lifecycle'
-import { createPreviewAuthority } from '../src/index.ts'
+import type { ServerManagerDeviceRecoveryRequest } from '@deepseek-ai/dsh-model-lifecycle-server-manager'
+import { createDeviceRecoveryConsentRequester, createPreviewAuthority } from '../src/index.ts'
 import type { Config } from '../src/index.ts'
 import { canonicalJson } from '../src/manager.ts'
 
@@ -133,3 +134,72 @@ it('bounds consent to the remaining resource lease and refuses a nearly expired 
     { ...request, resourceLease: expiringLease }, new AbortController().signal,
   )).toBeNull()
 })
+
+function recoveryRequest(): ServerManagerDeviceRecoveryRequest {
+  const base = consentRequest()
+  return {
+    context: {
+      route: base.destinationRoute,
+      target: base.destinationTarget,
+      scope: base.scope,
+      transactionKind: 'MODEL_ROUTE',
+      transactionDigest: base.transactionDigest,
+      resourceLease: base.resourceLease,
+      deadlineAt: Date.now() + 30_000,
+      signal: new AbortController().signal,
+    },
+    preflightReceipt: {
+      stage: 'preflight', routeId: base.destinationRoute.id, target: base.destinationTarget,
+      revisionDigest: base.destinationRoute.revisionDigest, scopeDigest: base.scope.digest,
+      transactionDigest: base.transactionDigest, fencingDigest: base.resourceLease.fencingDigest,
+      digest: digest('4'),
+    },
+    recoveryStateDigest: digest('5'),
+    devices: [{ index: 1, uuid: 'GPU-bdf65c79-5672-1627-b052-f16fef5e7a01', action: 'Reset' }],
+  }
+}
+
+it.each(['rejected', 'unavailable', 'allowed-once'] as const)(
+  'mints an exact GPU reset grant only after native %s', async (outcome) => {
+    const requestWithReceipt = vi.fn(async (_request: unknown) => ({ id: 'gpu-approval', outcome }))
+    const ctx = {
+      agents: { get: () => ({ session: {} }) },
+      approval: { requestWithReceipt },
+    } as unknown as Context
+    const request = recoveryRequest()
+    const grant = await createDeviceRecoveryConsentRequester(ctx, key)(request, request.context.signal)
+
+    expect(requestWithReceipt).toHaveBeenCalledTimes(1)
+    expect(requestWithReceipt.mock.calls[0]?.[0]).toMatchObject({
+      toolName: 'giana-cowork-preview:gpu-reset',
+    })
+    const prompt = requestWithReceipt.mock.calls[0]?.[0] as { reason?: string } | undefined
+    expect(prompt?.reason).toContain('GPU1')
+    if (outcome !== 'allowed-once') {
+      expect(grant).toBeNull()
+      return
+    }
+    expect(grant).toMatchObject({
+      route_id: request.context.route.id,
+      target: 'r5300',
+      preflight_receipt_digest: request.preflightReceipt.digest,
+      recovery_state_digest: request.recoveryStateDigest,
+      devices: request.devices,
+    })
+    const signed = grant!
+    const wire = {
+      id: signed.id,
+      fencing_digest: signed.fencing_digest.slice(7),
+      scope_digest: signed.scope_digest.slice(7),
+      transaction_digest: signed.transaction_digest.slice(7),
+      route_id: signed.route_id,
+      revision_digest: signed.revision_digest.slice(7),
+      target: signed.target,
+      preflight_receipt_digest: signed.preflight_receipt_digest.slice(7),
+      recovery_state_digest: signed.recovery_state_digest.slice(7),
+      devices: signed.devices,
+      expires_at: signed.expires_at,
+    }
+    expect(signed.signature).toBe(createHmac('sha256', key).update(canonicalJson(wire)).digest('hex'))
+  },
+)

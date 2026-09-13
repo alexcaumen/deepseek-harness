@@ -172,6 +172,37 @@ interface EvictionConsent {
   readonly signature: string
 }
 
+interface DeviceRecoveryRequirement {
+  readonly index: number
+  readonly uuid: string
+  readonly action: 'Reset'
+}
+
+interface DeviceRecoveryConsent {
+  readonly id: string
+  readonly fencing_digest: string
+  readonly scope_digest: string
+  readonly transaction_digest: string
+  readonly route_id: string
+  readonly revision_digest: string
+  readonly target: TargetClass
+  readonly preflight_receipt_digest: string
+  readonly recovery_state_digest: string
+  readonly devices: readonly DeviceRecoveryRequirement[]
+  readonly expires_at: number
+  readonly signature: string
+}
+
+type CapacityAssessment =
+  | { readonly kind: 'available'; readonly evidence: unknown }
+  | { readonly kind: 'unavailable'; readonly evidence: unknown }
+  | {
+    readonly kind: 'recovery-required'
+    readonly evidence: unknown
+    readonly recoveryStateDigest: string
+    readonly devices: readonly DeviceRecoveryRequirement[]
+  }
+
 interface ReplayEntry {
   readonly operation: string
   readonly key: string
@@ -414,6 +445,47 @@ function parseEvictionConsent(value: unknown): EvictionConsent {
     destination_target: targetClass(input.destination_target),
     source_prestate_digest: stringField(input.source_prestate_digest, BARE_DIGEST),
     destination_prestate_digest: stringField(input.destination_prestate_digest, BARE_DIGEST),
+    expires_at: integerField(input.expires_at, 1),
+    signature: stringField(input.signature, BARE_DIGEST),
+  }
+}
+
+function parseRecoveryDevices(value: unknown): readonly DeviceRecoveryRequirement[] {
+  if (!Array.isArray(value) || value.length === 0) throw new ManagerError('INVALID_REQUEST')
+  const devices = value.map((candidate): DeviceRecoveryRequirement => {
+    const input = record(candidate)
+    strictKeys(input, ['index', 'uuid', 'action'])
+    if (input.action !== 'Reset') throw new ManagerError('INVALID_REQUEST')
+    return {
+      index: integerField(input.index, 0, 31),
+      uuid: stringField(input.uuid, /^GPU-[A-Fa-f0-9-]+$/u),
+      action: 'Reset',
+    }
+  }).sort((left, right) => left.index - right.index)
+  if (new Set(devices.map(device => device.index)).size !== devices.length
+    || new Set(devices.map(device => device.uuid)).size !== devices.length) {
+    throw new ManagerError('INVALID_REQUEST')
+  }
+  return devices
+}
+
+function parseDeviceRecoveryConsent(value: unknown): DeviceRecoveryConsent {
+  const input = record(value)
+  strictKeys(input, [
+    'id', 'fencing_digest', 'scope_digest', 'transaction_digest', 'route_id', 'revision_digest',
+    'target', 'preflight_receipt_digest', 'recovery_state_digest', 'devices', 'expires_at', 'signature',
+  ])
+  return {
+    id: stringField(input.id, BARE_DIGEST),
+    fencing_digest: stringField(input.fencing_digest, BARE_DIGEST),
+    scope_digest: stringField(input.scope_digest, BARE_DIGEST),
+    transaction_digest: stringField(input.transaction_digest, BARE_DIGEST),
+    route_id: stringField(input.route_id, SAFE_TOKEN),
+    revision_digest: stringField(input.revision_digest, BARE_DIGEST),
+    target: targetClass(input.target),
+    preflight_receipt_digest: stringField(input.preflight_receipt_digest, BARE_DIGEST),
+    recovery_state_digest: stringField(input.recovery_state_digest, BARE_DIGEST),
+    devices: parseRecoveryDevices(input.devices),
     expires_at: integerField(input.expires_at, 1),
     signature: stringField(input.signature, BARE_DIGEST),
   }
@@ -1496,7 +1568,7 @@ export class PreviewManager {
     return route.id
   }
 
-  private async verifyEvictionConsent(consent: EvictionConsent): Promise<void> {
+  private async verifyConsent(consent: EvictionConsent | DeviceRecoveryConsent): Promise<void> {
     let key: Buffer
     try {
       key = await readFile(this.evictionKeyPath)
@@ -1824,6 +1896,7 @@ export class PreviewManager {
     const transactionDigest = stringField(envelope.transaction_digest, BARE_DIGEST)
     let hostLease: Pick<LeaseState, 'leaseId' | 'fence'> | undefined
     let consentExpiresAt: number | undefined
+    let deviceRecoveryConsent: DeviceRecoveryConsent | undefined
     let allowOwnedUnhealthyCleanup = false
     await this.store.run(async (state) => {
       budget.remaining()
@@ -1834,6 +1907,43 @@ export class PreviewManager {
       if (!transaction.nextAllowed.includes(stage) || transaction.terminal || transaction.inFlight !== undefined
         || lease.expiresAt <= Date.now() || !this.routeAllowed(transaction, stage, route)) {
         throw new ManagerError('STATE_CONFLICT')
+      }
+      if (stage === 'preflight' && envelope.device_recovery_consent !== undefined) {
+        if (transaction.kind !== 'MODEL_ROUTE') throw new ManagerError('STATE_CONFLICT')
+        const consent = parseDeviceRecoveryConsent(envelope.device_recovery_consent)
+        const previous = [...state.replay].reverse().find((entry) => {
+          if (entry.operation !== 'stage' || entry.status !== 'COMPLETE' || entry.result === undefined) return false
+          const stageReceipt = entry.result.stage_receipt
+          return entry.result.transaction_digest === transaction.digest
+            && stageReceipt !== null && typeof stageReceipt === 'object' && !Array.isArray(stageReceipt)
+            && (stageReceipt as Record<string, unknown>).stage === 'preflight'
+        })?.result
+        const previousStage = previous?.stage_receipt === null || typeof previous?.stage_receipt !== 'object'
+          || Array.isArray(previous.stage_receipt) ? undefined : previous.stage_receipt as Record<string, unknown>
+        if (previous === undefined || previousStage === undefined
+          || previousStage.decision !== 'RECOVERY_REQUIRED') {
+          throw new ManagerError('STATE_CONFLICT')
+        }
+        const previousDevices = parseRecoveryDevices(previousStage.recovery_devices)
+        if (consent.expires_at <= Date.now() || consent.expires_at > lease.expiresAt
+          || consent.id in state.consumedEvictions
+          || consent.fencing_digest !== digest({ lease: lease.leaseId, fence: lease.fence })
+          || consent.scope_digest !== transaction.scopeDigest
+          || consent.transaction_digest !== transaction.digest
+          || consent.route_id !== route.id
+          || consent.revision_digest !== route.revisionDigest
+          || consent.target !== route.target
+          || consent.preflight_receipt_digest !== stringField(previous.receiptDigest, SHA256_DIGEST).slice(7)
+          || consent.recovery_state_digest !== stringField(previousStage.recovery_state_digest, BARE_DIGEST)
+          || canonicalJson(consent.devices) !== canonicalJson(previousDevices)) {
+          throw new ManagerError('STATE_CONFLICT')
+        }
+        await this.verifyConsent(consent)
+        state.consumedEvictions[consent.id] = transaction.digest
+        transaction.cleanCancelable = false
+        deviceRecoveryConsent = consent
+      } else if (envelope.device_recovery_consent !== undefined) {
+        throw new ManagerError('INVALID_REQUEST')
       }
       if (stage === 'stop') {
         if (transaction.kind !== 'MODEL_ROUTE') throw new ManagerError('STATE_CONFLICT')
@@ -1863,7 +1973,7 @@ export class PreviewManager {
             || consent.destination_prestate_digest !== transaction.destinationPrestateDigest) {
             throw new ManagerError('STATE_CONFLICT')
           }
-          await this.verifyEvictionConsent(consent)
+          await this.verifyConsent(consent)
           state.consumedEvictions[consent.id] = transaction.digest
           consentExpiresAt = consent.expires_at
         } else if (envelope.eviction_consent !== undefined) {
@@ -1895,6 +2005,7 @@ export class PreviewManager {
       }
       outcome = await this.executeStage(
         stage, route, budget, hostLease, consentExpiresAt, allowOwnedUnhealthyCleanup, markStartedMutation,
+        deviceRecoveryConsent,
       )
     }
     catch (error: unknown) {
@@ -1943,6 +2054,7 @@ export class PreviewManager {
     consentExpiresAt?: number,
     allowOwnedUnhealthyCleanup = false,
     markStartedMutation?: () => Promise<void>,
+    deviceRecoveryConsent?: DeviceRecoveryConsent,
   ): Promise<{ status: 'PASS' | 'FAIL' | 'QUARANTINED'; decision: string; evidence: unknown }> {
     const restoreAdmission = async (): Promise<boolean> => {
       try {
@@ -1953,8 +2065,18 @@ export class PreviewManager {
     }
     await this.assertHostLease(route.target, lease, budget)
     if (stage === 'preflight') {
-      const available = await this.capacity(route, budget)
-      return { status: 'PASS', decision: available ? 'AVAILABLE' : 'UNAVAILABLE', evidence: { available } }
+      if (deviceRecoveryConsent !== undefined) {
+        await this.resetDevices(route, lease, deviceRecoveryConsent, budget)
+      }
+      const assessment = await this.capacity(route, budget)
+      if (assessment.kind === 'recovery-required') return {
+        status: 'PASS', decision: 'RECOVERY_REQUIRED', evidence: assessment.evidence,
+      }
+      return {
+        status: 'PASS',
+        decision: assessment.kind === 'available' ? 'AVAILABLE' : 'UNAVAILABLE',
+        evidence: assessment.evidence,
+      }
     }
     if (stage === 'prestate') {
       const resident = await this.residency(route.target, budget)
@@ -2083,7 +2205,7 @@ export class PreviewManager {
         return { status: 'FAIL', decision: 'FAILED', evidence: before }
       }
       if (before.kind === 'empty') {
-        if (!await this.capacity(route, budget)) {
+        if ((await this.capacity(route, budget)).kind !== 'available') {
           return { status: 'FAIL', decision: 'FAILED', evidence: { available: false } }
         }
         const command = route.runtime.kind === 'docker'
@@ -2289,10 +2411,67 @@ export class PreviewManager {
     return this.remote(target, fenced, timeoutMs)
   }
 
-  private async capacity(route: ManagedRoute, budget: StageBudget): Promise<boolean> {
+  private async resetDevices(
+    route: ManagedRoute,
+    lease: Pick<LeaseState, 'leaseId' | 'fence'>,
+    consent: DeviceRecoveryConsent,
+    budget: StageBudget,
+  ): Promise<void> {
+    if (route.target !== 'r5300' || consent.expires_at <= Date.now()
+      || canonicalJson(consent.devices.map(device => device.index))
+        !== canonicalJson(consent.devices.map(device => device.index).sort((left, right) => left - right))) {
+      throw new ManagerError('REMOTE_FAILURE')
+    }
+    const checks = consent.devices.flatMap((device) => {
+      const expected = `${device.index}, ${device.uuid}, Reset`
+      return [
+        `row=$(nvidia-smi --query-gpu=index,uuid,gpu_recovery_action --format=csv,noheader,nounits -i ${device.index})`,
+        `[ "$row" = ${shellQuote(expected)} ] || exit 76`,
+        'apps=$(nvidia-smi --query-compute-apps=pid,gpu_uuid --format=csv,noheader,nounits) || exit 76',
+        `if printf '%s\\n' "$apps" | awk -F',' -v uuid=${shellQuote(device.uuid)} '{ gsub(/^[ \\t]+|[ \\t]+$/, "", $1); gsub(/^[ \\t]+|[ \\t]+$/, "", $2); if ($2 == uuid && $1 ~ /^[0-9]+$/) found=1 } END { exit found ? 0 : 1 }'; then exit 76; fi`,
+      ]
+    })
+    const precheck = [
+      `now=$(date +%s%3N); [ ${consent.expires_at} -gt "$now" ] || exit 76`,
+      ...checks,
+      "printf 'GCP_DEVICE_RECOVERY_PRECHECKED\\n'",
+    ].join('; ')
+    let result: PreviewManagerRemoteResult
+    try {
+      result = await this.runFencedMutation(route.target, lease, precheck, budget.remaining())
+    } catch {
+      throw new ManagerError('REMOTE_FAILURE')
+    }
+    if (result.code !== 0 || result.stdout.trim() !== 'GCP_DEVICE_RECOVERY_PRECHECKED') {
+      throw new ManagerError('REMOTE_FAILURE')
+    }
+
+    for (const device of consent.devices) {
+      const reset = [
+        `now=$(date +%s%3N); [ ${consent.expires_at} -gt "$now" ] && [ "$current_expires" -gt "$now" ] || exit 76`,
+        `row=$(nvidia-smi --query-gpu=index,uuid,gpu_recovery_action --format=csv,noheader,nounits -i ${device.index})`,
+        `[ "$row" = ${shellQuote(`${device.index}, ${device.uuid}, Reset`)} ] || exit 76`,
+        'apps=$(nvidia-smi --query-compute-apps=pid,gpu_uuid --format=csv,noheader,nounits) || exit 76',
+        `if printf '%s\\n' "$apps" | awk -F',' -v uuid=${shellQuote(device.uuid)} '{ gsub(/^[ \\t]+|[ \\t]+$/, "", $1); gsub(/^[ \\t]+|[ \\t]+$/, "", $2); if ($2 == uuid && $1 ~ /^[0-9]+$/) found=1 } END { exit found ? 0 : 1 }'; then exit 76; fi`,
+        `now=$(date +%s%3N); [ ${consent.expires_at} -gt "$now" ] && [ "$current_expires" -gt "$now" ] || exit 76`,
+        `if ! sudo -n nvidia-smi --gpu-reset -i ${device.index}; then exit 77; fi`,
+        `row=$(nvidia-smi --query-gpu=index,uuid,gpu_recovery_action --format=csv,noheader,nounits -i ${device.index})`,
+        `[ "$row" = ${shellQuote(`${device.index}, ${device.uuid}, None`)} ] || exit 76`,
+        `printf 'GCP_DEVICE_RECOVERY_APPLIED ${device.index} ${device.uuid}\\n'`,
+      ].join('; ')
+      try {
+        result = await this.runFencedMutation(route.target, lease, reset, budget.remaining())
+      } catch {
+        throw new ManagerError('UNKNOWN_COMMIT')
+      }
+      const marker = `GCP_DEVICE_RECOVERY_APPLIED ${device.index} ${device.uuid}`
+      if (result.code !== 0 || result.stdout.trim() !== marker) throw new ManagerError('UNKNOWN_COMMIT')
+    }
+  }
+
+  private async capacity(route: ManagedRoute, budget: StageBudget): Promise<CapacityAssessment> {
     const resident = await this.residency(route.target, budget)
-    if (resident.kind === 'unknown') return false
-    if (resident.kind === 'resident' && resident.route.id === route.id) return true
+    if (resident.kind === 'unknown') return { kind: 'unavailable', evidence: { reason: 'RESIDENCY_UNKNOWN' } }
     const current = resident.kind === 'resident' ? resident : undefined
     const telemetry = await this.remote(
       route.target,
@@ -2301,65 +2480,72 @@ export class PreviewManager {
         + 'nvidia-smi --query-compute-apps=pid,gpu_uuid,used_gpu_memory --format=csv,noheader,nounits',
       budget.remaining(),
     )
-    if (telemetry.code !== 0) return false
+    if (telemetry.code !== 0) return { kind: 'unavailable', evidence: { reason: 'TELEMETRY_FAILED' } }
     const lines = telemetry.stdout.trim().split(/\r?\n/u)
     const memory = /^MEM\s+(\d+)$/u.exec(lines.shift() ?? '')
-    if (memory === null) return false
+    if (memory === null) return { kind: 'unavailable', evidence: { reason: 'MEMORY_INVALID' } }
     const memoryKiB = Number(memory[1])
-    if (!Number.isSafeInteger(memoryKiB)) return false
-    if (lines.shift() !== 'GPUS') return false
+    if (!Number.isSafeInteger(memoryKiB)) return { kind: 'unavailable', evidence: { reason: 'MEMORY_INVALID' } }
+    if (lines.shift() !== 'GPUS') return { kind: 'unavailable', evidence: { reason: 'GPU_HEADER_INVALID' } }
 
     const applicationMarker = lines.indexOf('APPS')
-    if (applicationMarker < 1) return false
+    if (applicationMarker < 1) return { kind: 'unavailable', evidence: { reason: 'GPU_TELEMETRY_INVALID' } }
     const gpuLines = lines.slice(0, applicationMarker)
     const applicationLines = lines.slice(applicationMarker + 1).filter(line => line.length > 0)
     const gpu = new Map<number, { readonly uuid: string; readonly freeMiB: number; readonly recoveryAction: string }>()
     const gpuByUuid = new Map<string, number>()
     for (const line of gpuLines) {
       const match = /^\s*(\d+)\s*,\s*(GPU-[A-Fa-f0-9-]+)\s*,\s*([^,]+?)\s*,\s*(\d+)\s*$/u.exec(line)
-      if (match === null) return false
+      if (match === null) return { kind: 'unavailable', evidence: { reason: 'GPU_ROW_INVALID' } }
       const index = Number(match[1])
       const uuid = match[2]
       const recoveryAction = match[3]
       const freeMiB = Number(match[4])
-      if (uuid === undefined || recoveryAction === undefined) return false
+      if (uuid === undefined || recoveryAction === undefined) return { kind: 'unavailable', evidence: { reason: 'GPU_ROW_INVALID' } }
       if (!Number.isSafeInteger(index) || index < 0 || !Number.isSafeInteger(freeMiB) || freeMiB < 0
-        || gpu.has(index) || gpuByUuid.has(uuid)) return false
+        || gpu.has(index) || gpuByUuid.has(uuid)) return { kind: 'unavailable', evidence: { reason: 'GPU_ROW_INVALID' } }
       gpu.set(index, { uuid, freeMiB, recoveryAction })
       gpuByUuid.set(uuid, index)
     }
 
     const applications: Array<{ readonly pid: number; readonly gpuIndex: number; readonly usedMiB: number }> = []
     for (const line of applicationLines) {
+      if (/^\s*\[N\/A\]\s*,\s*GPU-[A-Fa-f0-9-]+\s*,\s*\[N\/A\]\s*$/u.test(line)) continue
       const match = /^\s*(\d+)\s*,\s*(GPU-[A-Fa-f0-9-]+)\s*,\s*(\d+)\s*$/u.exec(line)
-      if (match === null) return false
+      if (match === null) return { kind: 'unavailable', evidence: { reason: 'APPLICATION_ROW_INVALID' } }
       const pid = Number(match[1])
       const uuid = match[2]
-      if (uuid === undefined) return false
+      if (uuid === undefined) return { kind: 'unavailable', evidence: { reason: 'APPLICATION_ROW_INVALID' } }
       const gpuIndex = gpuByUuid.get(uuid)
       const usedMiB = Number(match[3])
       if (!Number.isSafeInteger(pid) || pid < 1 || gpuIndex === undefined
-        || !Number.isSafeInteger(usedMiB) || usedMiB < 0) return false
+        || !Number.isSafeInteger(usedMiB) || usedMiB < 0) {
+        return { kind: 'unavailable', evidence: { reason: 'APPLICATION_ROW_INVALID' } }
+      }
       applications.push({ pid, gpuIndex, usedMiB })
     }
 
     const processResult = await this.remote(route.target, 'ps -eo pid=,pgid=,rss=', budget.remaining())
-    if (processResult.code !== 0) return false
+    if (processResult.code !== 0) return { kind: 'unavailable', evidence: { reason: 'PROCESS_TELEMETRY_FAILED' } }
     const processes = new Map<number, { readonly group: number; readonly rssKiB: number }>()
     for (const line of processResult.stdout.trim().split(/\r?\n/u)) {
       if (line.length === 0) continue
       const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/u.exec(line)
-      if (match === null) return false
+      if (match === null) return { kind: 'unavailable', evidence: { reason: 'PROCESS_ROW_INVALID' } }
       const pid = Number(match[1])
       const group = Number(match[2])
       const rssKiB = Number(match[3])
       // Linux exposes kernel threads with PGID 0 in the full process table.
       // They cannot match a managed userspace process group, but remain valid telemetry rows.
       if (!Number.isSafeInteger(pid) || pid < 1 || !Number.isSafeInteger(group)
-        || !Number.isSafeInteger(rssKiB) || rssKiB < 0 || processes.has(pid)) return false
+        || !Number.isSafeInteger(rssKiB) || rssKiB < 0 || processes.has(pid)) {
+        return { kind: 'unavailable', evidence: { reason: 'PROCESS_ROW_INVALID' } }
+      }
       processes.set(pid, { group, rssKiB })
     }
-    if (applications.some(application => !processes.has(application.pid))) return false
+    if (applications.some(application => !processes.has(application.pid))) {
+      return { kind: 'unavailable', evidence: { reason: 'APPLICATION_OWNER_UNKNOWN' } }
+    }
 
     const currentGroups = new Set(current?.processGroups ?? [])
     const measuredRamMiB = Math.floor([...processes.values()]
@@ -2369,11 +2555,24 @@ export class PreviewManager {
       ? 0
       : Math.min(measuredRamMiB, current.route.resources.reclaimableRamMiB)
     const availableRamMiB = Math.floor(memoryKiB / 1024) + reclaimableRamMiB
-    if (availableRamMiB < route.resources.minimumFreeRamMiB) return false
+    if (availableRamMiB < route.resources.minimumFreeRamMiB) {
+      return { kind: 'unavailable', evidence: { reason: 'RAM_INSUFFICIENT', availableRamMiB } }
+    }
 
-    return route.resources.gpuIndices.every((index) => {
+    const recoveryDevices: DeviceRecoveryRequirement[] = []
+    for (const index of route.resources.gpuIndices) {
       const gpuState = gpu.get(index)
-      if (gpuState === undefined || gpuState.recoveryAction !== 'None') return false
+      if (gpuState === undefined) return { kind: 'unavailable', evidence: { reason: 'GPU_MISSING', index } }
+      if (gpuState.recoveryAction !== 'None') {
+        const occupied = applications.some(application => application.gpuIndex === index)
+        if (route.target !== 'r5300' || gpuState.recoveryAction !== 'Reset' || occupied) {
+          return {
+            kind: 'unavailable',
+            evidence: { reason: occupied ? 'RECOVERY_DEVICE_OCCUPIED' : 'RECOVERY_UNSUPPORTED', index },
+          }
+        }
+        recoveryDevices.push({ index, uuid: gpuState.uuid, action: 'Reset' })
+      }
       const measuredVramMiB = applications
         .filter((application) => {
           const process = processes.get(application.pid)
@@ -2382,10 +2581,32 @@ export class PreviewManager {
         .reduce((total, application) => total + application.usedMiB, 0)
       const configuredCeiling = current?.route.resources.reclaimableVramMiB[String(index)] ?? 0
       const minimumFreeVramMiB = route.resources.minimumFreeVramMiB[String(index)]
-      if (minimumFreeVramMiB === undefined) return false
-      return gpuState.freeMiB + Math.min(measuredVramMiB, configuredCeiling)
-        >= minimumFreeVramMiB
-    })
+      if (minimumFreeVramMiB === undefined
+        || gpuState.freeMiB + Math.min(measuredVramMiB, configuredCeiling) < minimumFreeVramMiB) {
+        return { kind: 'unavailable', evidence: { reason: 'VRAM_INSUFFICIENT', index } }
+      }
+    }
+    const stateEvidence = {
+      routeId: route.id,
+      target: route.target,
+      availableRamMiB,
+      devices: route.resources.gpuIndices.map((index) => {
+        const state = gpu.get(index)
+        if (state === undefined) throw new ManagerError('REMOTE_FAILURE')
+        return { index, ...state }
+      }),
+      applications: applications.filter(application => route.resources.gpuIndices.includes(application.gpuIndex)),
+    }
+    if (recoveryDevices.length > 0) {
+      const recoveryStateDigest = digest(stateEvidence)
+      return {
+        kind: 'recovery-required',
+        recoveryStateDigest,
+        devices: recoveryDevices,
+        evidence: { ...stateEvidence, recovery_state_digest: recoveryStateDigest, recovery_devices: recoveryDevices },
+      }
+    }
+    return { kind: 'available', evidence: stateEvidence }
   }
 
   private async residency(target: TargetClass, budget: StageBudget): Promise<Residency> {
@@ -2810,6 +3031,12 @@ export class PreviewManager {
         ...stage === 'prestate' && outcome.decision === 'RESIDENT'
           ? { resident_route_id: (outcome.evidence as { route: ManagedRoute }).route.id,
             resident_revision_digest: (outcome.evidence as { route: ManagedRoute }).route.revisionDigest } : {},
+        ...stage === 'preflight' && outcome.decision === 'RECOVERY_REQUIRED'
+          ? {
+            recovery_state_digest: (outcome.evidence as { recovery_state_digest: string }).recovery_state_digest,
+            recovery_devices: (outcome.evidence as { recovery_devices: readonly DeviceRecoveryRequirement[] }).recovery_devices,
+          }
+          : {},
       },
     }
     return receipt(base)
