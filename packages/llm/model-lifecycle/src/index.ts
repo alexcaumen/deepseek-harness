@@ -563,6 +563,7 @@ export class ModelLifecycleRuntime extends Service {
   private tainted = false
   private resourceLease: ResourceLeaseSession | undefined
   private readonly requestSignals = new WeakMap<GenerateOptions, AbortSignal>()
+  private readonly shutdownController = new AbortController()
 
   constructor(ctx: Context, config: ModelLifecycleConfig = {}) {
     super(ctx, 'modelLifecycle')
@@ -579,7 +580,13 @@ export class ModelLifecycleRuntime extends Service {
       return lease === undefined ? inherited : inherited === undefined ? lease : AbortSignal.any([inherited, lease])
     }, { global: true })
     ctx.effect(
-      () => async () => this.shutdownActive(),
+      () => async () => {
+        this.shutdownController.abort(new ModelLifecycleError(
+          'ABORTED',
+          'Local model runtime is shutting down',
+        ))
+        await this.shutdownActive()
+      },
       'model-lifecycle: orderly active-route shutdown',
     )
   }
@@ -718,7 +725,11 @@ export class ModelLifecycleRuntime extends Service {
         'Governed local-model inference requires one exact live session',
       )
     }
-    const release = await this.acquire(request.signal, true)
+    const operationSignal = request.signal === undefined
+      ? this.shutdownController.signal
+      : AbortSignal.any([request.signal, this.shutdownController.signal])
+    const operationRequest: AcquireModelRouteRequest = { ...request, signal: operationSignal }
+    const release = await this.acquire(request.signal, true, this.shutdownController.signal)
     this.cancelIdleUnload()
     let registration: Registration | undefined
     let scope: Readonly<ModelExecutionScope> | undefined
@@ -736,7 +747,7 @@ export class ModelLifecycleRuntime extends Service {
       try {
         resolution = await this.runAuthorityOperation(
           'route resolution',
-          request.signal,
+          operationSignal,
           signal => authority.resolve(request, signal),
         )
       } catch (error: unknown) {
@@ -789,10 +800,10 @@ export class ModelLifecycleRuntime extends Service {
         String(Date.now()),
         String(++this.transactionCounter),
       ])
-      abortIfRequested(request.signal)
+      abortIfRequested(operationSignal)
       return await this.activateLocked(
         registration,
-        request,
+        operationRequest,
         scope,
         transactionDigest,
         receipts,
@@ -812,7 +823,7 @@ export class ModelLifecycleRuntime extends Service {
             const target = receipts.at(-1)?.target ?? registration.route.targets[0]
             if (target === undefined) throw new Error('Preparation target is unavailable for cancellation')
             const context = this.stageContext(registration, target, {
-              ...request, signal: this.resourceLease.signal,
+              ...operationRequest, signal: this.resourceLease.signal,
             }, scope, transactionDigest)
             await this.runAuthorityOperation('preparation cancellation', this.resourceLease.signal,
               signal => cancelPreparation({ ...context, signal }))
@@ -953,6 +964,7 @@ export class ModelLifecycleRuntime extends Service {
         selection: request.selection,
         ...request.sessionId === undefined ? {} : { sessionId: request.sessionId },
         ...request.preference === undefined ? {} : { preference: request.preference },
+        signal: this.shutdownController.signal,
       }, scope, transactionDigest)
       let healthy: ModelHealthDecision
       try {
@@ -994,6 +1006,7 @@ export class ModelLifecycleRuntime extends Service {
       })
       this.publishEffectiveRoute(registration, request, target, scope, transactionDigest, receipts)
       await this.settleActivation(registration, target, request, scope, transactionDigest, 'COMMIT')
+      this.assertLeaseHandoffAllowed()
       return this.routeLease(registration, target, scope, transactionDigest, receipts, authority, release)
     }
 
@@ -1002,6 +1015,7 @@ export class ModelLifecycleRuntime extends Service {
         selection: request.selection,
         ...request.sessionId === undefined ? {} : { sessionId: request.sessionId },
         ...request.preference === undefined ? {} : { preference: request.preference },
+        signal: this.shutdownController.signal,
       }, scope, transactionDigest)
       let healthy: ModelHealthDecision
       try {
@@ -1037,6 +1051,7 @@ export class ModelLifecycleRuntime extends Service {
       })
       this.publishEffectiveRoute(registration, request, target, scope, transactionDigest, receipts)
       await this.settleActivation(registration, target, request, scope, transactionDigest, 'COMMIT')
+      this.assertLeaseHandoffAllowed()
       return this.routeLease(registration, target, scope, transactionDigest, receipts, authority, release)
     }
 
@@ -1051,6 +1066,7 @@ export class ModelLifecycleRuntime extends Service {
           selection: request.selection,
           ...request.sessionId === undefined ? {} : { sessionId: request.sessionId },
           ...request.preference === undefined ? {} : { preference: request.preference },
+          signal: this.shutdownController.signal,
         }
         const previousContext = this.stageContext(
           previous.registration,
@@ -1160,6 +1176,7 @@ export class ModelLifecycleRuntime extends Service {
         selection: request.selection,
         ...request.sessionId === undefined ? {} : { sessionId: request.sessionId },
         ...request.preference === undefined ? {} : { preference: request.preference },
+        signal: this.shutdownController.signal,
       }, scope, transactionDigest)
       try {
         const receipt = await this.runStage('start', detachedContext, bounded => registration.driver.start(bounded))
@@ -1210,6 +1227,7 @@ export class ModelLifecycleRuntime extends Service {
       })
       this.publishEffectiveRoute(registration, request, target, scope, transactionDigest, receipts)
       await this.settleActivation(registration, target, request, scope, transactionDigest, 'COMMIT')
+      this.assertLeaseHandoffAllowed()
       return this.routeLease(registration, target, scope, transactionDigest, receipts, authority, release)
     } catch (error: unknown) {
       if ((error instanceof AuditPersistenceFailure && error.settlementUnknown)
@@ -1221,7 +1239,8 @@ export class ModelLifecycleRuntime extends Service {
         this.phase = 'TAINTED'
         throw error
       }
-      if (this.resourceLease?.signal.aborted === true || (error instanceof ModelLifecycleError && error.code === 'STAGE_TIMEOUT')) {
+      if (this.shutdownController.signal.aborted || this.resourceLease?.signal.aborted === true
+        || (error instanceof ModelLifecycleError && error.code === 'STAGE_TIMEOUT')) {
         this.active = undefined
         this.tainted = true
         this.phase = 'TAINTED'
@@ -1647,6 +1666,7 @@ export class ModelLifecycleRuntime extends Service {
       selection: request.selection,
       ...request.sessionId === undefined ? {} : { sessionId: request.sessionId },
       ...request.preference === undefined ? {} : { preference: request.preference },
+      signal: this.shutdownController.signal,
     }
     await this.settleActivation(targetRegistration, target, cleanupRequest, scope, transactionDigest, 'COMPENSATE')
     if (targetStartAttempted) {
@@ -1710,7 +1730,10 @@ export class ModelLifecycleRuntime extends Service {
     const settle = registration.driver.settleActivation?.bind(registration.driver)
     if (settle === undefined) return
     const { signal: _signal, ...cleanupRequest } = request
-    const context = this.stageContext(registration, target, cleanupRequest, scope, transactionDigest)
+    const context = this.stageContext(registration, target, {
+      ...cleanupRequest,
+      signal: this.shutdownController.signal,
+    }, scope, transactionDigest)
     try {
       await this.runAuthorityOperation('activation settlement', context.signal,
         signal => settle({ ...context, signal }, disposition))
@@ -1720,6 +1743,16 @@ export class ModelLifecycleRuntime extends Service {
       this.phase = 'TAINTED'
       throw lifecycleError('RUNTIME_TAINTED', 'Local model activation settlement is uncertain', error)
     }
+  }
+
+  private assertLeaseHandoffAllowed(): void {
+    if (!this.shutdownController.signal.aborted) return
+    this.tainted = true
+    this.phase = 'TAINTED'
+    throw new ModelLifecycleError(
+      'RUNTIME_TAINTED',
+      'Local model runtime shut down before the inference lease was handed off',
+    )
   }
 
   private async record(authority: ModelLifecycleAuthority, record: ModelLifecycleAuditRecord): Promise<void> {
@@ -2126,8 +2159,13 @@ export class ModelLifecycleRuntime extends Service {
     }
   }
 
-  private async acquire(signal: AbortSignal | undefined, inference = false): Promise<() => void> {
+  private async acquire(
+    signal: AbortSignal | undefined,
+    inference = false,
+    cancellationSignal?: AbortSignal,
+  ): Promise<() => void> {
     abortIfRequested(signal)
+    abortIfRequested(cancellationSignal)
     if (!this.slotLocked) {
       this.slotLocked = true
     } else {
@@ -2141,6 +2179,7 @@ export class ModelLifecycleRuntime extends Service {
         const cleanup = (): void => {
           clearTimeout(timer)
           signal?.removeEventListener('abort', onAbort)
+          cancellationSignal?.removeEventListener('abort', onAbort)
         }
         const grant = (): void => {
           cleanup()
@@ -2161,11 +2200,13 @@ export class ModelLifecycleRuntime extends Service {
           cancel(new ModelLifecycleError('QUEUE_TIMEOUT', 'Local model queue wait timed out; the active request was not stopped'))
         }, queueTimeoutMs)
         signal?.addEventListener('abort', onAbort, { once: true })
-        if (signal?.aborted === true) onAbort()
+        cancellationSignal?.addEventListener('abort', onAbort, { once: true })
+        if (signal?.aborted === true || cancellationSignal?.aborted === true) onAbort()
       })
     }
     try {
       abortIfRequested(signal)
+      abortIfRequested(cancellationSignal)
     } catch (error: unknown) {
       this.releaseSlot()
       throw error

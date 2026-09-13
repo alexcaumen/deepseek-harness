@@ -229,6 +229,14 @@ async function flushMicrotasks(): Promise<void> {
   for (let index = 0; index < 12; index++) await Promise.resolve()
 }
 
+async function waitForAbort(signal: AbortSignal): Promise<never> {
+  return await new Promise<never>((_resolve, reject) => {
+    signal.addEventListener('abort', () => {
+      reject(signal.reason instanceof Error ? signal.reason : new Error('model-lifecycle test operation aborted'))
+    }, { once: true })
+  })
+}
+
 async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
   const chunks: StreamChunk[] = []
   for await (const chunk of stream) chunks.push(chunk)
@@ -889,6 +897,187 @@ describe('governed local-model lifecycle', () => {
     const lease = await pending
     expect(healthContext?.deadlineAt).toBe(Date.now() + 50)
     await lease.release()
+  })
+
+  it('cancels in-flight activation and releases shared resources before context shutdown settles', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const runtime = ctx.modelLifecycle
+    const admitted = route('glm', 'glm', ['r5300'])
+    const resources = fixtureResources()
+    const releaseResources = vi.spyOn(resources, 'release')
+    let startSignal: AbortSignal | undefined
+    let markStartEntered!: () => void
+    const startEntered = new Promise<void>((resolve) => { markStartEntered = resolve })
+    const base = driver([])
+    ctx.modelLifecycle.register(admitted, {
+      ...base,
+      start: async (context) => {
+        startSignal = context.signal
+        markStartEntered()
+        await waitForAbort(context.signal)
+        return await base.start(context)
+      },
+    })
+    installAuthority(ctx, () => ({
+      kind: 'GOVERNED', route: admitted, scope: executionScope(),
+    }), resources)
+    const acquisition = ctx.modelLifecycle.acquireRoute({
+      selection: admitted.selection,
+    }).then(() => undefined, (error: unknown) => error)
+    await startEntered
+
+    const disposal = ctx.fiber.dispose()
+
+    expect(await acquisition).toMatchObject({ code: 'ABORTED' })
+    await disposal
+    contexts.splice(contexts.indexOf(ctx), 1)
+    expect(startSignal?.aborted).toBe(true)
+    expect(releaseResources).toHaveBeenCalledTimes(1)
+    expect(releaseResources.mock.calls[0]?.[1]).toBe('UNCERTAIN')
+    expect(runtime.snapshot()).toEqual({ phase: 'TAINTED' })
+  })
+
+  it.each(['health', 'probe'] as const)(
+    'cancels in-flight %s and releases shared resources before context shutdown settles',
+    async (stage) => {
+      const ctx = await lifecycle({ idleUnloadMs: 0 })
+      const runtime = ctx.modelLifecycle
+      const admitted = route('glm', 'glm', ['r5300'])
+      const resources = fixtureResources()
+      const releaseResources = vi.spyOn(resources, 'release')
+      let stageSignal: AbortSignal | undefined
+      let markStageEntered!: () => void
+      const stageEntered = new Promise<void>((resolve) => { markStageEntered = resolve })
+      const base = driver([])
+      ctx.modelLifecycle.register(admitted, {
+        ...base,
+        [stage]: async (context: ModelLifecycleStageContext) => {
+          stageSignal = context.signal
+          markStageEntered()
+          return await waitForAbort(context.signal)
+        },
+      })
+      installAuthority(ctx, () => ({
+        kind: 'GOVERNED', route: admitted, scope: executionScope(),
+      }), resources)
+      const acquisition = ctx.modelLifecycle.acquireRoute({
+        selection: admitted.selection,
+      }).then(() => undefined, (error: unknown) => error)
+      await stageEntered
+
+      const disposal = ctx.fiber.dispose()
+
+      expect(await acquisition).toMatchObject({ code: 'ABORTED' })
+      await disposal
+      contexts.splice(contexts.indexOf(ctx), 1)
+      expect(stageSignal?.aborted).toBe(true)
+      expect(releaseResources).toHaveBeenCalledTimes(1)
+      expect(releaseResources.mock.calls[0]?.[1]).toBe('UNCERTAIN')
+      expect(runtime.snapshot()).toEqual({ phase: 'TAINTED' })
+    },
+  )
+
+  it('cancels rollback host work and releases shared resources when disposal begins', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const runtime = ctx.modelLifecycle
+    const admitted = route('glm', 'glm', ['r5300'])
+    const resources = fixtureResources()
+    const releaseResources = vi.spyOn(resources, 'release')
+    let rollbackSignal: AbortSignal | undefined
+    let markRollbackEntered!: () => void
+    const rollbackEntered = new Promise<void>((resolve) => { markRollbackEntered = resolve })
+    const base = driver([])
+    ctx.modelLifecycle.register(admitted, {
+      ...base,
+      start: async (context) => {
+        await base.start(context)
+        throw new Error('fixture start failed after mutation')
+      },
+      stop: async (context) => {
+        rollbackSignal = context.signal
+        markRollbackEntered()
+        return await waitForAbort(context.signal)
+      },
+    })
+    installAuthority(ctx, () => ({
+      kind: 'GOVERNED', route: admitted, scope: executionScope(),
+    }), resources)
+    const acquisition = ctx.modelLifecycle.acquireRoute({
+      selection: admitted.selection,
+    }).then(() => undefined, (error: unknown) => error)
+    await rollbackEntered
+
+    const disposal = ctx.fiber.dispose()
+
+    expect(await acquisition).toMatchObject({ code: 'ROLLBACK_FAILED' })
+    await disposal
+    contexts.splice(contexts.indexOf(ctx), 1)
+    expect(rollbackSignal?.aborted).toBe(true)
+    expect(releaseResources).toHaveBeenCalledTimes(1)
+    expect(releaseResources.mock.calls[0]?.[1]).toBe('UNCERTAIN')
+    expect(runtime.snapshot()).toEqual({ phase: 'TAINTED' })
+  })
+
+  it('does not hand off an inference lease when disposal begins during activation commit', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const runtime = ctx.modelLifecycle
+    const admitted = route('glm', 'glm', ['r5300'])
+    const resources = fixtureResources()
+    const releaseResources = vi.spyOn(resources, 'release')
+    let commitSignal: AbortSignal | undefined
+    let markCommitEntered!: () => void
+    const commitEntered = new Promise<void>((resolve) => { markCommitEntered = resolve })
+    const base = driver([])
+    ctx.modelLifecycle.register(admitted, {
+      ...base,
+      settleActivation: async (context, disposition) => {
+        if (disposition !== 'COMMIT') return
+        commitSignal = context.signal
+        markCommitEntered()
+        await waitForAbort(context.signal)
+      },
+    })
+    installAuthority(ctx, () => ({
+      kind: 'GOVERNED', route: admitted, scope: executionScope(),
+    }), resources)
+    const acquisition = ctx.modelLifecycle.acquireRoute({
+      selection: admitted.selection,
+    }).then(lease => lease, (error: unknown) => error)
+    await commitEntered
+
+    const disposal = ctx.fiber.dispose()
+    const result = await acquisition
+
+    expect(result).toMatchObject({ code: 'ABORTED' })
+    expect(result).not.toHaveProperty('release')
+    await disposal
+    contexts.splice(contexts.indexOf(ctx), 1)
+    expect(commitSignal?.aborted).toBe(true)
+    expect(releaseResources).toHaveBeenCalledTimes(1)
+    expect(releaseResources.mock.calls[0]?.[1]).toBe('UNCERTAIN')
+    expect(runtime.snapshot()).toEqual({ phase: 'TAINTED' })
+  })
+
+  it('cancels a shutdown-specific queued acquisition without interrupting the active inference lease', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const runtime = ctx.modelLifecycle
+    const admitted = route('glm', 'glm', ['r5300'])
+    const log: string[] = []
+    ctx.modelLifecycle.register(admitted, driver(log))
+    installRouteAuthority(ctx, [admitted])
+    const first = await ctx.modelLifecycle.acquireRoute({ selection: admitted.selection })
+    const queued = ctx.modelLifecycle.acquireRoute({ selection: admitted.selection })
+      .then(() => undefined, (error: unknown) => error)
+    await flushMicrotasks()
+
+    const disposal = ctx.fiber.dispose()
+
+    expect(await queued).toMatchObject({ code: 'ABORTED' })
+    expect(runtime.snapshot().phase).toBe('IN_USE')
+    await first.release()
+    await disposal
+    contexts.splice(contexts.indexOf(ctx), 1)
+    expect(runtime.snapshot()).toEqual({ phase: 'IDLE' })
   })
 
   it('binds immutable stage budgets to route admission regardless of property ordering', async () => {
