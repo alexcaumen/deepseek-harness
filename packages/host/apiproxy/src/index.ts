@@ -100,10 +100,10 @@ export class ApiProxyService extends Service implements ApiProxy {
       defaultModelSelection: () => ctx.agentDefaultModel.currentSelection(),
       saveDefaultModelSelection: selection => ctx.agentDefaultModel.saveSelection(selection),
       prepareModelSelection: async (sessionId, selection, signal) => {
-        const lifecycle = (ctx as Context & { modelLifecycle?: {
+        const lifecycle = ctx.get('modelLifecycle') as undefined | {
           acquireRoute(request: { selection: ModelSelection; sessionId: string; signal: AbortSignal }):
           Promise<{ release(): Promise<void> }>
-        } }).modelLifecycle
+        }
         if (lifecycle === undefined) return
         const lease = await lifecycle.acquireRoute({ selection, sessionId: String(sessionId), signal })
         await lease.release()

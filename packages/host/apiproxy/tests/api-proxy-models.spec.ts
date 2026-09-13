@@ -560,6 +560,20 @@ describe('Web session model selection', () => {
     await ctx.fiber.dispose()
   })
 
+  it('allows ordinary model selection when no lifecycle service is mounted', async () => {
+    const { ctx, sessionId } = await harness()
+    ctx.provide('agentDefaultModel' as never, {
+      currentSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-chat' }),
+      saveSelection: () => Promise.resolve(),
+    } as never)
+    expect(ctx.get('modelLifecycle')).toBeUndefined()
+    const gateway = new ApiProxyService(ctx, ApiProxyService.Config({}))
+    expect(expectValue(await gateway.sessions.selectModel(request({
+      sessionId, provider: 'deepseek-official', model: 'deepseek-reasoner',
+    }))).selected).toMatchObject({ provider: 'deepseek-official', model: 'deepseek-reasoner' })
+    await ctx.fiber.dispose()
+  })
+
   it('prepares the selected route through the mounted gateway lifecycle before returning success', async () => {
     const { ctx, sessionId } = await harness()
     const release = vi.fn(() => Promise.resolve())
