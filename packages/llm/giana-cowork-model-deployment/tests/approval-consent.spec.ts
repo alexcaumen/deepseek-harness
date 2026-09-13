@@ -33,7 +33,7 @@ it('holds declared local variants without admitted routes while preserving exter
   expect(authority.resolve({
     selection: { provider: 'glm-uncensored-local-r5300', model: 'unadmitted' },
     sessionId: 'session-1',
-  })).toMatchObject({ kind: 'HELD' })
+  }, new AbortController().signal)).toMatchObject({ kind: 'HELD' })
   expect(authority.classifyProvider('deepseek-official')).toBe('UNMANAGED_EXTERNAL')
 })
 

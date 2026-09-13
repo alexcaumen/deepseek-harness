@@ -1,15 +1,17 @@
 /** Fixed-command Server Manager process for the isolated Giana CoWork Preview deployment. */
 
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
+import { connect, createServer, type Server, type Socket } from 'node:net'
 import { dirname, isAbsolute } from 'node:path'
+import { Transform } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { withFileLock } from '@deepseek-ai/dsh-atomic-write'
 
 const RECEIPT_SCHEMA = 'giana.server-manager.resource-lease-receipt.v2'
-const REGISTRY_SCHEMA = 'giana.cowork.preview.model-registry.v1'
-const STATE_SCHEMA = 'giana.cowork.preview.model-manager-state.v1'
+const REGISTRY_SCHEMA = 'giana.cowork.preview.model-registry.v2'
+const STATE_SCHEMA = 'giana.cowork.preview.model-manager-state.v2'
 const BARE_DIGEST = /^[a-f0-9]{64}$/u
 const SHA256_DIGEST = /^sha256:[a-f0-9]{64}$/u
 const SAFE_TOKEN = /^[A-Za-z0-9._/:+-]+$/u
@@ -17,8 +19,10 @@ const TARGETS = ['r5300', 'prdg', 'ram-cpu'] as const
 const STAGES = ['preflight', 'prestate', 'drain', 'stop', 'verify-stopped', 'start', 'health', 'probe'] as const
 const MAX_FRAME_BYTES = 262_144
 const MAX_CAPTURE_BYTES = 1_048_576
+const MAX_HTTP_HEADER_BYTES = 65_536
+const ENDPOINT_RECOVERY_TIMEOUT_MS = 15_000
 
-type TargetClass = typeof TARGETS[number]
+export type TargetClass = typeof TARGETS[number]
 type Stage = typeof STAGES[number]
 type TransactionKind = 'MODEL_ROUTE' | 'IDLE_UNLOAD' | 'SHUTDOWN'
 
@@ -51,6 +55,10 @@ interface RuntimeConfig {
   readonly launcherPath?: string
   readonly launcherSha256?: string
   readonly remotePort: number
+  /** Stable loopback port consumed by the frozen provider profile. */
+  readonly localPort: number
+  /** Manager-owned local hop; distinct from localPort to expose listener conflicts. */
+  readonly upstreamLocalPort: number
   readonly expectedModel: string
   readonly drain: DrainConfig
   readonly release: ReleaseConfig
@@ -87,6 +95,7 @@ interface ManagedRoute {
 }
 
 interface HostSlotConfig {
+  readonly target: TargetClass
   readonly id: string
   readonly lockPath: string
   readonly operationLockPath: string
@@ -101,7 +110,7 @@ export interface PreviewManagerRegistry {
   readonly holderRef: string
   readonly admissionDigest: string
   readonly renewAfterMs: number
-  readonly slot: HostSlotConfig
+  readonly slots: readonly HostSlotConfig[]
   readonly targets: readonly TargetDescriptor[]
   readonly routes: readonly ManagedRoute[]
 }
@@ -110,11 +119,17 @@ interface LeaseState {
   readonly leaseId: string
   readonly fence: number
   readonly generation: number
-  readonly targets: readonly TargetClass[]
-  readonly targetDescriptors: readonly TargetDescriptor[]
+  targets: readonly TargetClass[]
+  targetDescriptors: readonly TargetDescriptor[]
+  readonly hostLeases: Partial<Record<TargetClass, HostLeaseState>>
   expiresAt: number
   readonly renewAfterMs: number
   quarantined: boolean
+}
+
+interface HostLeaseState {
+  readonly fence: number
+  expiresAt: number
 }
 
 interface TransactionState {
@@ -179,10 +194,24 @@ interface ManagerState {
 export interface PreviewManagerArguments {
   readonly registryPath: string
   readonly statePath: string
-  readonly sshExecutable: string
-  readonly sshConfigPath: string
-  readonly sshHost: string
+  readonly runners: readonly PreviewManagerRunnerConfig[]
 }
+
+/** One fixed command runner for an admitted compute target. */
+export type PreviewManagerRunnerConfig =
+  | {
+    readonly target: TargetClass
+    readonly kind: 'ssh'
+    readonly executable: string
+    readonly configPath: string
+    readonly host: string
+  }
+  | {
+    readonly target: TargetClass
+    readonly kind: 'wsl'
+    readonly executable: string
+    readonly distribution: string
+  }
 
 /** Sanitized settlement returned by one injected remote command runner. */
 export interface PreviewManagerRemoteResult {
@@ -191,10 +220,41 @@ export interface PreviewManagerRemoteResult {
 }
 
 /** Deployment-owned remote runner used by the manager and its keyless tests. */
-export type PreviewManagerRemoteRunner = (command: string, timeoutMs: number) => Promise<PreviewManagerRemoteResult>
+export type PreviewManagerRemoteRunner = (
+  target: TargetClass,
+  command: string,
+  timeoutMs: number,
+) => Promise<PreviewManagerRemoteResult>
+
+/** Minimum admitted route identity required by the process-local endpoint owner. */
+export interface PreviewEndpointRoute {
+  readonly id: string
+  readonly target: TargetClass
+  readonly runtime: {
+    readonly localPort: number
+    readonly upstreamLocalPort: number
+    readonly remotePort: number
+    readonly expectedModel: string
+  }
+}
+
+/** Process-local endpoint ownership used to bind one admitted host to a stable provider URL. */
+export interface PreviewEndpointController {
+  ensure(route: PreviewEndpointRoute, timeoutMs: number): Promise<boolean>
+  healthy(route: PreviewEndpointRoute, timeoutMs: number): Promise<boolean>
+  probe(route: PreviewEndpointRoute, timeoutMs: number): Promise<boolean>
+  quiesce(route: PreviewEndpointRoute, timeoutMs: number): Promise<boolean>
+  resume(route: PreviewEndpointRoute, timeoutMs: number): Promise<boolean>
+  close(route: PreviewEndpointRoute, timeoutMs: number): Promise<boolean>
+  released(route: PreviewEndpointRoute, timeoutMs: number): Promise<boolean>
+  shutdown(): Promise<void>
+}
+
+/** Test seam for one fixed SSH forwarding child; production keeps fixed spawn options. */
+export type PreviewEndpointProcessSpawner = (executable: string, args: readonly string[]) => ChildProcess
 
 class ManagerError extends Error {
-  constructor(readonly code: 'INVALID_REQUEST' | 'BUSY' | 'LEASE_MISMATCH' | 'STATE_CONFLICT' | 'REMOTE_FAILURE' | 'UNKNOWN_COMMIT') {
+  constructor(readonly code: 'INVALID_REQUEST' | 'BUSY' | 'TARGET_UNAVAILABLE' | 'LEASE_MISMATCH' | 'STATE_CONFLICT' | 'REMOTE_FAILURE' | 'UNKNOWN_COMMIT') {
     super(code)
     this.name = 'ManagerError'
   }
@@ -203,14 +263,21 @@ class ManagerError extends Error {
 class StageBudget {
   private readonly deadline: number
 
-  constructor(timeoutMs: number) {
-    this.deadline = Date.now() + timeoutMs
+  constructor(timeoutMs: number, absoluteDeadline?: number) {
+    const relativeDeadline = Date.now() + timeoutMs
+    this.deadline = absoluteDeadline === undefined
+      ? relativeDeadline
+      : Math.min(relativeDeadline, absoluteDeadline)
   }
 
   remaining(maximum = Number.MAX_SAFE_INTEGER): number {
     const remaining = Math.floor(this.deadline - Date.now())
     if (remaining < 1) throw new ManagerError('REMOTE_FAILURE')
     return Math.min(remaining, maximum)
+  }
+
+  available(): number {
+    return Math.max(0, Math.floor(this.deadline - Date.now()))
   }
 }
 
@@ -263,6 +330,10 @@ function sortedTargets(targets: readonly TargetDescriptor[]): readonly TargetDes
   return [...targets].sort((left, right) => left.class.localeCompare(right.class))
 }
 
+function deploymentKey(routeId: string, target: TargetClass): string {
+  return createHash('sha256').update(`${routeId}\u0000${target}`).digest('hex')
+}
+
 function parseArguments(argv: readonly string[]): PreviewManagerArguments {
   const values = new Map<string, string>()
   for (let index = 0; index < argv.length; index += 2) {
@@ -275,18 +346,48 @@ function parseArguments(argv: readonly string[]): PreviewManagerArguments {
   }
   const registryPath = stringField(values.get('--registry'))
   const statePath = stringField(values.get('--state'))
-  const sshExecutable = stringField(values.get('--ssh'))
-  const sshConfigPath = stringField(values.get('--ssh-config'))
-  const sshHost = stringField(values.get('--host'), SAFE_TOKEN)
-  if (!isAbsolute(registryPath) || !isAbsolute(statePath) || !isAbsolute(sshExecutable) || !isAbsolute(sshConfigPath)) {
+  const runners = parseRunnerConfigs(JSON.parse(stringField(values.get('--runners'))) as unknown)
+  if (values.size !== 3 || !isAbsolute(registryPath) || !isAbsolute(statePath)) {
     throw new ManagerError('INVALID_REQUEST')
   }
-  return { registryPath, statePath, sshExecutable, sshConfigPath, sshHost }
+  return { registryPath, statePath, runners }
 }
 
 function targetClass(value: unknown): TargetClass {
   if (typeof value !== 'string' || !TARGETS.includes(value as TargetClass)) throw new ManagerError('INVALID_REQUEST')
   return value as TargetClass
+}
+
+function parseRunnerConfigs(value: unknown): readonly PreviewManagerRunnerConfig[] {
+  if (!Array.isArray(value) || value.length === 0) throw new ManagerError('INVALID_REQUEST')
+  const runners = value.map((candidate): PreviewManagerRunnerConfig => {
+    const input = record(candidate)
+    const target = targetClass(input.target)
+    if (input.kind === 'ssh') {
+      strictKeys(input, ['target', 'kind', 'executable', 'configPath', 'host'])
+      const executable = stringField(input.executable)
+      const configPath = stringField(input.configPath)
+      if (!isAbsolute(executable) || !isAbsolute(configPath)) throw new ManagerError('INVALID_REQUEST')
+      return Object.freeze({
+        target, kind: 'ssh', executable, configPath,
+        host: stringField(input.host, SAFE_TOKEN),
+      })
+    }
+    if (input.kind === 'wsl') {
+      strictKeys(input, ['target', 'kind', 'executable', 'distribution'])
+      const executable = stringField(input.executable)
+      if (!isAbsolute(executable)) throw new ManagerError('INVALID_REQUEST')
+      return Object.freeze({
+        target, kind: 'wsl', executable,
+        distribution: stringField(input.distribution, SAFE_TOKEN),
+      })
+    }
+    throw new ManagerError('INVALID_REQUEST')
+  })
+  if (new Set(runners.map(runner => runner.target)).size !== runners.length) {
+    throw new ManagerError('INVALID_REQUEST')
+  }
+  return Object.freeze(runners)
 }
 
 function strictKeys(input: Record<string, unknown>, allowed: readonly string[]): void {
@@ -349,13 +450,16 @@ function parseRuntime(value: unknown): RuntimeConfig {
   strictKeys(input, [
     'kind', 'container', 'startPath', 'stopPath', 'startSha256', 'stopSha256', 'pidFile', 'processMarker',
     'containerId', 'imageId', 'unit', 'launcherPath', 'launcherSha256',
-    'remotePort', 'expectedModel', 'drain', 'release',
+    'remotePort', 'localPort', 'upstreamLocalPort', 'expectedModel', 'drain', 'release',
   ])
   if (input.kind !== 'docker' && input.kind !== 'script' && input.kind !== 'systemd') {
     throw new ManagerError('INVALID_REQUEST')
   }
   const expectedModel = stringField(input.expectedModel, SAFE_TOKEN)
   const remotePort = integerField(input.remotePort, 1, 65_535)
+  const localPort = integerField(input.localPort, 1, 65_535)
+  const upstreamLocalPort = integerField(input.upstreamLocalPort, 1, 65_535)
+  if (localPort === upstreamLocalPort) throw new ManagerError('INVALID_REQUEST')
   const drainInput = record(input.drain)
   strictKeys(drainInput, ['kind', 'path', 'pollIntervalMs'])
   if (drainInput.kind !== 'sglang-load' && drainInput.kind !== 'vllm-metrics') {
@@ -387,7 +491,7 @@ function parseRuntime(value: unknown): RuntimeConfig {
       container: stringField(input.container, SAFE_TOKEN),
       containerId: stringField(input.containerId, BARE_DIGEST),
       imageId: stringField(input.imageId, SHA256_DIGEST),
-      remotePort, expectedModel, drain, release,
+      remotePort, localPort, upstreamLocalPort, expectedModel, drain, release,
     })
   }
   if (input.kind === 'systemd') {
@@ -405,7 +509,7 @@ function parseRuntime(value: unknown): RuntimeConfig {
       kind: 'systemd', unit, launcherPath,
       launcherSha256: stringField(input.launcherSha256, BARE_DIGEST),
       processMarker: stringField(input.processMarker, SAFE_TOKEN),
-      remotePort, expectedModel, drain, release,
+      remotePort, localPort, upstreamLocalPort, expectedModel, drain, release,
     })
   }
   if (input.container !== undefined || input.containerId !== undefined || input.imageId !== undefined
@@ -426,16 +530,18 @@ function parseRuntime(value: unknown): RuntimeConfig {
   }
   return Object.freeze({
     kind: 'script', startPath, stopPath, startSha256, stopSha256,
-    pidFile, processMarker, remotePort, expectedModel, drain, release,
+    pidFile, processMarker, remotePort, localPort, upstreamLocalPort, expectedModel, drain, release,
   })
 }
 
 /** Parse and validate a fixed-command preview registry. */
 export function parsePreviewManagerRegistry(value: unknown): PreviewManagerRegistry {
   const input = record(value)
-  strictKeys(input, ['schema', 'issuerRef', 'holderRef', 'admissionDigest', 'renewAfterMs', 'slot', 'targets', 'routes'])
+  strictKeys(input, ['schema', 'issuerRef', 'holderRef', 'admissionDigest', 'renewAfterMs', 'slots', 'targets', 'routes'])
   if (input.schema !== REGISTRY_SCHEMA || !Array.isArray(input.targets) || !Array.isArray(input.routes)
-    || input.targets.length === 0 || input.routes.length === 0) throw new ManagerError('INVALID_REQUEST')
+    || !Array.isArray(input.slots) || input.targets.length === 0 || input.routes.length === 0) {
+    throw new ManagerError('INVALID_REQUEST')
+  }
   const targets = input.targets.map((candidate) => {
     const target = record(candidate)
     strictKeys(target, ['class', 'identity_digest', 'currentness_digest'])
@@ -461,35 +567,60 @@ export function parsePreviewManagerRegistry(value: unknown): PreviewManagerRegis
       resources: parseRequirement(route.resources),
     })
   })
-  if (new Set(routes.map(route => route.id)).size !== routes.length
-    || new Set(routes.map(route => route.runtime.remotePort)).size !== routes.length) throw new ManagerError('INVALID_REQUEST')
-  const slotInput = record(input.slot)
-  strictKeys(slotInput, ['id', 'lockPath', 'operationLockPath', 'statePath', 'counterPath'])
+  if (new Set(routes.map(route => deploymentKey(route.id, route.target))).size !== routes.length
+    || new Set(routes.map(route => `${route.target}\u0000${route.runtime.remotePort}`)).size !== routes.length) {
+    throw new ManagerError('INVALID_REQUEST')
+  }
+  const logicalRevisions = new Map<string, string>()
+  const logicalEndpoints = new Map<string, { localPort: number; expectedModel: string }>()
+  for (const route of routes) {
+    const existing = logicalRevisions.get(route.id)
+    if (existing !== undefined && existing !== route.revisionDigest) throw new ManagerError('INVALID_REQUEST')
+    logicalRevisions.set(route.id, route.revisionDigest)
+    const endpoint = logicalEndpoints.get(route.id)
+    if (endpoint !== undefined && (endpoint.localPort !== route.runtime.localPort
+      || endpoint.expectedModel !== route.runtime.expectedModel)) throw new ManagerError('INVALID_REQUEST')
+    logicalEndpoints.set(route.id, { localPort: route.runtime.localPort, expectedModel: route.runtime.expectedModel })
+  }
+  const endpointOwners = new Map<number, string>()
+  for (const route of routes) {
+    const owner = endpointOwners.get(route.runtime.localPort)
+    if (owner !== undefined && owner !== route.id) throw new ManagerError('INVALID_REQUEST')
+    endpointOwners.set(route.runtime.localPort, route.id)
+  }
   const remotePath = (value: unknown): string => {
     const path = stringField(value, SAFE_TOKEN)
     if (!path.startsWith('/')) throw new ManagerError('INVALID_REQUEST')
     return path
   }
-  const slot = Object.freeze({
-    id: stringField(slotInput.id, SAFE_TOKEN),
-    lockPath: remotePath(slotInput.lockPath),
-    operationLockPath: remotePath(slotInput.operationLockPath),
-    statePath: remotePath(slotInput.statePath),
-    counterPath: remotePath(slotInput.counterPath),
+  const slots = input.slots.map((candidate) => {
+    const slotInput = record(candidate)
+    strictKeys(slotInput, ['target', 'id', 'lockPath', 'operationLockPath', 'statePath', 'counterPath'])
+    const slot = Object.freeze({
+      target: targetClass(slotInput.target),
+      id: stringField(slotInput.id, SAFE_TOKEN),
+      lockPath: remotePath(slotInput.lockPath),
+      operationLockPath: remotePath(slotInput.operationLockPath),
+      statePath: remotePath(slotInput.statePath),
+      counterPath: remotePath(slotInput.counterPath),
+    })
+    if (new Set([slot.lockPath, slot.operationLockPath, slot.statePath, slot.counterPath]).size !== 4) {
+      throw new ManagerError('INVALID_REQUEST')
+    }
+    return slot
   })
-  if (new Set([
-    slot.lockPath,
-    slot.operationLockPath,
-    slot.statePath,
-    slot.counterPath,
-  ]).size !== 4) throw new ManagerError('INVALID_REQUEST')
+  if (new Set(slots.map(slot => slot.target)).size !== slots.length
+    || new Set(slots.map(slot => slot.id)).size !== slots.length
+    || targets.some(target => !slots.some(slot => slot.target === target.class))) {
+    throw new ManagerError('INVALID_REQUEST')
+  }
   return Object.freeze({
     schema: REGISTRY_SCHEMA,
     issuerRef: stringField(input.issuerRef),
     holderRef: stringField(input.holderRef),
     admissionDigest: stringField(input.admissionDigest, BARE_DIGEST),
     renewAfterMs: integerField(input.renewAfterMs, 1),
-    slot,
+    slots: Object.freeze(slots),
     targets: Object.freeze(targets),
     routes: Object.freeze(routes),
   })
@@ -510,7 +641,7 @@ function parseState(value: unknown): ManagerState {
       const candidate = record(input.lease)
       strictKeys(candidate, [
         'leaseId', 'fence', 'generation', 'targets', 'targetDescriptors',
-        'expiresAt', 'renewAfterMs', 'quarantined',
+        'hostLeases', 'expiresAt', 'renewAfterMs', 'quarantined',
       ])
       if (!Array.isArray(candidate.targets) || !Array.isArray(candidate.targetDescriptors)
         || typeof candidate.quarantined !== 'boolean') throw new ManagerError('STATE_CONFLICT')
@@ -528,12 +659,27 @@ function parseState(value: unknown): ManagerState {
         || canonicalJson([...targets].sort()) !== canonicalJson(targetDescriptors.map(entry => entry.class).sort())) {
         throw new ManagerError('STATE_CONFLICT')
       }
+      const hostLeaseInput = record(candidate.hostLeases)
+      const hostLeases: Partial<Record<TargetClass, HostLeaseState>> = {}
+      for (const [key, value] of Object.entries(hostLeaseInput)) {
+        const target = targetClass(key)
+        const entry = record(value)
+        strictKeys(entry, ['fence', 'expiresAt'])
+        hostLeases[target] = {
+          fence: integerField(entry.fence, 1),
+          expiresAt: integerField(entry.expiresAt, 1),
+        }
+      }
+      if (canonicalJson(Object.keys(hostLeases).sort()) !== canonicalJson([...targets].sort())) {
+        throw new ManagerError('STATE_CONFLICT')
+      }
       lease = {
         leaseId: stringField(candidate.leaseId, BARE_DIGEST),
         fence: integerField(candidate.fence, 1),
         generation: integerField(candidate.generation, 1),
         targets,
         targetDescriptors,
+        hostLeases,
         expiresAt: integerField(candidate.expiresAt, 1),
         renewAfterMs: integerField(candidate.renewAfterMs, 1),
         quarantined: candidate.quarantined,
@@ -628,9 +774,11 @@ function parseState(value: unknown): ManagerState {
           && allowedRoutes[nextAllowed[0]]?.[0] === adoptedResidentRouteId)))) {
         throw new ManagerError('STATE_CONFLICT')
       }
+      const transactionDigest = stringField(candidate.digest, BARE_DIGEST)
+      if (transactionDigest !== key) throw new ManagerError('STATE_CONFLICT')
       transactions[key] = {
         settlement,
-        digest: stringField(candidate.digest, BARE_DIGEST),
+        digest: transactionDigest,
         kind,
         scopeDigest: stringField(candidate.scopeDigest, BARE_DIGEST),
         nextAllowed,
@@ -652,8 +800,6 @@ function parseState(value: unknown): ManagerState {
         ...(candidate.sourcePrestateDigest === undefined ? {}
           : { sourcePrestateDigest: stringField(candidate.sourcePrestateDigest, BARE_DIGEST) }),
       }
-      const restored = transactions[key]
-      if (restored === undefined || restored.digest !== key) throw new ManagerError('STATE_CONFLICT')
     }
 
     if (!Array.isArray(input.replay) || input.replay.length > 256) throw new ManagerError('STATE_CONFLICT')
@@ -873,7 +1019,7 @@ function scriptMutationCommand(runtime: RuntimeConfig, action: 'start' | 'stop')
   ]
   if (action === 'start') {
     script.push(
-      'for cmdline in /proc/[0-9]*/cmdline; do [ -r "$cmdline" ] || continue; if tr "\\000" "\\n" < "$cmdline" 2>/dev/null | grep -Fqx -- "$marker"; then exit 76; fi; done',
+      'for environ in /proc/[0-9]*/environ; do [ -r "$environ" ] || continue; if tr "\\000" "\\n" < "$environ" 2>/dev/null | grep -Fqx -- "GCP_PROCESS_MARKER=$marker"; then exit 76; fi; done',
       '"$start_path"',
     )
   } else {
@@ -881,11 +1027,13 @@ function scriptMutationCommand(runtime: RuntimeConfig, action: 'start' | 'stop')
       '[ -r "$pid_file" ] || exit 76',
       'read -r tracked < "$pid_file" || exit 76',
       '[[ "$tracked" =~ ^[1-9][0-9]*$ ]] || exit 76',
-      '[ -r "/proc/$tracked/cmdline" ] || exit 76',
-      'tr "\\000" "\\n" < "/proc/$tracked/cmdline" | grep -Fqx -- "$marker" || exit 76',
+      '[ -r "/proc/$tracked/environ" ] || exit 76',
+      'tr "\\000" "\\n" < "/proc/$tracked/environ" | grep -Fqx -- "GCP_PROCESS_MARKER=$marker" || exit 76',
+      'tracked_group=$(ps -o pgid= -p "$tracked" 2>/dev/null | tr -d " ")',
+      '[[ "$tracked_group" =~ ^[1-9][0-9]*$ ]] || exit 76',
       'matches=0',
-      'for cmdline in /proc/[0-9]*/cmdline; do [ -r "$cmdline" ] || continue; if tr "\\000" "\\n" < "$cmdline" 2>/dev/null | grep -Fqx -- "$marker"; then pid=${cmdline#/proc/}; pid=${pid%/cmdline}; [ "$pid" = "$tracked" ] || exit 76; matches=$((matches + 1)); fi; done',
-      '[ "$matches" -eq 1 ] || exit 76',
+      'for environ in /proc/[0-9]*/environ; do [ -r "$environ" ] || continue; if tr "\\000" "\\n" < "$environ" 2>/dev/null | grep -Fqx -- "GCP_PROCESS_MARKER=$marker"; then pid=${environ#/proc/}; pid=${pid%/environ}; group=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d " "); [ "$group" = "$tracked_group" ] || exit 76; matches=$((matches + 1)); fi; done',
+      '[ "$matches" -ge 1 ] || exit 76',
       '"$stop_path"',
     )
   }
@@ -893,7 +1041,14 @@ function scriptMutationCommand(runtime: RuntimeConfig, action: 'start' | 'stop')
   return `/usr/bin/bash -c ${shellQuote(script.join('\n'))}`
 }
 
-function runRemote(args: PreviewManagerArguments, command: string, timeoutMs: number): Promise<PreviewManagerRemoteResult> {
+function runRemote(
+  args: PreviewManagerArguments,
+  target: TargetClass,
+  command: string,
+  timeoutMs: number,
+): Promise<PreviewManagerRemoteResult> {
+  const runner = args.runners.find(candidate => candidate.target === target)
+  if (runner === undefined) return Promise.reject(new ManagerError('REMOTE_FAILURE'))
   return new Promise((resolve, reject) => {
     const remoteSeconds = Math.max(1, Math.floor((timeoutMs - 2_000) / 1_000))
     const wrapped = `timeout --signal=TERM --kill-after=10 ${remoteSeconds}s bash -lc ${shellQuote(command)}`
@@ -904,10 +1059,9 @@ function runRemote(args: PreviewManagerArguments, command: string, timeoutMs: nu
     ] as const) {
       if (process.env[name] !== undefined) childEnvironment[name] = process.env[name]
     }
-    const child = spawn(args.sshExecutable, [
-      '-F', args.sshConfigPath,
-      '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', args.sshHost, wrapped,
-    ], {
+    const child = spawn(runner.executable, runner.kind === 'ssh'
+      ? ['-F', runner.configPath, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', runner.host, wrapped]
+      : ['--distribution', runner.distribution, '--exec', 'bash', '--noprofile', '--norc', '-c', wrapped], {
       shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], env: childEnvironment,
     })
     let stdout = Buffer.alloc(0)
@@ -937,19 +1091,409 @@ function runRemote(args: PreviewManagerArguments, command: string, timeoutMs: nu
   })
 }
 
+interface EndpointState {
+  readonly key: string
+  readonly localPort: number
+  readonly server: Server
+  readonly sockets: Set<Socket>
+  readonly channels: Set<ChildProcess>
+  unhealthy: boolean
+  serverClose?: Promise<boolean>
+  closing?: Promise<boolean>
+}
+
+function endpointKey(route: PreviewEndpointRoute, runner: PreviewManagerRunnerConfig): string {
+  return digest({ id: route.id, target: route.target, runtime: route.runtime, runner })
+}
+
+function portOpen(port: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = connect({ host: '127.0.0.1', port })
+    let settled = false
+    const finish = (value: boolean): void => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve(value)
+    }
+    socket.setTimeout(Math.max(1, timeoutMs), () => { finish(false) })
+    socket.once('connect', () => { finish(true) })
+    socket.once('error', () => { finish(false) })
+  })
+}
+
+function settleWithin(operation: Promise<boolean>, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (value: boolean): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(value)
+    }
+    const timer = setTimeout(() => { finish(false) }, Math.max(1, timeoutMs))
+    operation.then(finish, () => { finish(false) })
+  })
+}
+
+async function waitForPort(port: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  do {
+    if (await portOpen(port, Math.min(500, Math.max(1, deadline - Date.now())))) return true
+    await new Promise(resolve => setTimeout(resolve, Math.min(100, Math.max(1, deadline - Date.now()))))
+  } while (Date.now() < deadline)
+  return false
+}
+
+function singleRequestTransform(): Transform {
+  let header = Buffer.alloc(0)
+  let forwarded = false
+  return new Transform({
+    transform(chunk: Buffer, _encoding, callback): void {
+      if (forwarded) {
+        callback(null, chunk)
+        return
+      }
+      header = Buffer.concat([header, chunk])
+      const end = header.indexOf('\r\n\r\n')
+      if (end === -1 && header.length > MAX_HTTP_HEADER_BYTES) {
+        callback(new Error('HTTP_HEADER_TOO_LARGE'))
+        return
+      }
+      if (end === -1) {
+        callback()
+        return
+      }
+      if (end + 4 > MAX_HTTP_HEADER_BYTES) {
+        callback(new Error('HTTP_HEADER_TOO_LARGE'))
+        return
+      }
+      const head = header.subarray(0, end).toString('latin1')
+      const closed = /(?:^|\r\n)connection\s*:/iu.test(head)
+        ? head.replace(/(^|\r\n)connection\s*:[^\r\n]*/iu, '$1Connection: close')
+        : `${head}\r\nConnection: close`
+      forwarded = true
+      callback(null, Buffer.concat([Buffer.from(`${closed}\r\n\r\n`, 'latin1'), header.subarray(end + 4)]))
+      header = Buffer.alloc(0)
+    },
+    flush(callback): void {
+      callback(forwarded ? undefined : new Error('INCOMPLETE_HTTP_HEADER'))
+    },
+  })
+}
+
+export class LoopbackEndpointController implements PreviewEndpointController {
+  private readonly states = new Map<number, EndpointState>()
+  private readonly runners: ReadonlyMap<TargetClass, PreviewManagerRunnerConfig>
+
+  constructor(
+    args: PreviewManagerArguments,
+    private readonly spawnEndpoint: PreviewEndpointProcessSpawner = (executable, childArgs) => spawn(
+      executable,
+      [...childArgs],
+      { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] },
+    ),
+  ) {
+    this.runners = new Map(args.runners.map(runner => [runner.target, runner]))
+  }
+
+  private async request(route: PreviewEndpointRoute, path: string, init: RequestInit, timeoutMs: number): Promise<unknown> {
+    const controller = new AbortController()
+    const timer = setTimeout(() => { controller.abort() }, Math.max(1, timeoutMs))
+    timer.unref()
+    try {
+      const response = await fetch(`http://127.0.0.1:${route.runtime.localPort}${path}`, {
+        ...init,
+        signal: controller.signal,
+      })
+      if (!response.ok) throw new Error('endpoint rejected request')
+      return await response.json()
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  private async exactModel(route: PreviewEndpointRoute, timeoutMs: number): Promise<boolean> {
+    try {
+      const payload = record(await this.request(route, '/v1/models', { method: 'GET' }, timeoutMs))
+      return Array.isArray(payload.data)
+        && payload.data.some(entry => record(entry).id === route.runtime.expectedModel)
+    } catch {
+      return false
+    }
+  }
+
+  async ensure(route: PreviewEndpointRoute, timeoutMs: number): Promise<boolean> {
+    const runner = this.runners.get(route.target)
+    if (runner === undefined) return false
+    const key = endpointKey(route, runner)
+    const current = this.states.get(route.runtime.localPort)
+    if (current?.key === key && current.serverClose === undefined && current.closing === undefined && !current.unhealthy
+      && current.server.listening) return this.exactModel(route, timeoutMs)
+    if (current !== undefined && !await this.closeState(current, timeoutMs)) return false
+
+    if (runner.kind === 'wsl' && !await waitForPort(route.runtime.upstreamLocalPort, Math.min(timeoutMs, 12_000))) {
+      return false
+    }
+
+    const sockets = new Set<Socket>()
+    const channels = new Set<ChildProcess>()
+    const server = createServer((client) => {
+      sockets.add(client)
+      client.once('close', () => sockets.delete(client))
+      if (runner.kind === 'ssh') {
+        const channel = this.spawnEndpoint(runner.executable, [
+          '-T', '-F', runner.configPath,
+          '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8',
+          '-W', `127.0.0.1:${route.runtime.remotePort}`,
+          runner.host,
+        ])
+        channels.add(channel)
+        let terminated = false
+        const terminate = (): void => {
+          if (terminated) return
+          terminated = true
+          channel.stdin?.destroy()
+          channel.stdout?.destroy()
+          if (channel.exitCode === null && channel.signalCode === null) channel.kill('SIGKILL')
+          client.destroy()
+        }
+        channel.once('error', terminate)
+        channel.once('close', (code, signal) => {
+          channels.delete(channel)
+          if (code !== 0 || signal !== null) terminate()
+        })
+        if (channel.stdin === null || channel.stdout === null) {
+          channel.kill('SIGKILL')
+          client.destroy()
+          return
+        }
+        channel.stdin.once('error', terminate)
+        channel.stdout.once('error', terminate)
+        client.once('error', terminate)
+        client.once('close', () => {
+          if (channel.exitCode === null && channel.signalCode === null) channel.kill()
+        })
+        const request = singleRequestTransform()
+        request.once('error', terminate)
+        client.pipe(request).pipe(channel.stdin)
+        channel.stdout.pipe(client)
+        return
+      }
+      const upstream = connect({ host: '127.0.0.1', port: route.runtime.upstreamLocalPort })
+      sockets.add(upstream)
+      upstream.once('close', () => sockets.delete(upstream))
+      const terminate = (): void => {
+        upstream.destroy()
+        client.destroy()
+      }
+      client.once('error', terminate)
+      upstream.once('error', terminate)
+      const request = singleRequestTransform()
+      request.once('error', terminate)
+      client.pipe(request).pipe(upstream)
+      upstream.pipe(client)
+    })
+    const listening = await new Promise<boolean>((resolve) => {
+      const onError = (): void => { resolve(false) }
+      server.once('error', onError)
+      server.listen({ host: '127.0.0.1', port: route.runtime.localPort, exclusive: true }, () => {
+        server.off('error', onError)
+        resolve(true)
+      })
+    })
+    if (!listening) {
+      return false
+    }
+    const state: EndpointState = {
+      key,
+      localPort: route.runtime.localPort,
+      server,
+      sockets,
+      channels,
+      unhealthy: false,
+    }
+    server.on('error', () => { state.unhealthy = true })
+    this.states.set(route.runtime.localPort, state)
+    if (await this.exactModel(route, Math.min(timeoutMs, 10_000))) return true
+    await this.closeState(state, timeoutMs)
+    return false
+  }
+
+  async healthy(route: PreviewEndpointRoute, timeoutMs: number): Promise<boolean> {
+    const runner = this.runners.get(route.target)
+    if (runner === undefined) return false
+    const state = this.states.get(route.runtime.localPort)
+    return state?.key === endpointKey(route, runner)
+      && !state.unhealthy
+      && state.closing === undefined
+      && await this.exactModel(route, timeoutMs)
+  }
+
+  async probe(route: PreviewEndpointRoute, timeoutMs: number): Promise<boolean> {
+    if (!await this.healthy(route, timeoutMs)) return false
+    const body = JSON.stringify({
+      model: route.runtime.expectedModel,
+      messages: [{ role: 'user', content: 'Reply with OK.' }],
+      max_tokens: 4,
+      stream: false,
+    })
+    try {
+      const payload = record(await this.request(route, '/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      }, timeoutMs))
+      return Array.isArray(payload.choices) && payload.choices.length > 0
+    } catch {
+      return false
+    }
+  }
+
+  async quiesce(route: PreviewEndpointRoute, timeoutMs: number): Promise<boolean> {
+    const runner = this.runners.get(route.target)
+    if (runner === undefined) return false
+    const state = this.states.get(route.runtime.localPort)
+    if (state === undefined) return !await portOpen(route.runtime.localPort, Math.min(timeoutMs, 1_000))
+    if (state.key !== endpointKey(route, runner)) return false
+    const deadline = Date.now() + timeoutMs
+    if (!await settleWithin(this.beginServerClose(state), timeoutMs)) return false
+    while ((state.sockets.size > 0 || state.channels.size > 0) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 25))
+    }
+    return !state.server.listening && state.sockets.size === 0 && state.channels.size === 0
+  }
+
+  async resume(route: PreviewEndpointRoute, timeoutMs: number): Promise<boolean> {
+    const runner = this.runners.get(route.target)
+    if (runner === undefined) return false
+    const state = this.states.get(route.runtime.localPort)
+    if (state === undefined) return this.ensure(route, timeoutMs)
+    if (state.key !== endpointKey(route, runner) || state.closing !== undefined || state.unhealthy) return false
+    if (state.server.listening) return this.exactModel(route, timeoutMs)
+    if (state.serverClose !== undefined && !await settleWithin(state.serverClose, timeoutMs)) return false
+    delete state.serverClose
+    const listening = await new Promise<boolean>((resolve) => {
+      const onError = (): void => { resolve(false) }
+      state.server.once('error', onError)
+      state.server.listen({ host: '127.0.0.1', port: state.localPort, exclusive: true }, () => {
+        state.server.off('error', onError)
+        resolve(true)
+      })
+    })
+    return listening && await this.exactModel(route, timeoutMs)
+  }
+
+  async close(route: PreviewEndpointRoute, timeoutMs: number): Promise<boolean> {
+    const runner = this.runners.get(route.target)
+    if (runner === undefined) return false
+    const state = this.states.get(route.runtime.localPort)
+    if (state === undefined) return !await portOpen(route.runtime.localPort, Math.min(timeoutMs, 1_000))
+    if (state.key !== endpointKey(route, runner)) return false
+    return this.closeState(state, timeoutMs)
+  }
+
+  async released(route: PreviewEndpointRoute, timeoutMs: number): Promise<boolean> {
+    return !this.states.has(route.runtime.localPort)
+      && !await portOpen(route.runtime.localPort, Math.min(timeoutMs, 1_000))
+  }
+
+  private beginServerClose(state: EndpointState): Promise<boolean> {
+    state.serverClose ??= state.server.listening
+      ? new Promise<boolean>((resolve) => { state.server.close((error) => { resolve(error === undefined) }) })
+      : Promise.resolve(true)
+    return state.serverClose
+  }
+
+  private async closeState(state: EndpointState, timeoutMs: number): Promise<boolean> {
+    if (state.closing !== undefined) return state.closing
+    state.unhealthy = true
+    state.closing = (async () => {
+      const serverClose = this.beginServerClose(state)
+      for (const socket of state.sockets) socket.destroy()
+      for (const channel of state.channels) channel.kill()
+      const closed = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => { resolve(false) }, Math.max(1, timeoutMs))
+        serverClose.then((result) => {
+          clearTimeout(timer)
+          resolve(result)
+        }, () => {
+          clearTimeout(timer)
+          resolve(false)
+        })
+      })
+      const channelDeadline = Date.now() + Math.min(Math.max(1, timeoutMs), 5_000)
+      while (state.channels.size > 0 && Date.now() < channelDeadline) {
+        await new Promise(resolve => setTimeout(resolve, 25))
+      }
+      if (state.channels.size > 0) {
+        for (const channel of state.channels) channel.kill('SIGKILL')
+        const killDeadline = Date.now() + Math.min(Math.max(1, timeoutMs), 1_000)
+        while (state.channels.size > 0 && Date.now() < killDeadline) {
+          await new Promise(resolve => setTimeout(resolve, 25))
+        }
+      }
+      const released = closed && state.channels.size === 0
+        && !await portOpen(state.localPort, Math.min(timeoutMs, 1_000))
+      if (released && this.states.get(state.localPort) === state) this.states.delete(state.localPort)
+      return released
+    })()
+    return state.closing
+  }
+
+  async shutdown(): Promise<void> {
+    let released = true
+    for (const state of [...this.states.values()]) {
+      try {
+        if (!await this.closeState(state, 5_000)) released = false
+      } catch {
+        released = false
+      }
+    }
+    if (!released) throw new ManagerError('REMOTE_FAILURE')
+  }
+}
+
 /** Stateful JSONL operation implementation behind the Server Manager transport. */
 export class PreviewManager {
-  private readonly routeById: ReadonlyMap<string, ManagedRoute>
+  private readonly routeByKey: ReadonlyMap<string, ManagedRoute>
+  private readonly slotByTarget: ReadonlyMap<TargetClass, HostSlotConfig>
   private readonly evictionKeyPath: string
 
   constructor(
     private readonly registry: PreviewManagerRegistry,
     private readonly store: PreviewManagerStateStore,
     args: PreviewManagerArguments,
-    private readonly remote: PreviewManagerRemoteRunner = (command, timeoutMs) => runRemote(args, command, timeoutMs),
+    private readonly remote: PreviewManagerRemoteRunner = (target, command, timeoutMs) =>
+      runRemote(args, target, command, timeoutMs),
+    private readonly endpoints: PreviewEndpointController = new LoopbackEndpointController(args),
   ) {
-    this.routeById = new Map(registry.routes.map(route => [route.id, route]))
+    this.routeByKey = new Map(registry.routes.map(route => [deploymentKey(route.id, route.target), route]))
+    this.slotByTarget = new Map(registry.slots.map(slot => [slot.target, slot]))
+    const runnerTargets = new Set(args.runners.map(runner => runner.target))
+    if (registry.targets.some(target => !runnerTargets.has(target.class))) throw new ManagerError('INVALID_REQUEST')
     this.evictionKeyPath = `${args.statePath}.eviction-key`
+  }
+
+  /** Close process-local channels and loopback bridges without mutating resident models. */
+  shutdown(): Promise<void> {
+    return this.endpoints.shutdown()
+  }
+
+  private route(routeId: string, target: TargetClass): ManagedRoute | undefined {
+    return this.routeByKey.get(deploymentKey(routeId, target))
+  }
+
+  private slot(target: TargetClass): HostSlotConfig {
+    const slot = this.slotByTarget.get(target)
+    if (slot === undefined) throw new ManagerError('INVALID_REQUEST')
+    return slot
+  }
+
+  private logicalRouteId(key: string): string {
+    const route = this.routeByKey.get(key)
+    if (route === undefined) throw new ManagerError('STATE_CONFLICT')
+    return route.id
   }
 
   private async verifyEvictionConsent(consent: EvictionConsent): Promise<void> {
@@ -963,6 +1507,26 @@ export class PreviewManager {
     const { signature, ...fields } = consent
     const expected = createHmac('sha256', key).update(canonicalJson(fields), 'utf8').digest()
     if (!timingSafeEqual(expected, Buffer.from(signature, 'hex'))) throw new ManagerError('STATE_CONFLICT')
+  }
+
+  private requestedTargets(envelope: Record<string, unknown>, ttlMs: number): readonly TargetDescriptor[] {
+    if (!Array.isArray(envelope.targets) || envelope.targets.length === 0) {
+      throw new ManagerError('INVALID_REQUEST')
+    }
+    const requested = sortedTargets(envelope.targets.map((candidate) => {
+      const target = record(candidate)
+      return {
+        class: targetClass(target.class),
+        identity_digest: stringField(target.identity_digest, BARE_DIGEST),
+        currentness_digest: stringField(target.currentness_digest, BARE_DIGEST),
+      }
+    }))
+    const admitted = sortedTargets(this.registry.targets
+      .filter(target => requested.some(entry => entry.class === target.class)))
+    if (canonicalJson(requested) !== canonicalJson(admitted) || this.registry.renewAfterMs >= ttlMs) {
+      throw new ManagerError('LEASE_MISMATCH')
+    }
+    return requested
   }
 
   async invoke(operation: string, envelopeValue: unknown): Promise<Readonly<Record<string, unknown>>> {
@@ -984,6 +1548,7 @@ export class PreviewManager {
     if (replay !== undefined) return replay
     try {
       if (operation === 'acquire') return await this.acquire(envelope, key)
+      if (operation === 'expand') return await this.expand(envelope, key)
       if (operation === 'renew') return await this.renew(envelope, key)
       if (operation === 'release') return await this.release(envelope, key)
       if (operation === 'begin') return await this.begin(envelope, key)
@@ -1004,19 +1569,7 @@ export class PreviewManager {
 
   private async acquire(envelope: Record<string, unknown>, key: string): Promise<Readonly<Record<string, unknown>>> {
     const ttlMs = integerField(envelope.ttl_ms, 2)
-    if (!Array.isArray(envelope.targets) || envelope.targets.length === 0) throw new ManagerError('INVALID_REQUEST')
-    const requested = sortedTargets(envelope.targets.map((candidate) => {
-      const target = record(candidate)
-      return {
-        class: targetClass(target.class),
-        identity_digest: stringField(target.identity_digest, BARE_DIGEST),
-        currentness_digest: stringField(target.currentness_digest, BARE_DIGEST),
-      }
-    }))
-    const admitted = sortedTargets(this.registry.targets.filter(target => requested.some(entry => entry.class === target.class)))
-    if (canonicalJson(requested) !== canonicalJson(admitted) || this.registry.renewAfterMs >= ttlMs) {
-      throw new ManagerError('LEASE_MISMATCH')
-    }
+    const requested = this.requestedTargets(envelope, ttlMs)
     return this.store.run(async (state) => {
       const unresolved = Object.values(state.transactions).some(transaction =>
         !transaction.terminal || transaction.inFlight !== undefined)
@@ -1024,18 +1577,91 @@ export class PreviewManager {
         throw new ManagerError('BUSY')
       }
       const leaseId = randomBytes(32).toString('hex')
-      const hostLease = await this.acquireHostLease(leaseId, ttlMs)
+      const fence = state.nextFence
+      state.nextFence += 1
+      const hostLeases: Partial<Record<TargetClass, HostLeaseState>> = {}
+      try {
+        for (const descriptor of requested) {
+          hostLeases[descriptor.class] = await this.acquireHostLease(descriptor.class, leaseId, ttlMs)
+        }
+      } catch (error: unknown) {
+        const released = await this.releaseHostLeases(leaseId, hostLeases)
+        if (!released) {
+          const captured = requested.filter(descriptor => hostLeases[descriptor.class] !== undefined)
+          state.generation += 1
+          state.lease = {
+            leaseId, fence, generation: state.generation,
+            targets: captured.map(target => target.class), targetDescriptors: captured,
+            hostLeases,
+            expiresAt: Math.min(...Object.values(hostLeases).map(hostLease => hostLease.expiresAt)),
+            renewAfterMs: this.registry.renewAfterMs, quarantined: true,
+          }
+          await this.store.persist()
+          throw new ManagerError('UNKNOWN_COMMIT')
+        }
+        throw error
+      }
       state.transactions = {}
       state.generation += 1
-      state.nextFence = Math.max(state.nextFence, hostLease.fence + 1)
       const lease: LeaseState = {
-        leaseId, fence: hostLease.fence, generation: state.generation,
+        leaseId, fence, generation: state.generation,
         targets: requested.map(target => target.class), targetDescriptors: requested,
-        expiresAt: hostLease.expiresAt, renewAfterMs: this.registry.renewAfterMs, quarantined: false,
+        hostLeases,
+        expiresAt: Math.min(...Object.values(hostLeases).map(hostLease => hostLease.expiresAt)),
+        renewAfterMs: this.registry.renewAfterMs, quarantined: false,
       }
       state.lease = lease
       const result = this.leaseReceipt(lease, 'ACQUIRED')
       this.remember(state, 'acquire', key, result)
+      await this.store.persist()
+      return result
+    })
+  }
+
+  private async expand(envelope: Record<string, unknown>, key: string): Promise<Readonly<Record<string, unknown>>> {
+    const ttlMs = integerField(envelope.ttl_ms, 2)
+    const requested = this.requestedTargets(envelope, ttlMs)
+    return this.store.run(async (state) => {
+      const lease = this.boundLease(state, envelope)
+      if (!lease.targets.every(target => requested.some(descriptor => descriptor.class === target))) {
+        throw new ManagerError('LEASE_MISMATCH')
+      }
+      const additions = requested.filter(descriptor => !lease.targets.includes(descriptor.class))
+      if (additions.length === 0) throw new ManagerError('INVALID_REQUEST')
+      const acquired: Partial<Record<TargetClass, HostLeaseState>> = {}
+      try {
+        for (const descriptor of additions) {
+          acquired[descriptor.class] = await this.acquireHostLease(descriptor.class, lease.leaseId, ttlMs)
+        }
+      } catch (error: unknown) {
+        if (!await this.releaseHostLeases(lease.leaseId, acquired)) {
+          lease.quarantined = true
+          await this.store.persist()
+          throw new ManagerError('UNKNOWN_COMMIT')
+        }
+        throw error
+      }
+      try {
+        for (const target of lease.targets) {
+          const hostLease = lease.hostLeases[target]
+          if (hostLease === undefined) throw new ManagerError('LEASE_MISMATCH')
+          hostLease.expiresAt = await this.renewHostLease(target, lease.leaseId, hostLease, ttlMs)
+        }
+      } catch {
+        Object.assign(lease.hostLeases, acquired)
+        lease.targets = requested.map(target => target.class)
+        lease.targetDescriptors = requested
+        lease.expiresAt = Math.min(...Object.values(lease.hostLeases).map(hostLease => hostLease.expiresAt))
+        lease.quarantined = true
+        await this.store.persist()
+        throw new ManagerError('UNKNOWN_COMMIT')
+      }
+      Object.assign(lease.hostLeases, acquired)
+      lease.targets = requested.map(target => target.class)
+      lease.targetDescriptors = requested
+      lease.expiresAt = Math.min(...Object.values(lease.hostLeases).map(hostLease => hostLease.expiresAt))
+      const result = this.leaseReceipt(lease, 'EXPANDED')
+      this.remember(state, 'expand', key, result)
       await this.store.persist()
       return result
     })
@@ -1046,7 +1672,18 @@ export class PreviewManager {
     return this.store.run(async (state) => {
       const lease = this.boundLease(state, envelope)
       if (lease.quarantined || this.registry.renewAfterMs >= ttlMs) throw new ManagerError('LEASE_MISMATCH')
-      lease.expiresAt = await this.renewHostLease(lease, ttlMs)
+      try {
+        for (const target of lease.targets) {
+          const hostLease = lease.hostLeases[target]
+          if (hostLease === undefined) throw new ManagerError('LEASE_MISMATCH')
+          hostLease.expiresAt = await this.renewHostLease(target, lease.leaseId, hostLease, ttlMs)
+        }
+      } catch {
+        lease.quarantined = true
+        await this.store.persist()
+        throw new ManagerError('UNKNOWN_COMMIT')
+      }
+      lease.expiresAt = Math.min(...Object.values(lease.hostLeases).map(hostLease => hostLease.expiresAt))
       const result = this.leaseReceipt(lease, 'RENEWED')
       this.remember(state, 'renew', key, result)
       await this.store.persist()
@@ -1060,7 +1697,7 @@ export class PreviewManager {
       const lease = this.boundLease(state, envelope, false)
       const unsettled = Object.values(state.transactions).some(transaction => !transaction.terminal || transaction.inFlight !== undefined)
       const requestedSettlement = envelope.outcome === 'SETTLED' && !unsettled && !lease.quarantined
-      const settled = requestedSettlement && await this.releaseHostLease(lease)
+      const settled = requestedSettlement && await this.releaseHostLeases(lease.leaseId, lease.hostLeases)
       const result = this.leaseReceipt(lease, settled ? 'RELEASED' : 'QUARANTINED')
       if (settled) {
         delete state.lease
@@ -1118,14 +1755,16 @@ export class PreviewManager {
   private async settleActivation(envelope: Record<string, unknown>, key: string): Promise<Readonly<Record<string, unknown>>> {
     const disposition = stringField(envelope.disposition)
     if (disposition !== 'COMMIT' && disposition !== 'COMPENSATE') throw new ManagerError('INVALID_REQUEST')
+    const target = targetClass(record(envelope.target).class)
+    const requestedRoute = this.route(stringField(envelope.route_id, SAFE_TOKEN), target)
     return this.store.run(async (state) => {
       const lease = this.boundLease(state, envelope)
       const transaction = this.transaction(state, envelope)
-      const destination = this.routeById.get(transaction.destinationRouteId ?? '')
+      const destination = this.routeByKey.get(transaction.destinationRouteId ?? '')
       if (transaction.kind !== 'MODEL_ROUTE' || transaction.terminal || transaction.inFlight !== undefined
         || transaction.sequence !== integerField(envelope.expected_sequence, 1)
         || transaction.scopeDigest !== stringField(envelope.scope_digest, BARE_DIGEST)
-        || destination === undefined || destination.id !== envelope.route_id
+        || destination === undefined || destination !== requestedRoute
         || destination.revisionDigest !== envelope.exact_revision_digest
         || canonicalJson(envelope.target) !== canonicalJson(lease.targetDescriptors.find(target => target.class === destination.target))) {
         throw new ManagerError('STATE_CONFLICT')
@@ -1142,14 +1781,15 @@ export class PreviewManager {
           // Read-only adoption failed publication; it never authorizes stopping the resident.
           transaction.settlement = 'ACTIVE'
         } else {
-          const destinationNeedsStop = transaction.startedRouteId === destination.id
-            || (transaction.recovery && transaction.allowedRoutes.stop?.includes(destination.id) === true)
+          const destinationKey = deploymentKey(destination.id, destination.target)
+          const destinationNeedsStop = transaction.startedRouteId === destinationKey
+            || (transaction.recovery && transaction.allowedRoutes.stop?.includes(destinationKey) === true)
           const sourceCanRestart = transaction.sourceRouteId !== undefined
-            && transaction.sourceRouteId !== destination.id
+            && transaction.sourceRouteId !== destinationKey
             && transaction.lastStoppedRouteId === transaction.sourceRouteId
-            && transaction.allowedRoutes.start?.includes(destination.id) === true
+            && transaction.allowedRoutes.start?.includes(destinationKey) === true
           if (!destinationNeedsStop && !sourceCanRestart) throw new ManagerError('STATE_CONFLICT')
-          const restoration = destinationNeedsStop ? { stop: [destination.id] }
+          const restoration = destinationNeedsStop ? { stop: [destinationKey] }
             : transaction.sourceRouteId === undefined ? undefined : { start: [transaction.sourceRouteId] }
           if (restoration === undefined) throw new ManagerError('STATE_CONFLICT')
           transaction.recovery = true
@@ -1176,12 +1816,17 @@ export class PreviewManager {
     const target = record(envelope.target)
     const targetName = targetClass(target.class)
     const timeoutMs = integerField(envelope.timeout_ms, 1, 2_147_483_647)
-    const route = this.routeById.get(routeId)
-    if (route === undefined || route.revisionDigest !== revision || route.target !== targetName) throw new ManagerError('INVALID_REQUEST')
+    const deadlineAt = integerField(envelope.deadline_at, 1)
+    const budget = new StageBudget(timeoutMs, deadlineAt)
+    const route = this.route(routeId, targetName)
+    if (route === undefined || route.revisionDigest !== revision) throw new ManagerError('INVALID_REQUEST')
+    const routeKey = deploymentKey(route.id, route.target)
     const transactionDigest = stringField(envelope.transaction_digest, BARE_DIGEST)
     let hostLease: Pick<LeaseState, 'leaseId' | 'fence'> | undefined
     let consentExpiresAt: number | undefined
+    let allowOwnedUnhealthyCleanup = false
     await this.store.run(async (state) => {
+      budget.remaining()
       const lease = this.boundLease(state, envelope)
       const covered = lease.targetDescriptors.find(descriptor => descriptor.class === targetName)
       if (covered === undefined || canonicalJson(target) !== canonicalJson(covered)) throw new ManagerError('LEASE_MISMATCH')
@@ -1193,11 +1838,15 @@ export class PreviewManager {
       if (stage === 'stop') {
         if (transaction.kind !== 'MODEL_ROUTE') throw new ManagerError('STATE_CONFLICT')
         if (transaction.recovery && transaction.settlement !== 'COMPENSATING') throw new ManagerError('STATE_CONFLICT')
-        const evictsExisting = transaction.sourceRouteId === route.id
-          && transaction.destinationRouteId !== route.id && !transaction.recovery
+        allowOwnedUnhealthyCleanup = transaction.recovery
+          && transaction.settlement === 'COMPENSATING'
+          && transaction.startedRouteId === routeKey
+          && transaction.sourceRouteId !== routeKey
+        const evictsExisting = transaction.sourceRouteId === routeKey
+          && transaction.destinationRouteId !== routeKey && !transaction.recovery
         if (evictsExisting) {
           const consent = parseEvictionConsent(envelope.eviction_consent)
-          const destination = this.routeById.get(transaction.destinationRouteId ?? '')
+          const destination = this.routeByKey.get(transaction.destinationRouteId ?? '')
           if (destination === undefined || consent.expires_at <= Date.now()
             || consent.expires_at > lease.expiresAt
             || consent.id in state.consumedEvictions
@@ -1221,7 +1870,9 @@ export class PreviewManager {
           throw new ManagerError('INVALID_REQUEST')
         }
       } else if (envelope.eviction_consent !== undefined) throw new ManagerError('INVALID_REQUEST')
-      hostLease = { leaseId: lease.leaseId, fence: lease.fence }
+      const targetLease = lease.hostLeases[targetName]
+      if (targetLease === undefined) throw new ManagerError('LEASE_MISMATCH')
+      hostLease = { leaseId: lease.leaseId, fence: targetLease.fence }
       if (stage !== 'preflight' && stage !== 'prestate') transaction.cleanCancelable = false
       transaction.inFlight = stage
       await this.store.persist()
@@ -1230,7 +1881,21 @@ export class PreviewManager {
     let outcome: { status: 'PASS' | 'FAIL' | 'QUARANTINED'; decision: string; evidence: unknown }
     try {
       if (hostLease === undefined) throw new ManagerError('STATE_CONFLICT')
-      outcome = await this.executeStage(stage, route, timeoutMs, hostLease, consentExpiresAt)
+      const markStartedMutation = async (): Promise<void> => {
+        await this.store.run(async (state) => {
+          const lease = this.boundLease(state, envelope, false)
+          const transaction = state.transactions[transactionDigest]
+          if (transaction === undefined || transaction.inFlight !== 'start') throw new ManagerError('UNKNOWN_COMMIT')
+          transaction.started = true
+          transaction.startedRouteId = routeKey
+          if (lease.expiresAt <= Date.now() || lease.quarantined) lease.quarantined = true
+          await this.store.persist()
+          if (lease.quarantined) throw new ManagerError('UNKNOWN_COMMIT')
+        })
+      }
+      outcome = await this.executeStage(
+        stage, route, budget, hostLease, consentExpiresAt, allowOwnedUnhealthyCleanup, markStartedMutation,
+      )
     }
     catch (error: unknown) {
       outcome = {
@@ -1257,9 +1922,9 @@ export class PreviewManager {
       const result = this.stageReceipt(lease, transaction, route, stage, outcome)
       if (stage === 'prestate' && outcome.status === 'PASS') {
         const receiptDigest = stringField(result.receiptDigest, SHA256_DIGEST).slice(7)
-        if (route.id === transaction.destinationRouteId && transaction.destinationPrestateCaptured) {
+        if (routeKey === transaction.destinationRouteId && transaction.destinationPrestateCaptured) {
           transaction.destinationPrestateDigest = receiptDigest
-        } else if (route.id === transaction.sourceRouteId) {
+        } else if (routeKey === transaction.sourceRouteId) {
           transaction.sourcePrestateDigest = receiptDigest
         }
       }
@@ -1273,12 +1938,20 @@ export class PreviewManager {
   private async executeStage(
     stage: Stage,
     route: ManagedRoute,
-    timeoutMs: number,
+    budget: StageBudget,
     lease: Pick<LeaseState, 'leaseId' | 'fence'>,
     consentExpiresAt?: number,
+    allowOwnedUnhealthyCleanup = false,
+    markStartedMutation?: () => Promise<void>,
   ): Promise<{ status: 'PASS' | 'FAIL' | 'QUARANTINED'; decision: string; evidence: unknown }> {
-    const budget = new StageBudget(timeoutMs)
-    await this.assertHostLease(lease, budget)
+    const restoreAdmission = async (): Promise<boolean> => {
+      try {
+        return await this.endpoints.resume(route, ENDPOINT_RECOVERY_TIMEOUT_MS)
+      } catch {
+        return false
+      }
+    }
+    await this.assertHostLease(route.target, lease, budget)
     if (stage === 'preflight') {
       const available = await this.capacity(route, budget)
       return { status: 'PASS', decision: available ? 'AVAILABLE' : 'UNAVAILABLE', evidence: { available } }
@@ -1306,15 +1979,82 @@ export class PreviewManager {
         return { status: 'FAIL', decision: 'FAILED', evidence: before }
       }
       if (before.kind === 'resident') {
+        let quiesced = false
+        try {
+          quiesced = await this.endpoints.quiesce(route, budget.remaining(15_000))
+        } catch {}
+        if (!quiesced) {
+          const restored = await restoreAdmission()
+          return {
+            status: restored ? 'FAIL' : 'QUARANTINED', decision: restored ? 'SOURCE_RESTORED' : 'FAILED',
+            evidence: { admissionDrained: false, admissionRestored: restored, mutationApplied: false },
+          }
+        }
+        let finalDrain: Awaited<ReturnType<PreviewManager['waitDrained']>>
+        try {
+          finalDrain = await this.waitDrained(route, budget)
+        } catch {
+          const restored = await restoreAdmission()
+          return {
+            status: restored ? 'FAIL' : 'QUARANTINED', decision: restored ? 'SOURCE_RESTORED' : 'FAILED',
+            evidence: { admissionDrained: true, admissionRestored: restored, mutationApplied: false },
+          }
+        }
+        if (!finalDrain.drained && !allowOwnedUnhealthyCleanup) {
+          const restored = await restoreAdmission()
+          return {
+            status: restored ? 'FAIL' : 'QUARANTINED', decision: restored ? 'SOURCE_RESTORED' : 'FAILED',
+            evidence: { admissionDrained: true, admissionRestored: restored, mutationApplied: false, finalDrain },
+          }
+        }
         if (consentExpiresAt !== undefined && consentExpiresAt <= Date.now()) {
-          throw new ManagerError('STATE_CONFLICT')
+          const restored = await restoreAdmission()
+          return {
+            status: restored ? 'FAIL' : 'QUARANTINED', decision: restored ? 'SOURCE_RESTORED' : 'FAILED',
+            evidence: { admissionDrained: true, admissionRestored: restored, mutationApplied: false, consentExpired: true },
+          }
+        }
+        if (budget.available() < 1) {
+          const restored = await restoreAdmission()
+          return {
+            status: restored ? 'FAIL' : 'QUARANTINED', decision: restored ? 'SOURCE_RESTORED' : 'FAILED',
+            evidence: { admissionDrained: true, admissionRestored: restored, mutationApplied: false, budgetReserved: false },
+          }
+        }
+      }
+      let endpointClosed = false
+      try {
+        endpointClosed = await this.endpoints.close(route, budget.remaining(15_000))
+      } catch {}
+      if (!endpointClosed) {
+        const restored = before.kind === 'resident' && await restoreAdmission()
+        return {
+          status: restored ? 'FAIL' : 'QUARANTINED', decision: restored ? 'SOURCE_RESTORED' : 'FAILED',
+          evidence: { endpointReleased: false, admissionRestored: restored, mutationApplied: false },
+        }
+      }
+      if (before.kind === 'resident') {
+        if (consentExpiresAt !== undefined && consentExpiresAt <= Date.now()) {
+          const restored = await restoreAdmission()
+          return {
+            status: restored ? 'FAIL' : 'QUARANTINED', decision: restored ? 'SOURCE_RESTORED' : 'FAILED',
+            evidence: { endpointReleased: true, admissionRestored: restored, mutationApplied: false, consentExpired: true },
+          }
         }
         const command = route.runtime.kind === 'docker'
           ? dockerMutationCommand(route.runtime, 'stop')
           : route.runtime.kind === 'systemd'
             ? systemdMutationCommand(route.runtime, 'stop')
             : scriptMutationCommand(route.runtime, 'stop')
-        const stopped = await this.runFencedMutation(lease, command, budget)
+        const mutationTimeoutMs = budget.available()
+        if (mutationTimeoutMs < 1) {
+          const restored = await restoreAdmission()
+          return {
+            status: restored ? 'FAIL' : 'QUARANTINED', decision: restored ? 'SOURCE_RESTORED' : 'FAILED',
+            evidence: { endpointReleased: true, admissionRestored: restored, mutationApplied: false, mutationDispatched: false },
+          }
+        }
+        const stopped = await this.runFencedMutation(route.target, lease, command, mutationTimeoutMs)
         if (stopped.code !== 0) throw new ManagerError('UNKNOWN_COMMIT')
         if (route.runtime.kind === 'systemd' && !/(?:^|\n)GCP_SYSTEMD_MUTATION_APPLIED\s*$/u.test(stopped.stdout)) {
           throw new ManagerError('UNKNOWN_COMMIT')
@@ -1330,10 +2070,11 @@ export class PreviewManager {
     }
     if (stage === 'verify-stopped') {
       const release = await this.waitReleased(route, budget)
+      const endpointReleased = await this.endpoints.released(route, budget.remaining(5_000))
       return {
-        status: release.released ? 'PASS' : 'QUARANTINED',
-        decision: release.released ? 'VERIFIED_STOPPED' : 'FAILED',
-        evidence: { samples: release.samples },
+        status: release.released && endpointReleased ? 'PASS' : 'QUARANTINED',
+        decision: release.released && endpointReleased ? 'VERIFIED_STOPPED' : 'FAILED',
+        evidence: { samples: release.samples, endpointReleased },
       }
     }
     if (stage === 'start') {
@@ -1350,7 +2091,7 @@ export class PreviewManager {
           : route.runtime.kind === 'systemd'
             ? systemdMutationCommand(route.runtime, 'start')
             : scriptMutationCommand(route.runtime, 'start')
-        const started = await this.runFencedMutation(lease, command, budget)
+        const started = await this.runFencedMutation(route.target, lease, command, budget.remaining())
         if (started.code !== 0) throw new ManagerError('UNKNOWN_COMMIT')
         if (route.runtime.kind === 'systemd' && !/(?:^|\n)GCP_SYSTEMD_MUTATION_APPLIED\s*$/u.test(started.stdout)) {
           throw new ManagerError('UNKNOWN_COMMIT')
@@ -1361,20 +2102,31 @@ export class PreviewManager {
         if (route.runtime.kind === 'script' && !/(?:^|\n)GCP_SCRIPT_MUTATION_APPLIED\s*$/u.test(started.stdout)) {
           throw new ManagerError('UNKNOWN_COMMIT')
         }
+        await markStartedMutation?.()
         if (!await this.waitHealthy(route, budget)) return { status: 'FAIL', decision: 'FAILED', evidence: { ready: false } }
+      }
+      if (!await this.endpoints.ensure(route, budget.remaining(30_000))) {
+        return { status: 'FAIL', decision: 'FAILED', evidence: { endpointReady: false } }
       }
       return { status: 'PASS', decision: 'STARTED', evidence: { previous: before.kind } }
     }
     if (stage === 'health') {
       const healthy = await this.routeHealthy(route, budget)
+        && await this.endpoints.ensure(route, budget.remaining(30_000))
+        && await this.endpoints.healthy(route, budget.remaining(15_000))
       return { status: healthy ? 'PASS' : 'FAIL', decision: healthy ? 'HEALTHY' : 'UNHEALTHY', evidence: { healthy } }
     }
     const healthy = await this.routeProbe(route, budget)
+      && await this.endpoints.probe(route, budget.remaining(120_000))
     return { status: healthy ? 'PASS' : 'FAIL', decision: healthy ? 'HEALTHY' : 'UNHEALTHY', evidence: { healthy } }
   }
 
-  private async acquireHostLease(leaseId: string, ttlMs: number): Promise<{ readonly fence: number; readonly expiresAt: number }> {
-    const slot = this.registry.slot
+  private async acquireHostLease(
+    target: TargetClass,
+    leaseId: string,
+    ttlMs: number,
+  ): Promise<HostLeaseState> {
+    const slot = this.slot(target)
     const command = [
       'set -euo pipefail',
       `state_lock=${shellQuote(slot.lockPath)}`,
@@ -1400,22 +2152,27 @@ export class PreviewManager {
       'printf \'%s %s %s\\n\' "$next" "$requested_lease" "$expires" > "$tmp_state"; mv -f "$tmp_state" "$state_file"',
       'printf \'ACQUIRED %s %s %s\\n\' "$next" "$expires" "$recovered"',
     ].join('; ')
-    const result = await this.remote(command, 15_000)
-    if (result.code === 75) throw new ManagerError('BUSY')
+    const result = await this.remote(target, command, 15_000)
+    if (result.code === 75) throw new ManagerError('TARGET_UNAVAILABLE')
     if (result.code !== 0) throw new ManagerError('REMOTE_FAILURE')
     const match = /^ACQUIRED (\d+) (\d+) [01]\s*$/u.exec(result.stdout)
     if (match === null) throw new ManagerError('REMOTE_FAILURE')
     return { fence: integerField(Number(match[1]), 1), expiresAt: integerField(Number(match[2]), 1) }
   }
 
-  private async renewHostLease(lease: LeaseState, ttlMs: number): Promise<number> {
-    const slot = this.registry.slot
+  private async renewHostLease(
+    target: TargetClass,
+    leaseId: string,
+    hostLease: HostLeaseState,
+    ttlMs: number,
+  ): Promise<number> {
+    const slot = this.slot(target)
     const command = [
       'set -euo pipefail',
       `state_lock=${shellQuote(slot.lockPath)}`,
       `state_file=${shellQuote(slot.statePath)}`,
-      `expected_lease=${shellQuote(lease.leaseId)}`,
-      `expected_fence=${lease.fence}`,
+      `expected_lease=${shellQuote(leaseId)}`,
+      `expected_fence=${hostLease.fence}`,
       `ttl_ms=${ttlMs}`,
       'exec 9>"$state_lock"; flock -w 5 9 || exit 75',
       'read -r current_fence current_lease current_expires extra < "$state_file" || exit 76',
@@ -1427,22 +2184,26 @@ export class PreviewManager {
       'printf \'%s %s %s\\n\' "$current_fence" "$current_lease" "$expires" > "$tmp_state"; mv -f "$tmp_state" "$state_file"',
       'printf \'RENEWED %s\\n\' "$expires"',
     ].join('; ')
-    const result = await this.remote(command, 15_000)
+    const result = await this.remote(target, command, 15_000)
     if (result.code !== 0) throw new ManagerError('LEASE_MISMATCH')
     const match = /^RENEWED (\d+)\s*$/u.exec(result.stdout)
     if (match === null) throw new ManagerError('LEASE_MISMATCH')
     return integerField(Number(match[1]), 1)
   }
 
-  private async releaseHostLease(lease: LeaseState): Promise<boolean> {
-    const slot = this.registry.slot
+  private async releaseHostLease(
+    target: TargetClass,
+    leaseId: string,
+    hostLease: HostLeaseState,
+  ): Promise<boolean> {
+    const slot = this.slot(target)
     const command = [
       'set -euo pipefail',
       `state_lock=${shellQuote(slot.lockPath)}`,
       `operation_lock=${shellQuote(slot.operationLockPath)}`,
       `state_file=${shellQuote(slot.statePath)}`,
-      `expected_lease=${shellQuote(lease.leaseId)}`,
-      `expected_fence=${lease.fence}`,
+      `expected_lease=${shellQuote(leaseId)}`,
+      `expected_fence=${hostLease.fence}`,
       'exec 8>"$operation_lock"; flock -n 8 || exit 75',
       'exec 9>"$state_lock"; flock -w 5 9 || exit 75',
       'read -r current_fence current_lease current_expires extra < "$state_file" || exit 76',
@@ -1451,12 +2212,34 @@ export class PreviewManager {
       'rm -f "$state_file"',
       "printf 'RELEASED\\n'",
     ].join('; ')
-    const result = await this.remote(command, 15_000)
+    const result = await this.remote(target, command, 15_000)
     return result.code === 0 && /^RELEASED\s*$/u.test(result.stdout)
   }
 
-  private async assertHostLease(lease: Pick<LeaseState, 'leaseId' | 'fence'>, budget: StageBudget): Promise<void> {
-    const slot = this.registry.slot
+  private async releaseHostLeases(
+    leaseId: string,
+    hostLeases: Partial<Record<TargetClass, HostLeaseState>>,
+  ): Promise<boolean> {
+    let settled = true
+    const targets = TARGETS.filter(target => hostLeases[target] !== undefined).reverse()
+    for (const target of targets) {
+      const hostLease = hostLeases[target]
+      if (hostLease === undefined) continue
+      try {
+        if (!await this.releaseHostLease(target, leaseId, hostLease)) settled = false
+      } catch {
+        settled = false
+      }
+    }
+    return settled
+  }
+
+  private async assertHostLease(
+    target: TargetClass,
+    lease: Pick<LeaseState, 'leaseId' | 'fence'>,
+    budget: StageBudget,
+  ): Promise<void> {
+    const slot = this.slot(target)
     const command = [
       'set -euo pipefail',
       `state_lock=${shellQuote(slot.lockPath)}`,
@@ -1470,16 +2253,17 @@ export class PreviewManager {
       'now=$(date +%s%3N); [ "$current_expires" -gt "$now" ] || exit 76',
       "printf 'CURRENT\\n'",
     ].join('; ')
-    const result = await this.remote(command, budget.remaining(15_000))
+    const result = await this.remote(target, command, budget.remaining(15_000))
     if (result.code !== 0 || !/^CURRENT\s*$/u.test(result.stdout)) throw new ManagerError('UNKNOWN_COMMIT')
   }
 
   private async runFencedMutation(
+    target: TargetClass,
     lease: Pick<LeaseState, 'leaseId' | 'fence'>,
     command: string,
-    budget: StageBudget,
+    timeoutMs: number,
   ): Promise<PreviewManagerRemoteResult> {
-    const slot = this.registry.slot
+    const slot = this.slot(target)
     const fenced = [
       'set -euo pipefail',
       `state_lock=${shellQuote(slot.lockPath)}`,
@@ -1502,16 +2286,16 @@ export class PreviewManager {
       '[ "$current_fence" = "$expected_fence" ] && [ "$current_lease" = "$expected_lease" ] || exit 76',
       'now=$(date +%s%3N); [ "$current_expires" -gt "$now" ] || exit 76',
     ].join('; ')
-    return this.remote(fenced, budget.remaining())
+    return this.remote(target, fenced, timeoutMs)
   }
 
   private async capacity(route: ManagedRoute, budget: StageBudget): Promise<boolean> {
-    if (route.target !== 'r5300') return false
     const resident = await this.residency(route.target, budget)
     if (resident.kind === 'unknown') return false
     if (resident.kind === 'resident' && resident.route.id === route.id) return true
     const current = resident.kind === 'resident' ? resident : undefined
     const telemetry = await this.remote(
+      route.target,
       "awk '/MemAvailable:/{print \"MEM \" $2}' /proc/meminfo; printf 'GPUS\\n'; "
         + "nvidia-smi --query-gpu=index,uuid,gpu_recovery_action,memory.free --format=csv,noheader,nounits; printf 'APPS\\n'; "
         + 'nvidia-smi --query-compute-apps=pid,gpu_uuid,used_gpu_memory --format=csv,noheader,nounits',
@@ -1559,7 +2343,7 @@ export class PreviewManager {
       applications.push({ pid, gpuIndex, usedMiB })
     }
 
-    const processResult = await this.remote('ps -eo pid=,pgid=,rss=', budget.remaining())
+    const processResult = await this.remote(route.target, 'ps -eo pid=,pgid=,rss=', budget.remaining())
     if (processResult.code !== 0) return false
     const processes = new Map<number, { readonly group: number; readonly rssKiB: number }>()
     for (const line of processResult.stdout.trim().split(/\r?\n/u)) {
@@ -1622,6 +2406,7 @@ export class PreviewManager {
   private async processPresence(route: ManagedRoute, budget: StageBudget): Promise<ProcessPresence> {
     if (route.runtime.kind === 'docker') {
       const result = await this.remote(
+        route.target,
         `docker inspect --format '{{.Id}} {{.Image}} {{.Name}} {{json .State}}' ${shellQuote(route.runtime.container ?? '')}`,
         budget.remaining(10_000),
       )
@@ -1638,14 +2423,14 @@ export class PreviewManager {
         if (state.Running === false && state.Restarting === false && state.Paused === false) return { kind: 'stopped' }
         if (state.Running !== true || state.Restarting === true || state.Paused === true) return { kind: 'unknown' }
         const pid = integerField(state.Pid, 1)
-        const group = await this.remote(`ps -o pgid= -p ${pid}`, budget.remaining(10_000))
+        const group = await this.remote(route.target, `ps -o pgid= -p ${pid}`, budget.remaining(10_000))
         if (group.code !== 0 || !/^\s*\d+\s*$/u.test(group.stdout)) return { kind: 'unknown' }
         return { kind: 'running', processGroups: [Number(group.stdout.trim())] }
       } catch { return { kind: 'unknown' } }
     }
 
     if (route.runtime.kind === 'systemd') {
-      const result = await this.remote(systemdPresenceCommand(route.runtime), budget.remaining(15_000))
+      const result = await this.remote(route.target, systemdPresenceCommand(route.runtime), budget.remaining(15_000))
       if (result.code !== 0) return { kind: 'unknown' }
       if (/^SYSTEMD STOPPED\s*$/u.test(result.stdout)) return { kind: 'stopped' }
       const running = /^SYSTEMD RUNNING ((?:[1-9][0-9]*)(?: [1-9][0-9]*)*)\s*$/u.exec(result.stdout)
@@ -1661,8 +2446,8 @@ export class PreviewManager {
     const pidFile = shellQuote(route.runtime.pidFile ?? '')
     const marker = shellQuote(route.runtime.processMarker ?? '')
     const command = `pid_file=${pidFile}; marker=${marker}; `
-      + "if [ ! -e \"$pid_file\" ]; then printf 'PIDFILE MISSING\\n'; elif [ ! -r \"$pid_file\" ]; then printf 'PIDFILE UNREADABLE\\n'; else read -r tracked < \"$pid_file\" || tracked=; case \"$tracked\" in ''|*[!0-9]*) printf 'PIDFILE INVALID\\n' ;; *) if [ -r \"/proc/$tracked/cmdline\" ]; then if tr '\\000' '\\n' < \"/proc/$tracked/cmdline\" | grep -Fqx -- \"$marker\"; then group=$(ps -o pgid= -p \"$tracked\" | tr -d ' '); printf 'PIDFILE MATCH %s %s\\n' \"$tracked\" \"$group\"; else printf 'PIDFILE MISMATCH %s\\n' \"$tracked\"; fi; elif [ -e \"/proc/$tracked\" ]; then printf 'PIDFILE UNREADABLE\\n'; else printf 'PIDFILE DEAD\\n'; fi ;; esac; fi; for cmdline in /proc/[0-9]*/cmdline; do [ -r \"$cmdline\" ] || continue; if tr '\\000' '\\n' < \"$cmdline\" | grep -Fqx -- \"$marker\"; then pid=${cmdline#/proc/}; pid=${pid%/cmdline}; group=$(ps -o pgid= -p \"$pid\" | tr -d ' '); printf 'MATCH %s %s\\n' \"$pid\" \"$group\"; fi; done"
-    const result = await this.remote(command, budget.remaining(15_000))
+      + "if [ ! -e \"$pid_file\" ]; then printf 'PIDFILE MISSING\\n'; elif [ ! -r \"$pid_file\" ]; then printf 'PIDFILE UNREADABLE\\n'; else read -r tracked < \"$pid_file\" || tracked=; case \"$tracked\" in ''|*[!0-9]*) printf 'PIDFILE INVALID\\n' ;; *) if [ -r \"/proc/$tracked/environ\" ]; then if tr '\\000' '\\n' < \"/proc/$tracked/environ\" | grep -Fqx -- \"GCP_PROCESS_MARKER=$marker\"; then group=$(ps -o pgid= -p \"$tracked\" | tr -d ' '); printf 'PIDFILE MATCH %s %s\\n' \"$tracked\" \"$group\"; else printf 'PIDFILE MISMATCH %s\\n' \"$tracked\"; fi; elif [ -e \"/proc/$tracked\" ]; then printf 'PIDFILE UNREADABLE\\n'; else printf 'PIDFILE DEAD\\n'; fi ;; esac; fi; for environ in /proc/[0-9]*/environ; do [ -r \"$environ\" ] || continue; if tr '\\000' '\\n' < \"$environ\" | grep -Fqx -- \"GCP_PROCESS_MARKER=$marker\"; then pid=${environ#/proc/}; pid=${pid%/environ}; group=$(ps -o pgid= -p \"$pid\" | tr -d ' '); printf 'MATCH %s %s\\n' \"$pid\" \"$group\"; fi; done"
+    const result = await this.remote(route.target, command, budget.remaining(15_000))
     if (result.code !== 0) return { kind: 'unknown' }
     const lines = result.stdout.trim().split(/\r?\n/u)
     const pidState = /^PIDFILE (MISSING|DEAD|INVALID|UNREADABLE|MISMATCH \d+|MATCH \d+ \d+)$/u.exec(lines[0] ?? '')
@@ -1679,8 +2464,9 @@ export class PreviewManager {
 
   private async routeHealthy(route: ManagedRoute, budget: StageBudget): Promise<boolean> {
     const before = await this.processPresence(route, budget)
-    if (before.kind !== 'running') return false
+    if (before.kind !== 'running' || !await this.listenerOwnedByRoute(route, before, budget)) return false
     const result = await this.remote(
+      route.target,
       `curl -fsS --max-time 5 http://127.0.0.1:${route.runtime.remotePort}/v1/models`, budget.remaining(10_000))
     if (result.code !== 0) return false
     try {
@@ -1688,21 +2474,24 @@ export class PreviewManager {
       if (!Array.isArray(payload.data) || !payload.data.some(entry => record(entry).id === route.runtime.expectedModel)) {
         return false
       }
-      return (await this.processPresence(route, budget)).kind === 'running'
+      const after = await this.processPresence(route, budget)
+      return after.kind === 'running' && await this.listenerOwnedByRoute(route, after, budget)
     } catch { return false }
   }
 
   private async routeProbe(route: ManagedRoute, budget: StageBudget): Promise<boolean> {
-    if ((await this.processPresence(route, budget)).kind !== 'running') return false
+    const before = await this.processPresence(route, budget)
+    if (before.kind !== 'running' || !await this.listenerOwnedByRoute(route, before, budget)) return false
     const body = JSON.stringify({ model: route.runtime.expectedModel, messages: [{ role: 'user', content: 'Reply with OK.' }], max_tokens: 4, stream: false })
     const timeoutSeconds = Math.max(1, Math.min(120, Math.floor((budget.remaining() - 15_000) / 1000)))
     const command = `curl -fsS --max-time ${timeoutSeconds} -H 'Content-Type: application/json' --data-binary ${shellQuote(body)} http://127.0.0.1:${route.runtime.remotePort}/v1/chat/completions`
-    const result = await this.remote(command, budget.remaining((timeoutSeconds + 10) * 1000))
+    const result = await this.remote(route.target, command, budget.remaining((timeoutSeconds + 10) * 1000))
     if (result.code !== 0) return false
     try {
       const payload = record(JSON.parse(result.stdout) as unknown)
-      return Array.isArray(payload.choices) && payload.choices.length > 0
-        && (await this.processPresence(route, budget)).kind === 'running'
+      if (!Array.isArray(payload.choices) || payload.choices.length === 0) return false
+      const after = await this.processPresence(route, budget)
+      return after.kind === 'running' && await this.listenerOwnedByRoute(route, after, budget)
     } catch { return false }
   }
 
@@ -1756,7 +2545,7 @@ export class PreviewManager {
     const command = 'command -v ss >/dev/null 2>&1 || exit 127; if [ -n "$(ss -H -ltn '
       + filter
       + " 2>/dev/null)\" ]; then printf 'LISTENING\\n'; else printf 'CLOSED\\n'; fi"
-    const result = await this.remote(command, budget.remaining(10_000))
+    const result = await this.remote(route.target, command, budget.remaining(10_000))
     if (result.code !== 0) return 'unknown'
     if (/^CLOSED\s*$/u.test(result.stdout)) return 'closed'
     if (/^LISTENING\s*$/u.test(result.stdout)) return 'listening'
@@ -1764,7 +2553,10 @@ export class PreviewManager {
   }
 
   private async activeRequestCount(route: ManagedRoute, budget: StageBudget): Promise<number | undefined> {
+    const presence = await this.processPresence(route, budget)
+    if (presence.kind !== 'running' || !await this.listenerOwnedByRoute(route, presence, budget)) return undefined
     const result = await this.remote(
+      route.target,
       `curl -fsS --max-time 5 http://127.0.0.1:${route.runtime.remotePort}${route.runtime.drain.path}`,
       budget.remaining(10_000),
     )
@@ -1773,10 +2565,12 @@ export class PreviewManager {
       try {
         const payload = JSON.parse(result.stdout) as unknown
         if (!Array.isArray(payload) || payload.length === 0) return undefined
-        return payload.reduce((total, value) => {
+        let total = 0
+        for (const value of Array.from<unknown>(payload)) {
           const entry = record(value)
-          return total + integerField(entry.num_reqs, 0) + integerField(entry.num_waiting_reqs, 0)
-        }, 0)
+          total += integerField(entry.num_reqs, 0) + integerField(entry.num_waiting_reqs, 0)
+        }
+        return total
       } catch { return undefined }
     }
 
@@ -1795,6 +2589,26 @@ export class PreviewManager {
     return running === undefined || waiting === undefined ? undefined : running + waiting + swapped
   }
 
+  private async listenerOwnedByRoute(
+    route: ManagedRoute,
+    presence: Extract<ProcessPresence, { readonly kind: 'running' }>,
+    budget: StageBudget,
+  ): Promise<boolean> {
+    const filter = shellQuote(`sport = :${route.runtime.remotePort}`)
+    const prelude = 'set -euo pipefail; command -v ss >/dev/null 2>&1; '
+      + `listener_pids=$(ss -H -ltnp ${filter} 2>/dev/null | grep -o 'pid=[0-9][0-9]*' | cut -d= -f2 | sort -n -u); `
+      + '[ -n "$listener_pids" ]; '
+    const ownership = route.runtime.kind === 'docker'
+      ? `container_id=${shellQuote(route.runtime.containerId ?? '')}; container_pids=$(docker top "$container_id" -eo pid 2>/dev/null | awk 'NR > 1 { print $1 }'); [ -n "$container_pids" ]; for pid in $listener_pids; do printf '%s\n' "$container_pids" | grep -Fxq -- "$pid"; done; `
+      : `allowed=${shellQuote(presence.processGroups.join(' '))}; for pid in $listener_pids; do group=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' '); case " $allowed " in *" $group "*) ;; *) exit 76 ;; esac; done; `
+    const result = await this.remote(
+      route.target,
+      `${prelude}${ownership}printf 'GCP_LISTENER_OWNED\n'`,
+      budget.remaining(10_000),
+    )
+    return result.code === 0 && /^GCP_LISTENER_OWNED\s*$/u.test(result.stdout)
+  }
+
   private async waitHealthy(route: ManagedRoute, budget: StageBudget): Promise<boolean> {
     while (true) {
       if (await this.routeHealthy(route, budget)) return true
@@ -1804,21 +2618,26 @@ export class PreviewManager {
   }
 
   private routeAllowed(transaction: TransactionState, stage: Stage, route: ManagedRoute): boolean {
+    const key = deploymentKey(route.id, route.target)
     const allowed = transaction.allowedRoutes[stage]
-    if (allowed === undefined || (!allowed.includes('*') && !allowed.includes(route.id))) return false
+    if (allowed === undefined || (!allowed.includes('*') && !allowed.includes(key))) return false
     if (stage === 'prestate' && transaction.destinationPrestateCaptured
       && transaction.destinationRouteId !== undefined) {
-      const destination = this.routeById.get(transaction.destinationRouteId)
-      if (destination === undefined || route.id === destination.id
-        || (transaction.sourceRouteId !== undefined && route.id !== transaction.sourceRouteId)
-        || (route.target === destination.target && transaction.sourceRouteId !== route.id)) return false
+      const destination = this.routeByKey.get(transaction.destinationRouteId)
+      if (destination === undefined || key === transaction.destinationRouteId
+        || (transaction.sourceRouteId !== undefined && key !== transaction.sourceRouteId)
+        || (route.target === destination.target && transaction.sourceRouteId !== key)) return false
     }
     return true
   }
 
   private setAllowed(transaction: TransactionState, entries: Readonly<Partial<Record<Stage, readonly string[]>>>): Stage[] {
-    transaction.allowedRoutes = Object.fromEntries(Object.entries(entries)
-      .map(([stage, routes]) => [stage, [...(routes ?? [])]])) as Partial<Record<Stage, string[]>>
+    const allowedRoutes: Partial<Record<Stage, string[]>> = {}
+    for (const stage of STAGES) {
+      const routes = entries[stage]
+      if (routes !== undefined) allowedRoutes[stage] = [...routes]
+    }
+    transaction.allowedRoutes = allowedRoutes
     return STAGES.filter(stage => (transaction.allowedRoutes[stage]?.length ?? 0) > 0)
   }
 
@@ -1828,26 +2647,26 @@ export class PreviewManager {
     outcome: { status: string; decision: string; evidence: unknown },
     transaction: TransactionState,
   ): Stage[] {
+    const key = deploymentKey(route.id, route.target)
     if (outcome.status === 'QUARANTINED') return this.setAllowed(transaction, {})
     if (outcome.status !== 'PASS') {
       if (transaction.settlement === 'COMPENSATING') return this.setAllowed(transaction, {})
       if (stage === 'start' || stage === 'health' || stage === 'probe') {
-        if ((stage === 'health' || stage === 'probe') && transaction.adoptedResidentRouteId === route.id) {
+        if ((stage === 'health' || stage === 'probe') && transaction.adoptedResidentRouteId === key) {
           return this.setAllowed(transaction, {})
         }
-        if (route.id === transaction.destinationRouteId) transaction.recovery = true
-        return this.setAllowed(transaction, { stop: [route.id] })
+        if (key === transaction.destinationRouteId) transaction.recovery = true
+        return this.setAllowed(transaction, { stop: [key] })
       }
       if (stage === 'stop') {
-        transaction.lastStoppedRouteId = route.id
-        return this.setAllowed(transaction, { 'verify-stopped': [route.id] })
+        return this.setAllowed(transaction, {})
       }
       return this.setAllowed(transaction, {})
     }
 
     if (stage === 'preflight') {
-      if (outcome.decision !== 'AVAILABLE') return this.setAllowed(transaction, { preflight: [route.id] })
-      transaction.destinationRouteId = route.id
+      if (outcome.decision !== 'AVAILABLE') return this.setAllowed(transaction, { preflight: ['*'] })
+      transaction.destinationRouteId = key
       transaction.destinationPrestateCaptured = false
       transaction.recovery = false
       delete transaction.sourceRouteId
@@ -1856,46 +2675,50 @@ export class PreviewManager {
       delete transaction.lastStoppedRouteId
       delete transaction.destinationPrestateDigest
       delete transaction.sourcePrestateDigest
-      return this.setAllowed(transaction, { prestate: [route.id] })
+      return this.setAllowed(transaction, { prestate: [key] })
     }
 
     if (stage === 'prestate') {
       const residency = outcome.evidence as Residency
+      const residentKey = residency.kind === 'resident'
+        ? deploymentKey(residency.route.id, residency.route.target)
+        : undefined
       if (transaction.kind !== 'MODEL_ROUTE') {
-        if (residency.kind !== 'resident' || residency.route.id !== route.id) return this.setAllowed(transaction, {})
-        transaction.sourceRouteId = route.id
-        return this.setAllowed(transaction, { stop: [route.id] })
+        if (residentKey !== key) return this.setAllowed(transaction, {})
+        transaction.sourceRouteId = key
+        return this.setAllowed(transaction, { stop: [key] })
       }
 
       if (!transaction.destinationPrestateCaptured) {
         transaction.destinationPrestateCaptured = true
-        if (route.id !== transaction.destinationRouteId) return this.setAllowed(transaction, {})
+        if (key !== transaction.destinationRouteId) return this.setAllowed(transaction, {})
         if (residency.kind === 'resident') {
-          transaction.sourceRouteId = residency.route.id
-          if (residency.route.id === transaction.destinationRouteId) {
-            transaction.adoptedResidentRouteId = route.id
+          if (residentKey === undefined) return this.setAllowed(transaction, {})
+          transaction.sourceRouteId = residentKey
+          if (residentKey === transaction.destinationRouteId) {
+            transaction.adoptedResidentRouteId = key
           }
-          return residency.route.id === transaction.destinationRouteId
-            ? this.setAllowed(transaction, { health: [route.id] })
-            : this.setAllowed(transaction, { prestate: [residency.route.id] })
+          return residentKey === transaction.destinationRouteId
+            ? this.setAllowed(transaction, { health: [key] })
+            : this.setAllowed(transaction, { prestate: [residentKey] })
         }
-        return residency.kind === 'empty' && transaction.destinationRouteId !== undefined
+        return residency.kind === 'empty'
           ? this.setAllowed(transaction, { prestate: ['*'], start: [transaction.destinationRouteId] })
           : this.setAllowed(transaction, {})
       }
 
-      if (residency.kind !== 'resident' || residency.route.id !== route.id) return this.setAllowed(transaction, {})
-      transaction.sourceRouteId = route.id
-      return this.setAllowed(transaction, { drain: [route.id] })
+      if (residentKey !== key) return this.setAllowed(transaction, {})
+      transaction.sourceRouteId = key
+      return this.setAllowed(transaction, { drain: [key] })
     }
 
-    if (stage === 'drain') return this.setAllowed(transaction, { stop: [route.id] })
+    if (stage === 'drain') return this.setAllowed(transaction, { stop: [key] })
     if (stage === 'stop') {
-      transaction.lastStoppedRouteId = route.id
-      return this.setAllowed(transaction, { 'verify-stopped': [route.id] })
+      transaction.lastStoppedRouteId = key
+      return this.setAllowed(transaction, { 'verify-stopped': [key] })
     }
     if (stage === 'verify-stopped') {
-      if (transaction.lastStoppedRouteId !== route.id || transaction.kind !== 'MODEL_ROUTE') {
+      if (transaction.lastStoppedRouteId !== key || transaction.kind !== 'MODEL_ROUTE') {
         return this.setAllowed(transaction, {})
       }
       if (transaction.recovery) {
@@ -1903,22 +2726,22 @@ export class PreviewManager {
           ? this.setAllowed(transaction, { start: [transaction.sourceRouteId] })
           : this.setAllowed(transaction, {})
       }
-      return transaction.destinationRouteId !== undefined && transaction.sourceRouteId === route.id
+      return transaction.destinationRouteId !== undefined && transaction.sourceRouteId === key
         ? this.setAllowed(transaction, { start: [transaction.destinationRouteId] })
         : this.setAllowed(transaction, {})
     }
     if (stage === 'start') {
       transaction.started = true
-      transaction.startedRouteId = route.id
+      transaction.startedRouteId = key
       delete transaction.adoptedResidentRouteId
-      return this.setAllowed(transaction, { health: [route.id] })
+      return this.setAllowed(transaction, { health: [key] })
     }
     if (stage === 'health') {
-      return transaction.startedRouteId === route.id || transaction.adoptedResidentRouteId === route.id
-        ? this.setAllowed(transaction, { probe: [route.id] })
+      return transaction.startedRouteId === key || transaction.adoptedResidentRouteId === key
+        ? this.setAllowed(transaction, { probe: [key] })
         : this.setAllowed(transaction, {})
     }
-    if (stage === 'probe' && transaction.kind === 'MODEL_ROUTE' && !transaction.recovery) {
+    if (!transaction.recovery) {
       transaction.settlement = 'AWAITING_PUBLICATION'
     }
     return this.setAllowed(transaction, {})
@@ -1960,7 +2783,7 @@ export class PreviewManager {
       scope_digest: transaction.scopeDigest,
       transaction_sequence: transaction.sequence, activation_settlement: transaction.settlement,
       ...(transaction.adoptedResidentRouteId === undefined ? {}
-        : { adopted_resident_route_id: transaction.adoptedResidentRouteId }),
+        : { adopted_resident_route_id: this.logicalRouteId(transaction.adoptedResidentRouteId) }),
       state_machine_digest: digest({ transaction: transaction.digest, sequence: transaction.sequence, state }),
       next_allowed_stages: transaction.nextAllowed,
     }
@@ -1980,7 +2803,10 @@ export class PreviewManager {
       route_id: route.id, target_class: route.target, exact_revision_digest: route.revisionDigest,
       stage_receipt: {
         stage, status: outcome.status, decision: outcome.decision,
-        evidence_digest: digest(outcome.evidence), error_class: outcome.status === 'PASS' ? '' : 'MODEL_STAGE_FAILED',
+        evidence_digest: digest(outcome.evidence), error_class: outcome.status === 'PASS' ? ''
+          : outcome.decision === 'SOURCE_RESTORED'
+            ? 'MODEL_STAGE_NOT_APPLIED_SOURCE_RESTORED'
+            : 'MODEL_STAGE_FAILED',
         ...stage === 'prestate' && outcome.decision === 'RESIDENT'
           ? { resident_route_id: (outcome.evidence as { route: ManagedRoute }).route.id,
             resident_revision_digest: (outcome.evidence as { route: ManagedRoute }).route.revisionDigest } : {},
@@ -2019,27 +2845,45 @@ async function main(): Promise<void> {
   await store.load()
   const manager = new PreviewManager(registry, store, args)
   let buffer = Buffer.alloc(0)
+  const pending = new Set<Promise<void>>()
+  let closing: Promise<void> | undefined
+  let accepting = true
+  const shutdown = (): Promise<void> => {
+    accepting = false
+    process.stdin.pause()
+    process.stdin.destroy()
+    closing ??= (async () => {
+      while (pending.size > 0) await Promise.allSettled([...pending])
+      await manager.shutdown()
+    })()
+    return closing
+  }
   process.stdin.on('data', (chunk: Buffer) => {
+    if (!accepting) return
     buffer = Buffer.concat([buffer, chunk])
     if (buffer.length > MAX_FRAME_BYTES) process.exitCode = 2
     let end: number
     while ((end = buffer.indexOf(10)) !== -1) {
       const line = buffer.subarray(0, end)
       buffer = buffer.subarray(end + 1)
-      void Promise.resolve().then(async () => {
+      const operation = Promise.resolve().then(async () => {
         const frame = record(JSON.parse(line.toString('utf8')) as unknown)
         const id = stringField(frame.id)
-        const operation = stringField(frame.operation)
+        const operationName = stringField(frame.operation)
         try {
-          const result = await manager.invoke(operation, frame.envelope)
+          const result = await manager.invoke(operationName, frame.envelope)
           process.stdout.write(`${JSON.stringify({ id, result })}\n`)
         } catch (error: unknown) {
           const code = error instanceof ManagerError ? error.code : 'REMOTE_FAILURE'
           process.stdout.write(`${JSON.stringify({ id, error: { code } })}\n`)
         }
-      }).catch(() => { process.exitCode = 2 })
+      }).catch(() => { process.exitCode = 2 }).finally(() => pending.delete(operation))
+      pending.add(operation)
     }
   })
+  process.stdin.once('end', () => { void shutdown().catch(() => { process.exitCode = 2 }) })
+  process.once('SIGTERM', () => { void shutdown().finally(() => process.exitCode = 143) })
+  process.once('SIGINT', () => { void shutdown().finally(() => process.exitCode = 130) })
 }
 
 if (process.argv[1] !== undefined && pathToFileURL(process.argv[1]).href === import.meta.url) {

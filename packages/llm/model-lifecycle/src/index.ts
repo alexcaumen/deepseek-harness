@@ -98,6 +98,7 @@ export type ModelLifecycleErrorCode =
   | 'RUNTIME_TAINTED'
   | 'RESIDENCY_UNVERIFIED'
   | 'RESOURCE_LEASE_UNAVAILABLE'
+  | 'RESOURCE_TARGET_UNAVAILABLE'
   | 'RESOURCE_LEASE_LOST'
   | 'QUEUE_FULL'
   | 'QUEUE_TIMEOUT'
@@ -219,6 +220,17 @@ export interface ModelLifecycleStageReceipt {
   readonly transactionDigest: string
   readonly fencingDigest: string
   readonly digest: string
+}
+
+/** A driver-proven rejection where no host mutation occurred and the source route is usable. */
+export class ModelLifecycleStageRejectedError extends Error {
+  constructor(
+    readonly stage: ModelLifecycleStage,
+    readonly outcome: 'NO_MUTATION_SOURCE_RESTORED',
+  ) {
+    super(`Model lifecycle ${stage} was rejected without mutation and the source route was restored`)
+    this.name = 'ModelLifecycleStageRejectedError'
+  }
 }
 
 /** Current occupancy of the target, inspected by the host rather than inferred from app memory. */
@@ -777,7 +789,6 @@ export class ModelLifecycleRuntime extends Service {
         String(Date.now()),
         String(++this.transactionCounter),
       ])
-      await this.ensureResourceLease(registration.route.targets, request.signal)
       abortIfRequested(request.signal)
       return await this.activateLocked(
         registration,
@@ -795,7 +806,7 @@ export class ModelLifecycleRuntime extends Service {
       if (!rolledBack && !this.tainted && !activation.started && this.resourceLease !== undefined
         && registration !== undefined && scope !== undefined && transactionDigest !== undefined) {
         const driver = registration.driver
-        const cancelPreparation = driver.cancelPreparation
+        const cancelPreparation = driver.cancelPreparation?.bind(driver)
         if (cancelPreparation !== undefined) {
           try {
             const target = receipts.at(-1)?.target ?? registration.route.targets[0]
@@ -804,7 +815,7 @@ export class ModelLifecycleRuntime extends Service {
               ...request, signal: this.resourceLease.signal,
             }, scope, transactionDigest)
             await this.runAuthorityOperation('preparation cancellation', this.resourceLease.signal,
-              signal => cancelPreparation.call(driver, { ...context, signal }))
+              signal => cancelPreparation({ ...context, signal }))
           } catch {
             // A rejected cancellation does not prove the host transaction is settled.
             this.tainted = true
@@ -1031,6 +1042,7 @@ export class ModelLifecycleRuntime extends Service {
 
     let previousStopAttempted = false
     let previousStoppedVerified = false
+    let previousStopKnownNotApplied = false
     let targetStartAttempted = false
     try {
       if (previous !== undefined) {
@@ -1065,7 +1077,7 @@ export class ModelLifecycleRuntime extends Service {
           }
         }
         let stopContext: ModelLifecycleStageContext = previousContext
-        const requestEvictionConsent = authority.requestEvictionConsent
+        const requestEvictionConsent = authority.requestEvictionConsent?.bind(authority)
         if (requestEvictionConsent !== undefined) {
           const consent = await this.runAuthorityOperation(
             'resident-model eviction approval',
@@ -1119,17 +1131,21 @@ export class ModelLifecycleRuntime extends Service {
           assertStageReceipt('stop', stop, previousContext)
           receipts.push(stop)
         } catch (error: unknown) {
+          previousStopKnownNotApplied = error instanceof ModelLifecycleStageRejectedError
+            && error.stage === 'stop'
           stopError = error
         }
-        try {
-          const verified = await this.runStage('verify-stopped', previousContext, bounded =>
-            previous.registration.driver.verifyStopped(bounded))
-          assertStageReceipt('verify-stopped', verified, previousContext)
-          receipts.push(verified)
-          previousStoppedVerified = true
-          this.active = undefined
-        } catch (error: unknown) {
-          throw lifecycleError('STOP_FAILED', `Could not stop ${previous.registration.route.id}`, error)
+        if (!previousStopKnownNotApplied) {
+          try {
+            const verified = await this.runStage('verify-stopped', previousContext, bounded =>
+              previous.registration.driver.verifyStopped(bounded))
+            assertStageReceipt('verify-stopped', verified, previousContext)
+            receipts.push(verified)
+            previousStoppedVerified = true
+            this.active = undefined
+          } catch (error: unknown) {
+            throw lifecycleError('STOP_FAILED', `Could not stop ${previous.registration.route.id}`, error)
+          }
         }
         if (stopError !== undefined) {
           throw lifecycleError('STOP_FAILED', `Could not stop ${previous.registration.route.id}`, stopError)
@@ -1212,6 +1228,11 @@ export class ModelLifecycleRuntime extends Service {
         throw error
       }
       if (previousStopAttempted && !previousStoppedVerified) {
+        if (previousStopKnownNotApplied && previous !== undefined) {
+          this.active = previous
+          this.phase = 'READY'
+          throw error
+        }
         this.active = undefined
         this.tainted = true
         this.phase = 'TAINTED'
@@ -1354,6 +1375,19 @@ export class ModelLifecycleRuntime extends Service {
         continue
       }
       abortIfRequested(request.signal)
+      try {
+        await this.ensureResourceLease(this.resourceTargetsForCandidate(target), request.signal)
+      } catch (error: unknown) {
+        const failure = lifecycleError(
+          'RESOURCE_LEASE_UNAVAILABLE',
+          `Could not acquire shared local-model resources for ${target}`,
+          error,
+        )
+        if (preference !== 'automatic' || failure.code !== 'RESOURCE_TARGET_UNAVAILABLE') throw failure
+        rejected.push(`${target}: resource lease unavailable`)
+        continue
+      }
+      abortIfRequested(request.signal)
       let decision: ModelCapacityDecision
       try {
         const context = this.stageContext(registration, target, request, scope, transactionDigest)
@@ -1373,11 +1407,19 @@ export class ModelLifecycleRuntime extends Service {
           `Manual target ${target} is unavailable for ${registration.route.id}`,
         )
       }
+      if (this.active === undefined) await this.releaseResources('SETTLED')
     }
     throw new ModelLifecycleError(
       preference === 'automatic' ? 'NO_CAPACITY' : 'MANUAL_TARGET_UNAVAILABLE',
       `No admitted compute target is available for ${registration.route.id} (${rejected.join(', ')})`,
     )
+  }
+
+  private resourceTargetsForCandidate(target: ModelComputeTarget): readonly ModelComputeTarget[] {
+    const activeTarget = this.active?.target
+    return activeTarget === undefined || activeTarget === target
+      ? [target]
+      : [activeTarget, target]
   }
 
   private stageContext(
@@ -1478,21 +1520,28 @@ export class ModelLifecycleRuntime extends Service {
   }
 
   private async ensureResourceLease(targets: readonly ModelComputeTarget[], signal?: AbortSignal): Promise<void> {
+    const requested = [...new Set(targets)]
     if (this.resourceLease !== undefined) {
-      for (const target of targets) this.currentResourceGrant(target)
-      return
+      try {
+        const currentTargets = this.resourceLease.current().targets
+        if (requested.every(target => currentTargets.includes(target))) return
+        await this.resourceLease.expand([...new Set([...currentTargets, ...requested])], signal)
+        for (const target of requested) this.currentResourceGrant(target)
+        return
+      } catch (error: unknown) {
+        if (!this.resourceLease.signal.aborted) throw error
+        await this.releaseResources('UNCERTAIN')
+        throw new ResourceLeaseError('RESOURCE_LEASE_LOST')
+      }
     }
     const resources = this.resources
     if (resources === undefined) {
       throw new ModelLifecycleError('RESOURCE_LEASE_UNAVAILABLE', 'Shared local-model resource authority is unavailable')
     }
-    const candidates = [...new Set([...this.byRoute.values()]
-      .filter(registration => registration.route.disposition === 'AVAILABLE')
-      .flatMap(registration => [...registration.route.targets]))]
     try {
       const lease = await ResourceLeaseSession.acquire(
         resources,
-        candidates,
+        requested,
         this.settings().stageTimeoutMs,
         signal,
         (operation) => { this.trackOperation(this.resourceOperations, operation) },
@@ -1504,7 +1553,7 @@ export class ModelLifecycleRuntime extends Service {
         this.phase = 'TAINTED'
         this.cancelIdleUnload()
       }, { once: true })
-      for (const target of targets) this.currentResourceGrant(target)
+      for (const target of requested) this.currentResourceGrant(target)
     } catch (error: unknown) {
       throw lifecycleError('RESOURCE_LEASE_UNAVAILABLE', 'Could not acquire shared local-model resources', error)
     }
@@ -1658,13 +1707,13 @@ export class ModelLifecycleRuntime extends Service {
     transactionDigest: string,
     disposition: 'COMMIT' | 'COMPENSATE',
   ): Promise<void> {
-    const settle = registration.driver.settleActivation
+    const settle = registration.driver.settleActivation?.bind(registration.driver)
     if (settle === undefined) return
     const { signal: _signal, ...cleanupRequest } = request
     const context = this.stageContext(registration, target, cleanupRequest, scope, transactionDigest)
     try {
       await this.runAuthorityOperation('activation settlement', context.signal,
-        signal => settle.call(registration.driver, { ...context, signal }, disposition))
+        signal => settle({ ...context, signal }, disposition))
     } catch (error: unknown) {
       // Publication already succeeded before COMMIT dispatch; even a lost reply must not undo it.
       this.tainted = true
@@ -1829,7 +1878,7 @@ export class ModelLifecycleRuntime extends Service {
           scopeDigest: active.scope.digest,
           routeId: active.registration.route.id,
           target: active.target,
-          outcome: this.tainted ? 'TAINTED' : 'RESIDENT_NOT_STOPPED',
+          outcome: 'RESIDENT_NOT_STOPPED',
           receiptDigests: [active.healthDigest],
         })
       }

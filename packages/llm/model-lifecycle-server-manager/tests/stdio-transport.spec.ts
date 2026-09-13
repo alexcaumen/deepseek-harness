@@ -15,7 +15,7 @@ input.on('line', line => {
   if (r.envelope.crash) process.exit(1);
   if (r.envelope.invalid) { process.stdout.write('private malformed diagnostic\\n'); return; }
   if (r.envelope.oversize) { process.stdout.write('x'.repeat(300000)); return; }
-  if (r.envelope.error) { console.log(JSON.stringify({id:r.id,error:{code:'private diagnostic'}})); return; }
+  if (r.envelope.error) { console.log(JSON.stringify({id:r.id,error:{code:r.envelope.errorCode || 'private diagnostic'}})); return; }
   setTimeout(() => console.log(JSON.stringify({id:r.id,result:{
     operation:r.operation, key:r.envelope.idempotency_key,
     leaked: process.env.SERVER_MANAGER_TRANSPORT_TEST_SECRET !== undefined
@@ -78,6 +78,16 @@ it.each(['invalid', 'oversize', 'crash', 'error'])('sanitizes %s backend respons
   const error = await fixture().invoke('stage', request({ [kind]: true }), signal()).catch((value: unknown) => value)
   expect(error).toBeInstanceOf(Error)
   expect(String(error)).not.toMatch(/private|diagnostic|same-key/)
+})
+
+it('surfaces only the exact target-unavailable wire code', async () => {
+  const transport = fixture()
+  await expect(transport.invoke('acquire', request({ error: true, errorCode: 'TARGET_UNAVAILABLE' }), signal()))
+    .rejects.toMatchObject({ code: 'TARGET_UNAVAILABLE' })
+  for (const errorCode of ['BUSY', 'LEASE_MISMATCH', 'STATE_CONFLICT', 'REMOTE_FAILURE']) {
+    await expect(transport.invoke('acquire', request({ error: true, errorCode }), signal()))
+      .rejects.toMatchObject({ code: 'UNAVAILABLE' })
+  }
 })
 
 it('bounds outstanding operations and awaits shutdown of a hung transport child', async () => {

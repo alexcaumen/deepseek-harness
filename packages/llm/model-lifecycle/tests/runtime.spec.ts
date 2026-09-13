@@ -3,7 +3,12 @@ import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime, { LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
-import ModelLifecycleRuntime, { Config, createModelExecutionScopeDigest } from '../src/index.ts'
+import ModelLifecycleRuntime, {
+  Config,
+  ModelLifecycleStageRejectedError,
+  ResourceLeaseError,
+  createModelExecutionScopeDigest,
+} from '../src/index.ts'
 import { fixtureResources } from './resource-fixture.ts'
 import type {
   AcquireModelRouteRequest,
@@ -99,6 +104,7 @@ function stageReceipt(
 interface DriverOptions {
   readonly capacity?: Partial<Record<ModelComputeTarget, boolean>>
   readonly failStage?: ModelLifecycleStage
+  readonly rejectFirstStopWithRestoredSource?: boolean
   readonly unhealthyStage?: 'health' | 'probe'
   readonly observe?: (stage: ModelLifecycleStage, context: ModelLifecycleStageContext) => void
   readonly patchReceipt?: (
@@ -111,6 +117,7 @@ interface DriverOptions {
 const simulatedHosts = new WeakMap<string[], Map<ModelComputeTarget, ModelLifecyclePrestateReceipt['residency']>>()
 
 function driver(log: string[], options: DriverOptions = {}): ModelLifecycleDriver {
+  let restoredStopRejected = false
   let hosts = simulatedHosts.get(log)
   if (hosts === undefined) {
     hosts = new Map()
@@ -120,6 +127,10 @@ function driver(log: string[], options: DriverOptions = {}): ModelLifecycleDrive
   const complete = (stage: ModelLifecycleStage, context: ModelLifecycleStageContext): ModelLifecycleStageReceipt => {
     log.push(`${stage}:${context.route.id}:${context.target}`)
     options.observe?.(stage, context)
+    if (stage === 'stop' && options.rejectFirstStopWithRestoredSource === true && !restoredStopRejected) {
+      restoredStopRejected = true
+      throw new ModelLifecycleStageRejectedError('stop', 'NO_MUTATION_SOURCE_RESTORED')
+    }
     if (stage === 'start') residency.set(context.target, {
       kind: 'RESIDENT', routeId: context.route.id, revisionDigest: context.route.revisionDigest,
     })
@@ -1255,6 +1266,92 @@ describe('governed local-model lifecycle', () => {
     expect(ctx.modelLifecycle.snapshot()).toEqual({ phase: 'IDLE' })
   })
 
+  it('leases automatic targets one at a time and falls through only unavailable capacity', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const admitted = route('qwen', 'qwen', ['r5300', 'prdg'])
+    const log: string[] = []
+    const base = fixtureResources()
+    const acquire = vi.fn(async (
+      request: Parameters<ResourceLeaseProvider['acquire']>[0],
+      signal: Parameters<ResourceLeaseProvider['acquire']>[1],
+    ) => {
+      if (request.targets.length === 1 && request.targets[0] === 'r5300') {
+        throw new ResourceLeaseError('RESOURCE_TARGET_UNAVAILABLE')
+      }
+      return await base.acquire(request, signal)
+    })
+    const resources: ResourceLeaseProvider = { ...base, acquire }
+    ctx.modelLifecycle.register(admitted, driver(log))
+    installAuthority(ctx, () => ({
+      kind: 'GOVERNED', route: admitted, scope: executionScope(),
+    }), resources)
+
+    const lease = await ctx.modelLifecycle.acquireRoute({
+      selection: admitted.selection, preference: 'automatic',
+    })
+
+    expect(lease.target).toBe('prdg')
+    expect(acquire.mock.calls.map(([request]) => request.targets)).toEqual([['r5300'], ['prdg']])
+    expect(log[0]).toBe('preflight:qwen:prdg')
+    await lease.release()
+  })
+
+  it('expands resource coverage before probing another host while preserving the active route', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const qwen = route('qwen', 'qwen', ['r5300'])
+    const glm = route('glm', 'glm', ['prdg'])
+    const log: string[] = []
+    const resources = fixtureResources()
+    const expand = vi.spyOn(resources, 'expand')
+    const release = vi.spyOn(resources, 'release')
+    ctx.modelLifecycle.register(qwen, driver(log))
+    ctx.modelLifecycle.register(glm, driver(log, { capacity: { prdg: false } }))
+    installAuthority(ctx, request => ({
+      kind: 'GOVERNED',
+      route: request.selection.model === qwen.selection.model ? qwen : glm,
+      scope: executionScope({ sessionId: request.sessionId ?? 'session-1' }),
+    }), resources)
+    const first = await ctx.modelLifecycle.acquireRoute({ selection: qwen.selection })
+    await first.release()
+    log.length = 0
+
+    await expect(ctx.modelLifecycle.acquireRoute({ selection: glm.selection, preference: 'automatic' }))
+      .rejects.toMatchObject({ code: 'NO_CAPACITY' })
+
+    expect(expand).toHaveBeenCalledTimes(1)
+    expect(expand.mock.calls[0]?.[1].targets).toEqual(['r5300', 'prdg'])
+    expect(release).not.toHaveBeenCalled()
+    expect(log).toEqual(['preflight:glm:prdg'])
+    expect(ctx.modelLifecycle.snapshot()).toMatchObject({ active: { routeId: 'qwen', target: 'r5300' } })
+  })
+
+  it('keeps the active-host lease when expansion definitively rejects the destination target', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const qwen = route('qwen', 'qwen', ['r5300'])
+    const glm = route('glm', 'glm', ['prdg'])
+    const resources = fixtureResources()
+    const expand = vi.spyOn(resources, 'expand').mockRejectedValue(
+      new ResourceLeaseError('RESOURCE_TARGET_UNAVAILABLE'),
+    )
+    const release = vi.spyOn(resources, 'release')
+    ctx.modelLifecycle.register(qwen, driver([]))
+    ctx.modelLifecycle.register(glm, driver([]))
+    installAuthority(ctx, request => ({
+      kind: 'GOVERNED',
+      route: request.selection.model === qwen.selection.model ? qwen : glm,
+      scope: executionScope({ sessionId: request.sessionId ?? 'session-1' }),
+    }), resources)
+    const first = await ctx.modelLifecycle.acquireRoute({ selection: qwen.selection })
+    await first.release()
+
+    await expect(ctx.modelLifecycle.acquireRoute({ selection: glm.selection, preference: 'automatic' }))
+      .rejects.toMatchObject({ code: 'NO_CAPACITY' })
+
+    expect(expand).toHaveBeenCalledTimes(1)
+    expect(release).not.toHaveBeenCalled()
+    expect(ctx.modelLifecycle.snapshot()).toMatchObject({ active: { routeId: 'qwen', target: 'r5300' } })
+  })
+
   it('orders preflight, capture, drain, stop, verification, start, health, and probe', async () => {
     const ctx = await lifecycle()
     const qwen = route('qwen', 'qwen', ['r5300'])
@@ -1426,6 +1523,34 @@ describe('governed local-model lifecycle', () => {
     await expect(cleanupContext.modelLifecycle.acquireRoute({
       selection: { provider: 'local', model: 'qwen' },
     })).rejects.toMatchObject({ code: 'RUNTIME_TAINTED' })
+  })
+
+  it('keeps a restored source usable after a definite mutation-free stop rejection', async () => {
+    const ctx = await lifecycle()
+    const qwen = route('qwen', 'qwen', ['r5300'])
+    const glm = route('glm', 'glm', ['r5300'])
+    const log: string[] = []
+    ctx.modelLifecycle.register(qwen, driver(log, { rejectFirstStopWithRestoredSource: true }))
+    ctx.modelLifecycle.register(glm, driver(log))
+    installRouteAuthority(ctx, [qwen, glm])
+    const first = await ctx.modelLifecycle.acquireRoute({ selection: { provider: 'local', model: 'qwen' } })
+    await first.release()
+    log.length = 0
+
+    await expect(ctx.modelLifecycle.acquireRoute({ selection: { provider: 'local', model: 'glm' } }))
+      .rejects.toMatchObject({ code: 'STOP_FAILED' })
+    expect(log).toEqual([
+      'preflight:glm:r5300', 'prestate:glm:r5300', 'drain:qwen:r5300', 'stop:qwen:r5300',
+    ])
+    expect(ctx.modelLifecycle.snapshot()).toMatchObject({ phase: 'READY', active: { routeId: 'qwen' } })
+
+    const retry = await ctx.modelLifecycle.acquireRoute({ selection: { provider: 'local', model: 'glm' } })
+    expect(log.slice(-8)).toEqual([
+      'preflight:glm:r5300', 'prestate:glm:r5300', 'drain:qwen:r5300', 'stop:qwen:r5300',
+      'verify-stopped:qwen:r5300', 'start:glm:r5300', 'health:glm:r5300', 'probe:glm:r5300',
+    ])
+    expect(ctx.modelLifecycle.snapshot()).toMatchObject({ phase: 'IN_USE', active: { routeId: 'glm' } })
+    await retry.release()
   })
 
   it('taints instead of restarting a route whose failed stop cannot be verified', async () => {

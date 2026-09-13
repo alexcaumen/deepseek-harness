@@ -26,6 +26,12 @@ function provider(initial = grant()) {
   let sequence = 0
   return {
     acquire: vi.fn<ResourceLeaseProvider['acquire']>().mockResolvedValue(initial),
+    expand: vi.fn<NonNullable<ResourceLeaseProvider['expand']>>().mockImplementation(async (previous, request) => ({
+      ...previous,
+      targets: [...request.targets],
+      expiresAt: previous.expiresAt + 1_000,
+      receiptDigest: `sha256:${(++sequence).toString(16).padStart(64, '0')}`,
+    })),
     renew: vi.fn<ResourceLeaseProvider['renew']>().mockImplementation(async previous => ({
       ...previous,
       expiresAt: previous.expiresAt + 1_000,
@@ -36,8 +42,8 @@ function provider(initial = grant()) {
 }
 
 function deferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (reason: unknown) => void
+  let resolve: (value: T) => void = () => { throw new Error('deferred not initialized') }
+  let reject: (reason: unknown) => void = () => { throw new Error('deferred not initialized') }
   const promise = new Promise<T>((yes, no) => {
     resolve = yes
     reject = no
@@ -79,6 +85,134 @@ afterEach(async () => {
 })
 
 describe('staging resource lease consumer', () => {
+  it('expands coverage without releasing the active grant', async () => {
+    const adapter = provider(grant({ targets: ['r5300'] }))
+    const session = await acquire(adapter, ['r5300'])
+    const previous = session.current()
+
+    const expanded = await session.expand(['r5300', 'prdg'])
+
+    expect(adapter.expand).toHaveBeenCalledWith(
+      previous,
+      { targets: ['r5300', 'prdg'] },
+      expect.any(AbortSignal),
+    )
+    expect(expanded.targets).toEqual(['r5300', 'prdg'])
+    expect(expanded.leaseRef).toBe(previous.leaseRef)
+    expect(expanded.fencingDigest).toBe(previous.fencingDigest)
+    expect(adapter.release).not.toHaveBeenCalled()
+  })
+
+  it('waits for delayed renewal before expanding from the refreshed grant', async () => {
+    const pending = deferred<ResourceLeaseGrant>()
+    const adapter = provider(grant({ targets: ['r5300'] }))
+    adapter.renew.mockReturnValueOnce(pending.promise)
+    const session = await acquire(adapter, ['r5300'])
+    await vi.advanceTimersByTimeAsync(100)
+
+    const expanding = session.expand(['r5300', 'prdg'])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(adapter.expand).not.toHaveBeenCalled()
+    expect(adapter.release).not.toHaveBeenCalled()
+
+    const renewed = grant({
+      targets: ['r5300'],
+      expiresAt: START + 2_000,
+      receiptDigest: digest('c'),
+    })
+    pending.resolve(renewed)
+    await vi.advanceTimersByTimeAsync(0)
+    const expanded = await expanding
+
+    expect(adapter.expand.mock.calls[0]?.[0]).toEqual(renewed)
+    expect(expanded.targets).toEqual(['r5300', 'prdg'])
+    expect(adapter.release).not.toHaveBeenCalled()
+  })
+
+  it('admits only one expansion while that caller waits for renewal', async () => {
+    const pending = deferred<ResourceLeaseGrant>()
+    const adapter = provider(grant({ targets: ['r5300'] }))
+    adapter.renew.mockReturnValueOnce(pending.promise)
+    const session = await acquire(adapter, ['r5300'])
+    await vi.advanceTimersByTimeAsync(100)
+
+    const first = session.expand(['r5300', 'prdg'])
+    await expect(session.expand(['r5300', 'ram-cpu']))
+      .rejects.toEqual(new ResourceLeaseError('RESOURCE_LEASE_LOST'))
+    expect(session.signal.aborted).toBe(false)
+    pending.resolve(grant({
+      targets: ['r5300'], expiresAt: START + 2_000, receiptDigest: digest('c'),
+    }))
+    await vi.advanceTimersByTimeAsync(0)
+
+    await expect(first).resolves.toMatchObject({ targets: ['r5300', 'prdg'] })
+    expect(adapter.expand).toHaveBeenCalledTimes(1)
+    expect(session.signal.aborted).toBe(false)
+  })
+
+  it('loses the lease when the renewal ahead of expansion actually fails', async () => {
+    const pending = deferred<ResourceLeaseGrant>()
+    const adapter = provider(grant({ targets: ['r5300'] }))
+    adapter.renew.mockReturnValueOnce(pending.promise)
+    const session = await acquire(adapter, ['r5300'])
+    await vi.advanceTimersByTimeAsync(100)
+
+    const expanding = expect(session.expand(['r5300', 'prdg']))
+      .rejects.toEqual(new ResourceLeaseError('RESOURCE_LEASE_LOST'))
+    pending.reject(new Error('private renewal failure'))
+    await vi.advanceTimersByTimeAsync(0)
+
+    await expanding
+    expect(adapter.expand).not.toHaveBeenCalled()
+    expectLost(session)
+  })
+
+  it('loses the lease when expansion is cancelled while waiting for renewal', async () => {
+    const pending = deferred<ResourceLeaseGrant>()
+    const adapter = provider(grant({ targets: ['r5300'] }))
+    adapter.renew.mockReturnValueOnce(pending.promise)
+    const session = await acquire(adapter, ['r5300'])
+    await vi.advanceTimersByTimeAsync(100)
+    const controller = new AbortController()
+
+    const expanding = expect(session.expand(['r5300', 'prdg'], controller.signal))
+      .rejects.toEqual(new ResourceLeaseError('RESOURCE_LEASE_LOST'))
+    await vi.advanceTimersByTimeAsync(0)
+    controller.abort(new Error('private caller cancellation'))
+    await expanding
+
+    expect(adapter.expand).not.toHaveBeenCalled()
+    expect(adapter.renew.mock.calls[0]?.[1].aborted).toBe(true)
+    expectLost(session)
+    pending.reject(new Error('late private renewal failure'))
+    await vi.advanceTimersByTimeAsync(0)
+  })
+
+  it('preserves active coverage after a definite target-unavailable expansion', async () => {
+    const adapter = provider(grant({ targets: ['r5300'] }))
+    adapter.expand.mockRejectedValueOnce(new ResourceLeaseError('RESOURCE_TARGET_UNAVAILABLE'))
+    const session = await acquire(adapter, ['r5300'])
+    const previous = session.current()
+
+    await expect(session.expand(['r5300', 'prdg']))
+      .rejects.toMatchObject({ code: 'RESOURCE_TARGET_UNAVAILABLE' })
+
+    expect(session.signal.aborted).toBe(false)
+    expect(session.current()).toEqual(previous)
+    expect(adapter.release).not.toHaveBeenCalled()
+  })
+
+  it('loses the lease after ambiguous expansion failure', async () => {
+    const adapter = provider(grant({ targets: ['r5300'] }))
+    adapter.expand.mockRejectedValueOnce(new Error('private expansion failure'))
+    const session = await acquire(adapter, ['r5300'])
+
+    await expect(session.expand(['r5300', 'prdg']))
+      .rejects.toMatchObject({ code: 'RESOURCE_LEASE_LOST' })
+
+    expectLost(session)
+  })
+
   it('does not invoke the provider when acquisition is already cancelled', async () => {
     const adapter = provider()
     const controller = new AbortController()

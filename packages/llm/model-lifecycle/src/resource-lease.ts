@@ -63,6 +63,19 @@ export interface ResourceLeaseProvider {
    */
   acquire(request: { targets: readonly ResourceLeaseTarget[] }, signal: AbortSignal): Promise<ResourceLeaseGrant>
   /**
+   * Atomically add target coverage while preserving the existing grant on a
+   * definite rejection. Unknown settlement invalidates the consumer session.
+   * @param grant - Last accepted immutable grant.
+   * @param request - Superset coverage containing every target in the grant.
+   * @param signal - Cancellation on timeout or caller abort.
+   * @returns The same lease and fence with expanded coverage and newer expiry.
+   */
+  expand?(
+    grant: ResourceLeaseGrant,
+    request: { targets: readonly ResourceLeaseTarget[] },
+    signal: AbortSignal,
+  ): Promise<ResourceLeaseGrant>
+  /**
    * Extend expiry with a new receipt, preserving identity, fencing and coverage.
    * @param grant - Last accepted immutable grant.
    * @param signal - Cancellation on timeout, expiry, or session close.
@@ -83,8 +96,12 @@ export type ResourceLeaseOperationObserver = (operation: Promise<unknown>) => vo
 
 /** Sanitized failure without provider messages, causes, references, or digests. */
 export class ResourceLeaseError extends Error {
-  constructor(readonly code: 'RESOURCE_LEASE_UNAVAILABLE' | 'RESOURCE_LEASE_LOST') {
-    super(code === 'RESOURCE_LEASE_UNAVAILABLE' ? 'Resource lease is unavailable' : 'Resource lease was lost')
+  constructor(readonly code: 'RESOURCE_LEASE_UNAVAILABLE' | 'RESOURCE_TARGET_UNAVAILABLE' | 'RESOURCE_LEASE_LOST') {
+    super(code === 'RESOURCE_LEASE_UNAVAILABLE'
+      ? 'Resource lease is unavailable'
+      : code === 'RESOURCE_TARGET_UNAVAILABLE'
+        ? 'Requested resource target is unavailable'
+        : 'Resource lease was lost')
     this.name = 'ResourceLeaseError'
   }
 }
@@ -156,18 +173,19 @@ function boundedCall<T>(
   return new Promise<T>((resolve, reject) => {
     let settled = false
     const timer = setTimeout(cancel, Math.ceil(timeoutMs))
+    const onAbort = (): void => { cancel() }
     function cleanup(): void {
       clearTimeout(timer)
-      signal?.removeEventListener('abort', cancel)
+      signal?.removeEventListener('abort', onAbort)
     }
-    function cancel(): void {
+    function cancel(cause?: unknown): void {
       if (settled) return
       settled = true
       cleanup()
-      reject(error)
+      reject(cause instanceof ResourceLeaseError ? cause : error)
       controller.abort(error)
     }
-    signal?.addEventListener('abort', cancel, { once: true })
+    signal?.addEventListener('abort', onAbort, { once: true })
     // Both late resolutions and rejections remain observed after local timeout.
     void Promise.resolve().then(() => {
       if (settled) throw error
@@ -183,7 +201,27 @@ function boundedCall<T>(
       settled = true
       cleanup()
       resolve(value)
-    }, cancel).catch(cancel)
+    }, (cause: unknown) => { cancel(cause) }).catch((cause: unknown) => { cancel(cause) })
+  })
+}
+
+function waitForRenewal(renewal: Promise<void>, signal?: AbortSignal): Promise<void> {
+  const error = new ResourceLeaseError('RESOURCE_LEASE_LOST')
+  if (signal?.aborted === true) return Promise.reject(error)
+  if (signal === undefined) return renewal
+  return new Promise<void>((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener('abort', onAbort)
+      reject(error)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    void renewal.then(() => {
+      signal.removeEventListener('abort', onAbort)
+      resolve()
+    }, () => {
+      signal.removeEventListener('abort', onAbort)
+      reject(error)
+    })
   })
 }
 
@@ -220,6 +258,7 @@ export class ResourceLeaseSession {
   private expiryTimer: ReturnType<typeof setTimeout> | undefined
   private renewal: Promise<void> | undefined
   private renewalMayBeInFlight = false
+  private expansionMayBeInFlight = false
   private closing: Promise<void> | undefined
 
   private constructor(
@@ -282,6 +321,63 @@ export class ResourceLeaseSession {
   }
 
   /**
+   * Atomically add target coverage without releasing the currently held targets.
+   * A definite RESOURCE_TARGET_UNAVAILABLE rejection preserves the old grant;
+   * any ambiguous failure loses the session so callers cannot mutate resources.
+   * @param targets - Exact duplicate-free superset required after expansion.
+   * @param signal - Optional caller cancellation.
+   * @returns The newly accepted expanded grant.
+   */
+  async expand(
+    targets: readonly ResourceLeaseTarget[],
+    signal?: AbortSignal,
+  ): Promise<ResourceLeaseGrant> {
+    let previous = this.current()
+    if (targets.every(target => previous.targets.includes(target))) return previous
+    const expand = this.provider.expand?.bind(this.provider)
+    if (!validTargets(targets) || !previous.targets.every(target => targets.includes(target))
+      || expand === undefined || this.expansionMayBeInFlight) {
+      throw new ResourceLeaseError('RESOURCE_LEASE_LOST')
+    }
+    this.expansionMayBeInFlight = true
+    try {
+      if (this.renewalMayBeInFlight) {
+        const renewal = this.renewal
+        if (renewal === undefined) throw new ResourceLeaseError('RESOURCE_LEASE_LOST')
+        await waitForRenewal(renewal, signal)
+        previous = this.current()
+        if (!previous.targets.every(target => targets.includes(target))) {
+          throw new ResourceLeaseError('RESOURCE_LEASE_LOST')
+        }
+      }
+      clearTimeout(this.renewalTimer)
+      clearTimeout(this.expiryTimer)
+      const request = Object.freeze({ targets: Object.freeze([...targets]) })
+      const value = await boundedCall(
+        boundedSignal => expand(copyGrant(previous), request, boundedSignal),
+        this.operationTimeoutMs,
+        'RESOURCE_LEASE_LOST',
+        signal,
+        undefined,
+        this.observe,
+      )
+      this.current()
+      this.grant = validateGrant(value, request.targets, previous)
+      this.expansionMayBeInFlight = false
+      this.schedule()
+      return this.grant
+    } catch (error: unknown) {
+      this.expansionMayBeInFlight = false
+      if (error instanceof ResourceLeaseError && error.code === 'RESOURCE_TARGET_UNAVAILABLE') {
+        this.schedule()
+        throw error
+      }
+      this.lose()
+      throw new ResourceLeaseError('RESOURCE_LEASE_LOST')
+    }
+  }
+
+  /**
    * Cancel owned timers and renewal, then await one bounded best-effort release.
    * Repeated calls share the first close promise and outcome; loss forces
    * UNCERTAIN. Provider failures are suppressed, not evidence of remote cleanup.
@@ -293,7 +389,8 @@ export class ResourceLeaseSession {
    */
   close(outcome: 'SETTLED' | 'UNCERTAIN'): Promise<void> {
     if (this.closing !== undefined) return this.closing
-    const releaseOutcome = this.signal.aborted || Date.now() >= this.grant.expiresAt || this.renewalMayBeInFlight
+    const releaseOutcome = this.signal.aborted || Date.now() >= this.grant.expiresAt
+      || this.renewalMayBeInFlight || this.expansionMayBeInFlight
       ? 'UNCERTAIN'
       : outcome
     this.closing = Promise.resolve().then(async () => {

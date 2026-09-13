@@ -1,21 +1,34 @@
 {
-  "schema": "giana.cowork.preview.model-registry.v1",
+  "schema": "giana.cowork.preview.model-registry.v2",
   "issuerRef": "giana:issuer:sha256:8fcaed49cd538cb6494053c7f2958fe9f48091e19f4258105fb5aa2a571e392a",
   "holderRef": "giana:holder:sha256:23a5fc97f64fa90efc8fd2a913cab32474ba267195d6c6be89beb70ba809c5ee",
-  "admissionDigest": "4978787ea7d990e513c7737cf911a2469b40ff17e28ee4b20db73c6cb24b0bbd",
+  "admissionDigest": "be38aebd0c53984ffd3ef7d5462a49204f5dcf76276240f2c53cd7f6bf57b5e1",
   "renewAfterMs": 120000,
-  "slot": {
+  "slots": [{
+    "target": "r5300",
     "id": "gcp-r5300-slot-01",
     "lockPath": "/run/lock/giana-cowork-preview-model-slot.state.lock",
     "operationLockPath": "/run/lock/giana-cowork-preview-model-slot.operation.lock",
     "statePath": "/var/lib/giana-cowork-preview/model-slot/state.json",
     "counterPath": "/var/lib/giana-cowork-preview/model-slot/fence.counter"
-  },
+  }, {
+    "target": "prdg",
+    "id": "gcp-prdg-slot-01",
+    "lockPath": "/run/lock/giana-cowork-preview-model-slot.state.lock",
+    "operationLockPath": "/run/lock/giana-cowork-preview-model-slot.operation.lock",
+    "statePath": "/opt/gcp-prdg/state/model-slot/state.json",
+    "counterPath": "/opt/gcp-prdg/state/model-slot/fence.counter"
+  }],
   "targets": [
     {
       "class": "r5300",
-      "identity_digest": "49426230ec7354353db3c1f8ea8880803701b00ce8cdd8c15dfbaccb087bd2c7",
-      "currentness_digest": "40ba00bc258fee097427502c53a317b791fc001cf8462e41c6ce042fa9507ec7"
+      "identity_digest": "91eda62878736036ed54fa46478df41b8bb3dd8fb6b4103a21cc7357eaa56ffa",
+      "currentness_digest": "9dec2105ddfccfe64aa21b337a9f0669eba2d01e359d75318074afa7bcbceb37"
+    },
+    {
+      "class": "prdg",
+      "identity_digest": "bf7a58918d355c553f4852af75b3875e208d140a5060fe62cb4215cfceae64c5",
+      "currentness_digest": "dcd5fe7ae073cfec0d43044cc9b7cb97ce81e988d5ef172a578a6a560b14add9"
     }
   ],
   "routes": [
@@ -31,6 +44,8 @@
         "launcherSha256": "0b8045fb2c3f3334714c4e2eff00153fa1f091cd25d8ed1ee9c27f89a16ce684",
         "processMarker": "GLM-5.3-Flash-official-fp8-canary",
         "remotePort": 18081,
+        "localPort": 18081,
+        "upstreamLocalPort": 28081,
         "expectedModel": "GLM-5.3-Flash-official-fp8-canary",
         "drain": {
           "kind": "sglang-load",
@@ -61,6 +76,8 @@
         "containerId": "1d36f19265f38cf4694ce2f1e1394f2de68308ecf36a9944918de3de9e0bd30a",
         "imageId": "sha256:716e50e11551b69fce41b67e73aa4f4549e3079f9fd13af7773f8dfa9c014890",
         "remotePort": 8000,
+        "localPort": 18000,
+        "upstreamLocalPort": 28000,
         "expectedModel": "Qwen/Qwen3.8-27B",
         "drain": {
           "kind": "vllm-metrics",
@@ -77,6 +94,41 @@
         "minimumFreeVramMiB": { "0": 37417, "1": 37417 },
         "reclaimableVramMiB": { "0": 36393, "1": 36393 },
         "minimumFreeRamMiB": 73728,
+        "reclaimableRamMiB": 65536
+      }
+    },
+    {
+      "id": "qwen38-local",
+      "revisionDigest": "5da5832e0b3c0351bfb24486451b28649e629a6d14ef17c215358d8721b8b7d2",
+      "target": "prdg",
+      "exclusiveEndpoint": true,
+      "runtime": {
+        "kind": "script",
+        "startPath": "/opt/gcp-prdg/runtime/prdg-qwen38-start.sh",
+        "stopPath": "/opt/gcp-prdg/runtime/prdg-qwen38-stop.sh",
+        "startSha256": "1c78932ec912693e2f97f9c4ff338a5bf8ab25bef137f72a17b9e58b721276aa",
+        "stopSha256": "94c2f1fb7a7cb0903e62080d2ad24ab79abe4a81e258c2c31cd4dc30e3cd493b",
+        "pidFile": "/opt/gcp-prdg/state/qwen38.pid",
+        "processMarker": "GCP_PRDG_QWEN38_R2",
+        "remotePort": 18472,
+        "localPort": 18000,
+        "upstreamLocalPort": 18472,
+        "expectedModel": "Qwen/Qwen3.8-27B",
+        "drain": {
+          "kind": "vllm-metrics",
+          "path": "/metrics",
+          "pollIntervalMs": 2000
+        },
+        "release": {
+          "pollIntervalMs": 5000,
+          "maximumSamples": 36
+        }
+      },
+      "resources": {
+        "gpuIndices": [0],
+        "minimumFreeVramMiB": { "0": 42000 },
+        "reclaimableVramMiB": { "0": 30000 },
+        "minimumFreeRamMiB": 65536,
         "reclaimableRamMiB": 65536
       }
     }

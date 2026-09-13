@@ -17,6 +17,9 @@ interface PatchEntry {
 const REPO_ROOT = resolve(fileURLToPath(new URL('../../..', import.meta.url)))
 const PATCH_PATH = join(REPO_ROOT, 'configs', 'giana-code-putri.patch.yml')
 const BASE_MANIFEST_PATH = join(REPO_ROOT, 'packages', 'bundle', 'base', 'package.json')
+const PRDG_QWEN_START_PATH = join(
+  REPO_ROOT, 'configs', 'giana-cowork-preview', 'runtime', 'prdg-qwen38-start.sh',
+)
 
 function entriesFromPatch(): PatchEntry[] {
   const parsed: unknown = yaml.load(readFileSync(PATCH_PATH, 'utf8'), { schema: entryListSchema })
@@ -53,6 +56,15 @@ function evaluatedBoolean(value: unknown, env: Record<string, string>): boolean 
 }
 
 describe('Giana CoWork runtime binding', () => {
+  it('pins exact PRDG Qwen artifacts and closes lifecycle lock descriptors before detach', () => {
+    const launcher = readFileSync(PRDG_QWEN_START_PATH, 'utf8')
+    expect(launcher).toContain('manifest_sha256=961f81d06097db0c87867559913adab5bf6692998b7af423cea859867b30c7b2')
+    expect(launcher).toContain('model_commit=1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0')
+    expect(launcher).toContain('--model "${model}"')
+    expect(launcher).toContain('8>&- 9>&-')
+    expect(launcher).toContain('digest.hexdigest() != entry["sha256"]')
+  })
+
   it('adds model lifecycle without replacing the established plugin composition', () => {
     const entries = entriesFromPatch()
 
@@ -96,15 +108,25 @@ describe('Giana CoWork runtime binding', () => {
       preserveResidentOnShutdown: true,
     })
     expect(configById(entries, 'giana-cowork-model-deployment')).toMatchObject({
-      sshHost: 'r5300',
       principalId: 'alex',
       tenantId: 'giana-cowork-preview',
-      admissionDigest: '4978787ea7d990e513c7737cf911a2469b40ff17e28ee4b20db73c6cb24b0bbd',
-      targets: [{
-        class: 'r5300',
-        identityDigest: '49426230ec7354353db3c1f8ea8880803701b00ce8cdd8c15dfbaccb087bd2c7',
-        currentnessDigest: '40ba00bc258fee097427502c53a317b791fc001cf8462e41c6ce042fa9507ec7',
-      }],
+      admissionDigest: 'be38aebd0c53984ffd3ef7d5462a49204f5dcf76276240f2c53cd7f6bf57b5e1',
+      runners: [
+        { target: 'r5300', kind: 'ssh', host: 'r5300' },
+        { target: 'prdg', kind: 'wsl', distribution: 'Ubuntu-22.04' },
+      ],
+      targets: [
+        {
+          class: 'r5300',
+          identityDigest: '91eda62878736036ed54fa46478df41b8bb3dd8fb6b4103a21cc7357eaa56ffa',
+          currentnessDigest: '9dec2105ddfccfe64aa21b337a9f0669eba2d01e359d75318074afa7bcbceb37',
+        },
+        {
+          class: 'prdg',
+          identityDigest: 'bf7a58918d355c553f4852af75b3875e208d140a5060fe62cb4215cfceae64c5',
+          currentnessDigest: 'dcd5fe7ae073cfec0d43044cc9b7cb97ce81e988d5ef172a578a6a560b14add9',
+        },
+      ],
       routes: [
         {
           id: 'glm53-official-fp8', provider: 'glm-local-r5300',
@@ -115,6 +137,8 @@ describe('Giana CoWork runtime binding', () => {
           id: 'qwen38-local', provider: 'qwen-local-r5300',
           model: 'Qwen/Qwen3.8-27B', disposition: 'AVAILABLE',
           allowExactResidentAdoption: true,
+          targets: ['r5300', 'prdg'],
+          supportedReasoningEfforts: ['low', 'medium', 'xhigh'],
         },
       ],
     })
@@ -333,5 +357,35 @@ describe('Giana CoWork runtime binding', () => {
     })
     expect(gianaOs?.description).toContain('Giana CoWork')
     expect(princessOs?.systemInstruction).toContain('Giana CoWork')
+  })
+
+  it('waits for the entire owned PRDG Qwen process group before removing its PID handle', () => {
+    const stop = readFileSync(join(
+      REPO_ROOT,
+      'configs',
+      'giana-cowork-preview',
+      'runtime',
+      'prdg-qwen38-stop.sh',
+    ), 'utf8')
+
+    expect(stop).toContain('test -r "/proc/${pid}/environ"')
+    expect(stop).toContain('grep -Fqx -- "GCP_PROCESS_MARKER=${marker}"')
+    expect(stop).toContain('pgid=$(ps -o pgid= -p "${pid}" | tr -d \' \')')
+    expect(stop).toContain('snapshot=$(ps -eo pgid=,stat=)')
+    expect(stop).toContain('$1 == target && $2 !~ /^Z/')
+    expect(stop).not.toContain('kill -0 "${pid}"')
+
+    const termIndex = stop.indexOf('kill -TERM -- "-${pgid}"')
+    const killIndex = stop.indexOf('kill -KILL -- "-${pgid}"')
+    expect(termIndex).toBeGreaterThan(-1)
+    expect(killIndex).toBeGreaterThan(termIndex)
+    expect(stop.slice(termIndex, killIndex)).toContain('if remove_pid_handle_if_stopped; then')
+    expect(stop.slice(killIndex)).toContain('if remove_pid_handle_if_stopped; then')
+    expect(stop.match(/rm -f -- "\$\{pid_file\}"/g)).toHaveLength(1)
+    const removalFunction = stop.slice(stop.indexOf('remove_pid_handle_if_stopped() {'), termIndex)
+    expect(removalFunction).toContain('if pgid_has_live_process; then')
+    expect(removalFunction).toContain('return 1')
+    expect(removalFunction).toContain('rm -f -- "${pid_file}"')
+    expect(stop.trimEnd()).toMatch(/sleep 1\ndone\nexit 76$/)
   })
 })

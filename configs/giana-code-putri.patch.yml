@@ -27,27 +27,37 @@
     - id: giana-cowork-model-deployment
       name: '@deepseek-ai/dsh-giana-cowork-model-deployment'
       config:
-        admissionReceiptPath: !!js process.env.DSH_SOURCE_ROOT + '/configs/giana-cowork-preview/R5300_LOCAL_MODEL_PREVIEW_ADMISSION_20260911.json'
-        registryPath: !!js process.env.DSH_SOURCE_ROOT + '/configs/giana-cowork-preview/r5300.model-registry.json'
-        statePath: !!js process.env.DSH_HOME + '/state/giana-cowork-preview/model-manager-state.json'
+        admissionReceiptPath: !!js process.env.DSH_SOURCE_ROOT + '/configs/giana-cowork-preview/GCP_DUAL_TARGET_LOCAL_MODEL_PREVIEW_ADMISSION_20260913.json'
+        registryPath: !!js process.env.DSH_SOURCE_ROOT + '/configs/giana-cowork-preview/gcp.model-registry.json'
+        statePath: !!js process.env.DSH_HOME + '/state/giana-cowork-preview/model-manager-state-v2.json'
         auditPath: !!js process.env.DSH_HOME + '/state/giana-cowork-preview/model-lifecycle-audit.jsonl'
         managerScript: !!js process.env.DSH_HOME + '/profiles/web/node_modules/@deepseek-ai/dsh-giana-cowork-model-deployment/lib/manager.js'
-        sshExecutable: 'C:\Windows\System32\OpenSSH\ssh.exe'
-        sshConfigPath: 'C:\Users\grinv\.ssh\config'
-        sshHost: r5300
+        runners:
+          - target: r5300
+            kind: ssh
+            executable: 'C:\Windows\System32\OpenSSH\ssh.exe'
+            configPath: 'C:\Users\grinv\.ssh\config'
+            host: r5300
+          - target: prdg
+            kind: wsl
+            executable: 'C:\Windows\System32\wsl.exe'
+            distribution: Ubuntu-22.04
         workId: giana-cowork-preview-local-model-heqa-20260911
         principalId: alex
         tenantId: giana-cowork-preview
         issuerRef: giana:issuer:sha256:8fcaed49cd538cb6494053c7f2958fe9f48091e19f4258105fb5aa2a571e392a
         holderRef: giana:holder:sha256:23a5fc97f64fa90efc8fd2a913cab32474ba267195d6c6be89beb70ba809c5ee
-        admissionDigest: 4978787ea7d990e513c7737cf911a2469b40ff17e28ee4b20db73c6cb24b0bbd
+        admissionDigest: be38aebd0c53984ffd3ef7d5462a49204f5dcf76276240f2c53cd7f6bf57b5e1
         leaseTtlMs: 1800000
         operationTimeoutMs: 1500000
         maxClockSkewMs: 10000
         targets:
           - class: r5300
-            identityDigest: 49426230ec7354353db3c1f8ea8880803701b00ce8cdd8c15dfbaccb087bd2c7
-            currentnessDigest: 40ba00bc258fee097427502c53a317b791fc001cf8462e41c6ce042fa9507ec7
+            identityDigest: 91eda62878736036ed54fa46478df41b8bb3dd8fb6b4103a21cc7357eaa56ffa
+            currentnessDigest: 9dec2105ddfccfe64aa21b337a9f0669eba2d01e359d75318074afa7bcbceb37
+          - class: prdg
+            identityDigest: bf7a58918d355c553f4852af75b3875e208d140a5060fe62cb4215cfceae64c5
+            currentnessDigest: dcd5fe7ae073cfec0d43044cc9b7cb97ce81e988d5ef172a578a6a560b14add9
         localProviderIds:
           - glm-local-r5300
           - qwen-local-r5300
@@ -59,7 +69,7 @@
             provider: glm-local-r5300
             model: GLM-5.3-Flash-official-fp8-canary
             disposition: AVAILABLE
-            admissionReceiptDigest: sha256:4978787ea7d990e513c7737cf911a2469b40ff17e28ee4b20db73c6cb24b0bbd
+            admissionReceiptDigest: sha256:be38aebd0c53984ffd3ef7d5462a49204f5dcf76276240f2c53cd7f6bf57b5e1
             revisionDigest: sha256:af139ab51af2a3ad155f9b012e1351ec074b7b3672262db7a9ebb6c845742aa4
             targets:
               - r5300
@@ -75,19 +85,19 @@
             provider: qwen-local-r5300
             model: Qwen/Qwen3.8-27B
             disposition: AVAILABLE
-            admissionReceiptDigest: sha256:4978787ea7d990e513c7737cf911a2469b40ff17e28ee4b20db73c6cb24b0bbd
+            admissionReceiptDigest: sha256:be38aebd0c53984ffd3ef7d5462a49204f5dcf76276240f2c53cd7f6bf57b5e1
             revisionDigest: sha256:5da5832e0b3c0351bfb24486451b28649e629a6d14ef17c215358d8721b8b7d2
             targets:
               - r5300
+              - prdg
             allowRamCpuOffload: false
             allowExactResidentAdoption: true
             supportedReasoningEfforts:
               - low
               - medium
-              - high
               - xhigh
             stageTimeoutsMs:
-              start: 900000
+              start: 1200000
               health: 180000
               probe: 180000
 

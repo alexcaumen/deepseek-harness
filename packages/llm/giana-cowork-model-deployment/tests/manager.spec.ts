@@ -7,10 +7,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
-import Lifecycle, { createModelExecutionScopeDigest } from '@deepseek-ai/dsh-model-lifecycle'
+import Lifecycle, { ModelLifecycleStageRejectedError, createModelExecutionScopeDigest } from '@deepseek-ai/dsh-model-lifecycle'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import type {
   GovernedModelRoute,
+  ModelEvictionConsentGrant,
   ModelEvictionConsentRequest,
   ModelExecutionScope,
   ModelLifecycleStageContext,
@@ -32,7 +33,6 @@ import {
 
 const bare = (digit: string): string => digit.repeat(64)
 const prefixed = (digit: string): string => `sha256:${bare(digit)}`
-const targetIdentity = { identityDigest: bare('6'), currentnessDigest: bare('7') }
 const evictionKey = Buffer.alloc(32, 0x5a)
 const temporaryPaths: string[] = []
 
@@ -59,7 +59,11 @@ class FakeRemote {
   malformedDrain = false
   hostFence = 0
   hostLease: { id: string; fence: number; expiresAt: number } | undefined
+  prdgHostFence = 0
+  prdgHostLease: { id: string; fence: number; expiresAt: number } | undefined
   hostLeaseBusy = false
+  acquireFailureTarget: 'r5300' | 'prdg' | undefined
+  releaseFailureTarget: 'r5300' | 'prdg' | undefined
   systemdIdentityMismatch = false
   systemdMutationReceiptMissing = false
   dockerIdentityMismatch = false
@@ -69,49 +73,59 @@ class FakeRemote {
   scriptMutationReceiptMissing = false
   foreignHealthyPort: number | undefined
   lingeringListener = false
+  listenerOwnershipMismatch = false
   freeVramMiB = new Map([[0, 42_000], [1, 46_000]])
   readonly commands: string[] = []
 
-  readonly run = async (command: string): Promise<PreviewManagerRemoteResult> => {
+  readonly run = async (target: 'r5300' | 'prdg' | 'ram-cpu', command: string): Promise<PreviewManagerRemoteResult> => {
     this.commands.push(command)
     if (command.includes('GCP_') && (command.includes('docker stop --time 30 "$container_id"')
       || command.includes('systemctl stop "$unit"') || command.includes('\n"$stop_path"\n'))) {
       await this.onStopMutation?.()
     }
     if (command.includes("printf 'ACQUIRED %s %s %s")) {
-      if (this.hostLeaseBusy || (this.hostLease !== undefined && this.hostLease.expiresAt > Date.now())) {
+      if (this.acquireFailureTarget === target) return { code: 75, stdout: 'BUSY\n' }
+      const existing = target === 'prdg' ? this.prdgHostLease : this.hostLease
+      if (this.hostLeaseBusy || (existing !== undefined && existing.expiresAt > Date.now())) {
         return { code: 75, stdout: 'BUSY\n' }
       }
       const lease = /requested_lease='([a-f0-9]{64})'/u.exec(command)
       const ttl = /ttl_ms=(\d+)/u.exec(command)
       if (lease === null || ttl === null) return { code: 76, stdout: '' }
-      const recovered = this.hostLease === undefined ? 0 : 1
-      this.hostFence += 1
-      this.hostLease = { id: lease[1]!, fence: this.hostFence, expiresAt: Date.now() + Number(ttl[1]) }
-      return { code: 0, stdout: `ACQUIRED ${this.hostFence} ${this.hostLease.expiresAt} ${recovered}\n` }
+      const recovered = existing === undefined ? 0 : 1
+      const fence = target === 'prdg' ? ++this.prdgHostFence : ++this.hostFence
+      const acquired = { id: lease[1]!, fence, expiresAt: Date.now() + Number(ttl[1]) }
+      if (target === 'prdg') this.prdgHostLease = acquired
+      else this.hostLease = acquired
+      return { code: 0, stdout: `ACQUIRED ${fence} ${acquired.expiresAt} ${recovered}\n` }
     }
     if (command.includes("printf 'RENEWED %s")) {
       const ttl = /ttl_ms=(\d+)/u.exec(command)
       const lease = /expected_lease='([a-f0-9]{64})'/u.exec(command)
       const fence = /expected_fence=(\d+)/u.exec(command)
-      if (this.hostLease === undefined || ttl === null || lease === null || fence === null
-        || this.hostLease.id !== lease[1] || this.hostLease.fence !== Number(fence[1])) return { code: 76, stdout: '' }
-      this.hostLease.expiresAt = Date.now() + Number(ttl[1])
-      return { code: 0, stdout: `RENEWED ${this.hostLease.expiresAt}\n` }
+      const current = target === 'prdg' ? this.prdgHostLease : this.hostLease
+      if (current === undefined || ttl === null || lease === null || fence === null
+        || current.id !== lease[1] || current.fence !== Number(fence[1])) return { code: 76, stdout: '' }
+      current.expiresAt = Date.now() + Number(ttl[1])
+      return { code: 0, stdout: `RENEWED ${current.expiresAt}\n` }
     }
     if (command.includes("printf 'RELEASED")) {
+      if (this.releaseFailureTarget === target) return { code: 76, stdout: '' }
       const lease = /expected_lease='([a-f0-9]{64})'/u.exec(command)
       const fence = /expected_fence=(\d+)/u.exec(command)
-      if (this.hostLease === undefined || lease === null || fence === null
-        || this.hostLease.id !== lease[1] || this.hostLease.fence !== Number(fence[1])) return { code: 76, stdout: '' }
-      this.hostLease = undefined
+      const current = target === 'prdg' ? this.prdgHostLease : this.hostLease
+      if (current === undefined || lease === null || fence === null
+        || current.id !== lease[1] || current.fence !== Number(fence[1])) return { code: 76, stdout: '' }
+      if (target === 'prdg') this.prdgHostLease = undefined
+      else this.hostLease = undefined
       return { code: 0, stdout: 'RELEASED\n' }
     }
     if (command.includes("printf 'CURRENT")) {
       const lease = /expected_lease='([a-f0-9]{64})'/u.exec(command)
       const fence = /expected_fence=(\d+)/u.exec(command)
-      return this.hostLease === undefined || lease === null || fence === null
-        || this.hostLease.id !== lease[1] || this.hostLease.fence !== Number(fence[1])
+      const current = target === 'prdg' ? this.prdgHostLease : this.hostLease
+      return current === undefined || lease === null || fence === null
+        || current.id !== lease[1] || current.fence !== Number(fence[1])
         ? { code: 76, stdout: '' } : { code: 0, stdout: 'CURRENT\n' }
     }
     if (command.includes('MemAvailable')) {
@@ -139,6 +153,12 @@ class FakeRemote {
         code: 0,
         stdout: `vllm:num_requests_running ${active}\nvllm:num_requests_waiting 0\n`,
       }
+    }
+    if (command.includes("printf 'GCP_LISTENER_OWNED")) {
+      const port = command.includes(':18081') ? 18_081 : command.includes(':8000') ? 8_000 : 0
+      return !this.listenerOwnershipMismatch && this.residentPort === port
+        ? { code: 0, stdout: 'GCP_LISTENER_OWNED\n' }
+        : { code: 76, stdout: '' }
     }
     if (command.startsWith('command -v ss')) {
       const port = command.includes(':18081') ? 18_081 : command.includes(':8000') ? 8_000 : 0
@@ -259,12 +279,85 @@ class FakeRemote {
   }
 }
 
+type EndpointRoute = {
+  readonly id: string
+  readonly target: string
+  readonly runtime: { readonly localPort: number }
+}
+
+class FakeEndpoints {
+  current: string | undefined
+  ensureFailure = false
+  healthFailure = false
+  probeFailure = false
+  quiesceFailure = false
+  quiesceGate: Promise<void> | undefined
+  resumeFailure = false
+  closeFailure = false
+  closeHook: (() => void) | undefined
+  releasedFailure = false
+  readonly calls: string[] = []
+
+  private key(route: EndpointRoute): string {
+    return `${route.id}@${route.target}`
+  }
+
+  async ensure(route: EndpointRoute): Promise<boolean> {
+    this.calls.push(`ensure:${this.key(route)}`)
+    if (this.ensureFailure) return false
+    this.current = this.key(route)
+    return true
+  }
+
+  async healthy(route: EndpointRoute): Promise<boolean> {
+    this.calls.push(`healthy:${this.key(route)}`)
+    return !this.healthFailure && this.current === this.key(route)
+  }
+
+  async probe(route: EndpointRoute): Promise<boolean> {
+    this.calls.push(`probe:${this.key(route)}`)
+    return !this.probeFailure && this.current === this.key(route)
+  }
+
+  async quiesce(route: EndpointRoute): Promise<boolean> {
+    this.calls.push(`quiesce:${this.key(route)}`)
+    await this.quiesceGate
+    return !this.quiesceFailure && (this.current === undefined || this.current === this.key(route))
+  }
+
+  async resume(route: EndpointRoute): Promise<boolean> {
+    this.calls.push(`resume:${this.key(route)}`)
+    if (this.resumeFailure) return false
+    this.current = this.key(route)
+    return true
+  }
+
+  async close(route: EndpointRoute): Promise<boolean> {
+    this.calls.push(`close:${this.key(route)}`)
+    this.closeHook?.()
+    if (this.closeFailure) return false
+    if (this.current === this.key(route)) this.current = undefined
+    return true
+  }
+
+  async released(route: EndpointRoute): Promise<boolean> {
+    this.calls.push(`released:${this.key(route)}`)
+    return !this.releasedFailure && this.current !== this.key(route)
+  }
+
+  async shutdown(): Promise<void> {
+    this.calls.push('shutdown')
+    this.current = undefined
+  }
+}
+
 function scriptRuntime(): Record<string, unknown> {
   return {
     kind: 'script', startPath: '/opt/start-glm.sh', stopPath: '/opt/stop-glm.sh',
     startSha256: bare('8'), stopSha256: bare('9'),
     pidFile: '/opt/glm.pid', processMarker: 'GLM-5.3-Flash-official-fp8-canary',
-    remotePort: 18_081, expectedModel: 'GLM-5.3-Flash-official-fp8-canary',
+    remotePort: 18_081, localPort: 18_081, upstreamLocalPort: 28_081,
+    expectedModel: 'GLM-5.3-Flash-official-fp8-canary',
     drain: { kind: 'sglang-load', path: '/get_load', pollIntervalMs: 1 },
     release: { pollIntervalMs: 1, maximumSamples: 6 },
   }
@@ -274,7 +367,8 @@ function systemdRuntime(): Record<string, unknown> {
   return {
     kind: 'systemd', unit: 'gcp-glm53-official-fp8-preview-r1.service',
     launcherPath: '/opt/gcp/launcher-context64k.sh', launcherSha256: bare('c'),
-    processMarker: 'GLM-5.3-Flash-official-fp8-canary', remotePort: 18_081,
+    processMarker: 'GLM-5.3-Flash-official-fp8-canary',
+    remotePort: 18_081, localPort: 18_081, upstreamLocalPort: 28_081,
     expectedModel: 'GLM-5.3-Flash-official-fp8-canary',
     drain: { kind: 'sglang-load', path: '/get_load', pollIntervalMs: 1 },
     release: { pollIntervalMs: 1, maximumSamples: 6 },
@@ -283,16 +377,16 @@ function systemdRuntime(): Record<string, unknown> {
 
 function registry(glmRuntime: Record<string, unknown> = scriptRuntime()) {
   return parsePreviewManagerRegistry({
-    schema: 'giana.cowork.preview.model-registry.v1',
+    schema: 'giana.cowork.preview.model-registry.v2',
     issuerRef: `giana:issuer:sha256:${bare('1')}`,
     holderRef: `giana:holder:sha256:${bare('2')}`,
     admissionDigest: bare('3'),
     renewAfterMs: 10_000,
-    slot: {
-      id: 'gcp-slot-01', lockPath: '/run/lock/gcp-slot.state.lock',
+    slots: [{
+      target: 'r5300', id: 'gcp-slot-01', lockPath: '/run/lock/gcp-slot.state.lock',
       operationLockPath: '/run/lock/gcp-slot.operation.lock',
       statePath: '/var/lib/gcp-slot/state', counterPath: '/var/lib/gcp-slot/counter',
-    },
+    }],
     targets: [{ class: 'r5300', identity_digest: bare('6'), currentness_digest: bare('7') }],
     routes: [
       {
@@ -307,7 +401,7 @@ function registry(glmRuntime: Record<string, unknown> = scriptRuntime()) {
         id: 'qwen-local', revisionDigest: bare('b'), target: 'r5300', exclusiveEndpoint: true,
         runtime: {
           kind: 'docker', container: 'qwen38-vllm-server', containerId: bare('d'), imageId: prefixed('e'),
-          remotePort: 8_000,
+          remotePort: 8_000, localPort: 18_000, upstreamLocalPort: 28_000,
           expectedModel: 'Qwen/Qwen3.8-27B',
           drain: { kind: 'vllm-metrics', path: '/metrics', pollIntervalMs: 1 },
           release: { pollIntervalMs: 1, maximumSamples: 6 },
@@ -321,6 +415,34 @@ function registry(glmRuntime: Record<string, unknown> = scriptRuntime()) {
   })
 }
 
+function dualTargetRegistry() {
+  const base = registry()
+  const qwen = base.routes.find(route => route.id === 'qwen-local')!
+  return parsePreviewManagerRegistry({
+    ...base,
+    slots: [
+      ...base.slots,
+      {
+        target: 'prdg', id: 'gcp-slot-prdg-01', lockPath: '/run/lock/gcp-prdg-slot.state.lock',
+        operationLockPath: '/run/lock/gcp-prdg-slot.operation.lock',
+        statePath: '/var/lib/gcp-prdg-slot/state', counterPath: '/var/lib/gcp-prdg-slot/counter',
+      },
+    ],
+    targets: [
+      ...base.targets,
+      { class: 'prdg', identity_digest: bare('8'), currentness_digest: bare('9') },
+    ],
+    routes: [
+      ...base.routes,
+      {
+        ...qwen,
+        target: 'prdg',
+        runtime: { ...qwen.runtime, remotePort: 18_472, localPort: 18_000, upstreamLocalPort: 18_472 },
+      },
+    ],
+  })
+}
+
 async function fixture(remote: FakeRemote, configuredRegistry = registry(), operationTimeoutMs = 30_000) {
   const directory = await mkdtemp(join(tmpdir(), 'gcp-manager-'))
   temporaryPaths.push(directory)
@@ -328,24 +450,39 @@ async function fixture(remote: FakeRemote, configuredRegistry = registry(), oper
   await writeFile(`${statePath}.eviction-key`, evictionKey)
   const store = new PreviewManagerStateStore(statePath)
   await store.load()
+  const endpoints = new FakeEndpoints()
   const args: PreviewManagerArguments = {
     registryPath: join(directory, 'registry.json'), statePath,
-    sshExecutable: process.execPath, sshConfigPath: join(directory, 'ssh-config'), sshHost: 'test-host',
+    runners: configuredRegistry.targets.map(target => target.class === 'prdg'
+      ? { target: 'prdg' as const, kind: 'wsl' as const, executable: process.execPath, distribution: 'Ubuntu' }
+      : {
+        target: target.class, kind: 'ssh' as const, executable: process.execPath,
+        configPath: join(directory, 'ssh-config'), host: 'test-host',
+      }),
   }
-  const manager = new PreviewManager(configuredRegistry, store, args, remote.run)
+  const manager = new PreviewManager(configuredRegistry, store, args, remote.run, endpoints)
+  const transportResults: unknown[] = []
   const transport: ServerManagerTransport = {
-    invoke: (operation: ServerManagerOperation, request) => manager.invoke(operation, request),
+    invoke: async (operation: ServerManagerOperation, request) => {
+      const result = await manager.invoke(operation, request)
+      transportResults.push(result)
+      return result
+    },
   }
   let key = 0
   const adapter = new ServerManagerModelLifecycleAdapter({
-    transport, targets: { r5300: targetIdentity },
+    transport,
+    targets: Object.fromEntries(configuredRegistry.targets.map(target => [target.class, {
+      identityDigest: target.identity_digest,
+      currentnessDigest: target.currentness_digest,
+    }])),
     issuerRef: `giana:issuer:sha256:${bare('1')}`,
     holderRef: `giana:holder:sha256:${bare('2')}`,
     admissionDigest: bare('3'), leaseTtlMs: 60_000,
     operationTimeoutMs, maxClockSkewMs: 1_000,
     idempotencyKey: () => (++key).toString(16).padStart(64, '0'),
   })
-  return { adapter, args, manager, statePath, store }
+  return { adapter, args, endpoints, manager, statePath, store, transportResults }
 }
 
 function route(id: 'glm-official' | 'qwen-local'): GovernedModelRoute {
@@ -381,6 +518,7 @@ async function evictionEnvelope(manager: PreviewManager, statePath: string, tran
   const base = {
     lease_id: state.lease.leaseId, fence: state.lease.fence,
     transaction_digest: bare(transaction), timeout_ms: 30_000,
+    deadline_at: Date.now() + 30_000,
     target: registry().targets[0], route_id: 'glm-official', exact_revision_digest: bare('a'),
   }
   if (state.transactions[bare(transaction)].sourcePrestateDigest === undefined) {
@@ -401,12 +539,88 @@ async function evictionEnvelope(manager: PreviewManager, statePath: string, tran
   }
 }
 
+function domainConsentOf(envelope: Awaited<ReturnType<typeof evictionEnvelope>>): ModelEvictionConsentGrant {
+  const consent = envelope.eviction_consent as Record<string, unknown>
+  const prefixedField = (field: keyof typeof consent): string => `sha256:${String(consent[field])}`
+  return {
+    id: String(consent.id),
+    signature: String(consent.signature),
+    fencing_digest: prefixedField('fencing_digest'),
+    scope_digest: prefixedField('scope_digest'),
+    transaction_digest: prefixedField('transaction_digest'),
+    source_route_id: String(consent.source_route_id),
+    source_revision_digest: prefixedField('source_revision_digest'),
+    source_target: String(consent.source_target) as ModelEvictionConsentGrant['source_target'],
+    destination_route_id: String(consent.destination_route_id),
+    destination_revision_digest: prefixedField('destination_revision_digest'),
+    destination_target: String(consent.destination_target) as ModelEvictionConsentGrant['destination_target'],
+    source_prestate_digest: prefixedField('source_prestate_digest'),
+    destination_prestate_digest: prefixedField('destination_prestate_digest'),
+    expires_at: Number(consent.expires_at),
+  }
+}
+
 afterEach(async () => {
   vi.restoreAllMocks()
   await Promise.all(temporaryPaths.splice(0).map(path => rm(path, { recursive: true, force: true })))
 })
 
 describe('Giana CoWork Preview model manager', () => {
+  it('expands one durable lease across R5300 and PRDG and releases both hosts', async () => {
+    const remote = new FakeRemote()
+    const configured = dualTargetRegistry()
+    const { adapter, statePath } = await fixture(remote, configured)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    const expanded = await adapter.expand(grant, { targets: ['r5300', 'prdg'] }, new AbortController().signal)
+
+    expect(expanded.targets).toEqual(['prdg', 'r5300'])
+    expect(expanded.leaseRef).toBe(grant.leaseRef)
+    expect(expanded.fencingDigest).toBe(grant.fencingDigest)
+    expect(remote.hostLease?.id).toBe(remote.prdgHostLease?.id)
+    expect(JSON.parse(await readFile(statePath, 'utf8')).lease).toMatchObject({
+      targets: ['prdg', 'r5300'],
+      quarantined: false,
+      hostLeases: { r5300: expect.any(Object), prdg: expect.any(Object) },
+    })
+
+    await adapter.release(expanded, 'SETTLED', new AbortController().signal)
+    expect(remote.hostLease).toBeUndefined()
+    expect(remote.prdgHostLease).toBeUndefined()
+  })
+
+  it('persists a reloadable quarantine after partial multi-host acquisition cleanup fails', async () => {
+    const remote = new FakeRemote()
+    remote.acquireFailureTarget = 'r5300'
+    remote.releaseFailureTarget = 'prdg'
+    const configured = dualTargetRegistry()
+    const { args, manager, statePath } = await fixture(remote, configured)
+
+    await expect(manager.invoke('acquire', {
+      idempotency_key: bare('8'), ttl_ms: 60_000, targets: configured.targets,
+    })).rejects.toThrow('UNKNOWN_COMMIT')
+    const state = JSON.parse(await readFile(statePath, 'utf8'))
+    expect(state).toMatchObject({
+      generation: 1,
+      lease: { generation: 1, targets: ['prdg'], quarantined: true },
+    })
+
+    const reloadedStore = new PreviewManagerStateStore(statePath)
+    await expect(reloadedStore.load()).resolves.toBeUndefined()
+    const restarted = new PreviewManager(configured, reloadedStore, args, remote.run, new FakeEndpoints())
+    await expect(restarted.invoke('acquire', {
+      idempotency_key: bare('9'), ttl_ms: 60_000, targets: configured.targets,
+    })).rejects.toThrow('BUSY')
+  })
+
+  it('rejects divergent revisions for one logical route across hosts', () => {
+    const configured = dualTargetRegistry()
+    const routes = configured.routes.map(route => route.target === 'prdg'
+      ? { ...route, revisionDigest: bare('f') }
+      : route)
+    expect(() => parsePreviewManagerRegistry({ ...configured, routes })).toThrow('INVALID_REQUEST')
+  })
+
   it('settles unpublished read-only adoption without authorizing resident eviction', async () => {
     const remote = new FakeRemote()
     remote.residentPort = 18_081
@@ -420,7 +634,11 @@ describe('Giana CoWork Preview model manager', () => {
     await adapter.cancelPreparation(selected)
     await expect(new PreviewManagerStateStore(statePath).load()).resolves.toBeUndefined()
     expect(Object.values(JSON.parse(await readFile(statePath, 'utf8')).transactions))
-      .toEqual([expect.objectContaining({ terminal: true, recovery: false, adoptedResidentRouteId: 'glm-official' })])
+      .toEqual([expect.objectContaining({
+        terminal: true,
+        recovery: false,
+        adoptedResidentRouteId: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      })])
     expect(remote.residentPort).toBe(18_081)
     expect(remote.commands.some(command => command.includes('GCP_SCRIPT_MUTATION_APPLIED'))).toBe(false)
     await adapter.release(grant, 'SETTLED', new AbortController().signal)
@@ -438,6 +656,7 @@ describe('Giana CoWork Preview model manager', () => {
     const base = {
       lease_id: state.lease.leaseId, fence: state.lease.fence, transaction_digest: bare('f'),
       route_id: 'glm-official', exact_revision_digest: bare('a'), target: registry().targets[0], timeout_ms: 30_000,
+      deadline_at: Date.now() + 30_000,
     }
     await expect(manager.invoke('settle-activation', { ...base, disposition, scope_digest: bare('e'),
       expected_sequence: state.transactions[bare('f')].sequence, idempotency_key: bare('4') })).rejects.toThrow('STATE_CONFLICT')
@@ -820,7 +1039,10 @@ describe('Giana CoWork Preview model manager', () => {
     const parsed = registry()
     expect(() => parsePreviewManagerRegistry({
       ...parsed,
-      slot: { ...parsed.slot, operationLockPath: parsed.slot.lockPath },
+      slots: [{
+        ...parsed.slots[0]!,
+        operationLockPath: parsed.slots[0]!.lockPath,
+      }],
     })).toThrow('INVALID_REQUEST')
   })
 
@@ -988,6 +1210,7 @@ describe('Giana CoWork Preview model manager', () => {
       idempotency_key: bare('8'), lease_id: state.lease.leaseId, fence: state.lease.fence,
       transaction_digest: bare('f'), stage: 'prestate', route_id: 'glm-official', exact_revision_digest: bare('a'),
       target: { ...registry().targets[0], identity_digest: bare('9') }, timeout_ms: 30_000,
+      deadline_at: Date.now() + 30_000,
     })).rejects.toThrow('LEASE_MISMATCH')
     expect(remote.commands).toHaveLength(count)
   })
@@ -1066,6 +1289,20 @@ describe('Giana CoWork Preview model manager', () => {
     await expect(new PreviewManagerStateStore(statePath).load()).rejects.toThrow('STATE_CONFLICT')
   })
 
+  it('rejects a durable transaction whose map key differs from its digest before dispatch', async () => {
+    const remote = new FakeRemote()
+    const { adapter, statePath } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    await adapter.preflight(context(grant, route('glm-official'), 'f'))
+    const before = remote.commands.length
+    const state = JSON.parse(await readFile(statePath, 'utf8'))
+    state.transactions[bare('f')].digest = bare('a')
+    await writeFile(statePath, `${JSON.stringify(state)}\n`, 'utf8')
+
+    await expect(new PreviewManagerStateStore(statePath).load()).rejects.toThrow('STATE_CONFLICT')
+    expect(remote.commands).toHaveLength(before)
+  })
+
   it('binds a completed idempotency key to the exact request', async () => {
     const { manager } = await fixture(new FakeRemote())
     const request = { idempotency_key: bare('8'), ttl_ms: 60_000, targets: registry().targets }
@@ -1079,7 +1316,7 @@ describe('Giana CoWork Preview model manager', () => {
     const { args, manager, statePath } = await fixture(remote)
     const secondStore = new PreviewManagerStateStore(statePath)
     await secondStore.load()
-    const second = new PreviewManager(registry(), secondStore, args, remote.run)
+    const second = new PreviewManager(registry(), secondStore, args, remote.run, new FakeEndpoints())
     const request = { idempotency_key: bare('8'), ttl_ms: 60_000, targets: registry().targets }
     const results = await Promise.allSettled([manager.invoke('acquire', request), second.invoke('acquire', request)])
     const fulfilled = results.filter(result => result.status === 'fulfilled').map(result => result.value)
@@ -1147,7 +1384,7 @@ describe('Giana CoWork Preview model manager', () => {
   it('adopts an exact resident GLM through health and probe without a start or stop mutation', async () => {
     const remote = new FakeRemote()
     remote.residentPort = 18_081
-    const { adapter } = await fixture(remote, registry(systemdRuntime()))
+    const { adapter, endpoints } = await fixture(remote, registry(systemdRuntime()))
     const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
     const ctx = context(grant, route('glm-official'), 'f')
 
@@ -1162,7 +1399,29 @@ describe('Giana CoWork Preview model manager', () => {
 
     expect(remote.residentPort).toBe(18_081)
     expect(remote.hostLease).toBeUndefined()
+    expect(endpoints.calls).toEqual([
+      'ensure:glm-official@r5300',
+      'healthy:glm-official@r5300',
+      'probe:glm-official@r5300',
+    ])
     expect(remote.commands.some(command => command.includes('systemd-run --unit="$unit"'))).toBe(false)
+    expect(remote.commands.some(command => command.includes('systemctl stop "$unit"'))).toBe(false)
+  })
+
+  it('fails closed before adopting a resident model when its local endpoint cannot be bound', async () => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    const { adapter, endpoints } = await fixture(remote, registry(systemdRuntime()))
+    endpoints.ensureFailure = true
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const ctx = context(grant, route('glm-official'), 'f')
+
+    await adapter.preflight(ctx)
+    await adapter.capturePrestate(ctx)
+    await expect(adapter.health(ctx)).resolves.toMatchObject({ ok: false })
+
+    expect(remote.residentPort).toBe(18_081)
+    expect(endpoints.calls).toEqual(['ensure:glm-official@r5300'])
     expect(remote.commands.some(command => command.includes('systemctl stop "$unit"'))).toBe(false)
   })
 
@@ -1247,7 +1506,7 @@ describe('Giana CoWork Preview model manager', () => {
     expect(remote.residentPort).toBe(8_000)
     const stopIndex = remote.commands.findIndex(command => command.includes('systemctl stop "$unit"'))
     const startIndex = remote.commands.findIndex(command => command.includes('docker start'))
-    expect(remote.commands.filter(command => command.includes('/get_load'))).toHaveLength(3)
+    expect(remote.commands.filter(command => command.includes('/get_load'))).toHaveLength(6)
     expect(remote.commands.filter(command => command.startsWith('command -v ss') && command.includes(':18081'))).toHaveLength(3)
     expect(stopIndex).toBeGreaterThan(-1)
     expect(startIndex).toBeGreaterThan(stopIndex)
@@ -1310,6 +1569,20 @@ describe('Giana CoWork Preview model manager', () => {
     await expect(adapter.probe(glm)).resolves.toMatchObject({ ok: false })
   })
 
+  it('rejects a healthy listener that is not owned by the admitted process', async () => {
+    const remote = new FakeRemote()
+    const { adapter } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const glm = context(grant, route('glm-official'), 'f')
+    await adapter.preflight(glm)
+    await adapter.capturePrestate(glm)
+    await adapter.start(glm)
+    remote.listenerOwnershipMismatch = true
+
+    await expect(adapter.health(glm)).resolves.toMatchObject({ ok: false })
+    expect(remote.commands.some(command => command.includes("printf 'GCP_LISTENER_OWNED"))).toBe(true)
+  })
+
   it('quarantines a systemd start that returns no mutation receipt', async () => {
     const remote = new FakeRemote()
     remote.systemdMutationReceiptMissing = true
@@ -1369,6 +1642,150 @@ describe('Giana CoWork Preview model manager', () => {
     expect(remote.commands.some(command => command.includes('stop-glm'))).toBe(false)
   })
 
+  it('rechecks drain after closing admission and before the stop mutation', async () => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    remote.freeVramMiB.set(1, 4_000)
+    remote.activeRequestCounts = [0, 0, 0, 2, 0, 0, 0]
+    const { adapter, manager, statePath } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const glm = context(grant, route('glm-official'), '9')
+    const qwen = context(grant, route('qwen-local'), '9')
+    await adapter.preflight(qwen)
+    await adapter.capturePrestate(qwen)
+    const eviction = await evictionEnvelope(manager, statePath)
+    await adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' })
+    await expect(manager.invoke('stage', eviction)).resolves.toMatchObject({
+      stage_receipt: { stage: 'stop', status: 'PASS' },
+    })
+
+    expect(remote.commands.filter(command => command.includes('/get_load'))).toHaveLength(7)
+    expect(remote.residentPort).toBeUndefined()
+  })
+
+  it('waits for accepted endpoint transports before invoking the stop mutation', async () => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    remote.freeVramMiB.set(1, 4_000)
+    const { adapter, endpoints, manager, statePath } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const glm = context(grant, route('glm-official'), '9')
+    const qwen = context(grant, route('qwen-local'), '9')
+    await adapter.preflight(qwen)
+    await adapter.capturePrestate(qwen)
+    const eviction = await evictionEnvelope(manager, statePath)
+    await adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' })
+    let releaseTransport: (() => void) | undefined
+    endpoints.quiesceGate = new Promise<void>((resolve) => { releaseTransport = resolve })
+
+    const stopping = manager.invoke('stage', eviction)
+    await new Promise(resolve => setTimeout(resolve, 25))
+    expect(remote.residentPort).toBe(18_081)
+    expect(remote.commands.some(command => command.includes('systemctl stop "$unit"'))).toBe(false)
+    releaseTransport?.()
+    await expect(stopping).resolves.toMatchObject({ stage_receipt: { stage: 'stop', status: 'PASS' } })
+  })
+
+  it('restores source admission when final drain fails before any stop mutation', async () => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    remote.freeVramMiB.set(1, 4_000)
+    const { adapter, endpoints, manager, statePath, transportResults } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const glm = context(grant, route('glm-official'), '9')
+    const qwen = context(grant, route('qwen-local'), '9')
+    await adapter.preflight(qwen)
+    await adapter.capturePrestate(qwen)
+    const eviction = await evictionEnvelope(manager, statePath)
+    await adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' })
+    remote.malformedDrain = true
+
+    const rejection = adapter.stop({
+      ...glm,
+      evictionConsent: domainConsentOf(eviction),
+    })
+    const rejectionError: unknown = await rejection.catch((error: unknown) => error)
+    expect(transportResults.at(-1)).toMatchObject({
+      state: 'FAILED_FINAL', next_allowed_stages: [],
+      stage_receipt: {
+        stage: 'stop', status: 'FAIL', decision: 'SOURCE_RESTORED',
+        error_class: 'MODEL_STAGE_NOT_APPLIED_SOURCE_RESTORED',
+      },
+    })
+    expect(rejectionError).toBeInstanceOf(ModelLifecycleStageRejectedError)
+    expect(remote.residentPort).toBe(18_081)
+    expect(endpoints.current).toBe('glm-official@r5300')
+    expect(endpoints.calls.slice(-2)).toEqual(['quiesce:glm-official@r5300', 'resume:glm-official@r5300'])
+    expect(remote.commands.some(command => command.includes('systemctl stop "$unit"'))).toBe(false)
+    const state = JSON.parse(await readFile(statePath, 'utf8'))
+    expect(state.lease.quarantined).toBe(false)
+    expect(state.transactions[bare('9')]).toMatchObject({ terminal: true, nextAllowed: [], allowedRoutes: {} })
+    const retry = context(grant, route('qwen-local'), 'a')
+    await expect(adapter.preflight(retry)).resolves.toMatchObject({ ok: true })
+    await expect(adapter.capturePrestate(retry)).resolves.toMatchObject({
+      residency: { kind: 'RESIDENT', routeId: 'glm-official' },
+    })
+    await adapter.release(grant, 'SETTLED', new AbortController().signal)
+  })
+
+  it('restores admission when the stage budget expires after endpoint closure and before stop dispatch', async () => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    remote.freeVramMiB.set(1, 4_000)
+    const { adapter, endpoints, manager, statePath } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const glm = context(grant, route('glm-official'), '9')
+    const qwen = context(grant, route('qwen-local'), '9')
+    await adapter.preflight(qwen)
+    await adapter.capturePrestate(qwen)
+    const eviction = await evictionEnvelope(manager, statePath)
+    await adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' })
+    let clock = Date.now()
+    vi.spyOn(Date, 'now').mockImplementation(() => clock)
+    endpoints.closeHook = () => { clock += 1_000 }
+    eviction.timeout_ms = 100
+
+    await expect(manager.invoke('stage', eviction)).resolves.toMatchObject({
+      state: 'FAILED_FINAL',
+      next_allowed_stages: [],
+      stage_receipt: {
+        stage: 'stop', status: 'FAIL', decision: 'SOURCE_RESTORED',
+        error_class: 'MODEL_STAGE_NOT_APPLIED_SOURCE_RESTORED',
+      },
+    })
+    expect(remote.residentPort).toBe(18_081)
+    expect(endpoints.current).toBe('glm-official@r5300')
+    expect(endpoints.calls.slice(-2)).toEqual(['close:glm-official@r5300', 'resume:glm-official@r5300'])
+    expect(remote.commands.some(command => command.includes('systemctl stop "$unit"'))).toBe(false)
+  })
+
+  it('does not renew an expired caller deadline after queued state-store work', async () => {
+    const remote = new FakeRemote()
+    const { adapter, store } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const selected = context(grant, route('glm-official'), '9')
+    await adapter.preflight(selected)
+    await adapter.capturePrestate(selected)
+    let enterQueue: (() => void) | undefined
+    let releaseQueue: (() => void) | undefined
+    const entered = new Promise<void>((resolve) => { enterQueue = resolve })
+    const gate = new Promise<void>((resolve) => { releaseQueue = resolve })
+    const queued = store.run(async () => {
+      enterQueue?.()
+      await gate
+    })
+    await entered
+    const before = remote.commands.length
+    const expired = expect(adapter.start({ ...selected, deadlineAt: Date.now() + 25 })).rejects.toThrow()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    releaseQueue?.()
+    await queued
+
+    await expired
+    expect(remote.commands).toHaveLength(before)
+    expect(remote.residentPort).toBeUndefined()
+  })
+
   it('keeps the resident route running when active-request telemetry is unavailable', async () => {
     const remote = new FakeRemote()
     remote.residentPort = 18_081
@@ -1403,7 +1820,7 @@ describe('Giana CoWork Preview model manager', () => {
     await expect(manager.invoke('stage', {
       lease_id: state.lease.leaseId, fence: state.lease.fence, transaction_digest: bare('9'),
       target: registry().targets[0], route_id: 'qwen-local', exact_revision_digest: bare('b'),
-      stage: 'stop', idempotency_key: bare('6'), timeout_ms: 30_000,
+      stage: 'stop', idempotency_key: bare('6'), timeout_ms: 30_000, deadline_at: Date.now() + 30_000,
     })).rejects.toThrow('STATE_CONFLICT')
     expect(remote.commands).toHaveLength(count)
     const eviction = await evictionEnvelope(manager, statePath)
@@ -1543,6 +1960,7 @@ describe('Giana CoWork Preview model manager', () => {
     const base = {
       lease_id: lease.lease_id, fence: lease.fence, transaction_digest: bare('9'),
       target: registry().targets[0], route_id: 'glm-official', exact_revision_digest: bare('a'), timeout_ms: 30_000,
+      deadline_at: Date.now() + 30_000,
     }
     await manager.invoke('begin', {
       ...base, idempotency_key: bare('2'), scope_digest: bare('e'), transaction_kind: kind,
@@ -1576,8 +1994,10 @@ describe('Giana CoWork Preview model manager', () => {
     remote.modelsError = undefined
 
     await adapter.settleActivation(qwen, 'COMPENSATE')
+    remote.malformedDrain = true
     await adapter.stop(qwen)
     await adapter.verifyStopped(qwen)
+    remote.malformedDrain = false
     await adapter.start(glm)
     await expect(adapter.health(glm)).resolves.toMatchObject({ ok: true })
     await expect(adapter.probe(glm)).resolves.toMatchObject({ ok: true })
@@ -1586,8 +2006,43 @@ describe('Giana CoWork Preview model manager', () => {
     expect(remote.residentPort).toBe(18_081)
     const stopTarget = remote.commands.findIndex(command => command.includes('docker stop'))
     const restoreSource = remote.commands.findIndex(command => command.includes('\n"$start_path"\n'))
+    const scriptStop = remote.commands.find(command => command.includes('\n"$stop_path"\n'))
     expect(stopTarget).toBeGreaterThan(-1)
     expect(restoreSource).toBeGreaterThan(stopTarget)
+    expect(scriptStop).toContain('[ "$group" = "$tracked_group" ]')
+    expect(scriptStop).toContain('[ "$matches" -ge 1 ]')
+  })
+
+  it('persists launch ownership before readiness and cleans the unhealthy destination', async () => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    remote.freeVramMiB.set(1, 4_000)
+    const { adapter, manager, statePath } = await fixture(remote, registry(systemdRuntime()), 30_000)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const glm = context(grant, route('glm-official'), '9')
+    const qwen = { ...context(grant, route('qwen-local'), '9'), deadlineAt: Date.now() + 1_000 }
+    await adapter.preflight(qwen)
+    await adapter.capturePrestate(qwen)
+    const eviction = await evictionEnvelope(manager, statePath)
+    await adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' })
+    await manager.invoke('stage', eviction)
+    await adapter.verifyStopped(glm)
+    remote.modelsError = 7
+
+    await expect(adapter.start(qwen)).rejects.toThrow()
+    const launched = JSON.parse(await readFile(statePath, 'utf8')).transactions[bare('9')]
+    expect(launched.startedRouteId).toBe(launched.destinationRouteId)
+    expect(remote.residentPort).toBe(8_000)
+    remote.modelsError = undefined
+    const cleanupQwen = { ...qwen, deadlineAt: Date.now() + 30_000 }
+    await adapter.settleActivation(cleanupQwen, 'COMPENSATE')
+    remote.malformedDrain = true
+    await adapter.stop(cleanupQwen)
+    await adapter.verifyStopped(cleanupQwen)
+    remote.malformedDrain = false
+    await adapter.start(glm)
+    await expect(adapter.health(glm)).resolves.toMatchObject({ ok: true })
+    expect(remote.residentPort).toBe(18_081)
   })
 
   it('settles cleanup after a definite cold-start rejection with no previous route', async () => {

@@ -67,15 +67,29 @@ export interface RouteConfig {
   readonly stageTimeoutsMs?: Readonly<Record<string, number>>
 }
 
+/** One fixed command runner for an admitted compute target. */
+export type RunnerConfig =
+  | {
+    readonly target: ModelComputeTarget
+    readonly kind: 'ssh'
+    readonly executable: string
+    readonly configPath: string
+    readonly host: string
+  }
+  | {
+    readonly target: ModelComputeTarget
+    readonly kind: 'wsl'
+    readonly executable: string
+    readonly distribution: string
+  }
+
 /** Deployment values supplied by the isolated GCP profile. */
 export interface Config {
   readonly admissionReceiptPath: string
   readonly registryPath: string
   readonly statePath: string
   readonly auditPath: string
-  readonly sshExecutable: string
-  readonly sshConfigPath: string
-  readonly sshHost: string
+  readonly runners: RunnerConfig[]
   readonly workId: string
   readonly principalId: string
   readonly tenantId: string
@@ -112,15 +126,29 @@ const routeSchema = z.object({
   stageTimeoutsMs: z.dict(z.number().step(1).min(1)).default(undefined as unknown as Record<string, number>),
 })
 
+const runnerSchema = z.union([
+  z.object({
+    target: z.union([...TARGETS]),
+    kind: z.const('ssh'),
+    executable: z.string().min(1),
+    configPath: z.string().min(1),
+    host: z.string().min(1),
+  }),
+  z.object({
+    target: z.union([...TARGETS]),
+    kind: z.const('wsl'),
+    executable: z.string().min(1),
+    distribution: z.string().min(1),
+  }),
+])
+
 /** Loader schema for the explicit preview deployment. */
 export const Config: z<Config> = z.object({
   admissionReceiptPath: z.string().min(1),
   registryPath: z.string().min(1),
   statePath: z.string().min(1),
   auditPath: z.string().min(1),
-  sshExecutable: z.string().min(1),
-  sshConfigPath: z.string().min(1),
-  sshHost: z.string().min(1),
+  runners: z.array(runnerSchema).min(1),
   workId: z.string().min(1),
   principalId: z.string().min(1),
   tenantId: z.string().min(1),
@@ -143,7 +171,10 @@ function validate(config: Config): void {
   for (const [label, value] of [
     ['admissionReceiptPath', config.admissionReceiptPath],
     ['registryPath', config.registryPath], ['statePath', config.statePath],
-    ['auditPath', config.auditPath], ['sshExecutable', config.sshExecutable], ['sshConfigPath', config.sshConfigPath],
+    ['auditPath', config.auditPath],
+    ...config.runners.flatMap(runner => runner.kind === 'ssh'
+      ? [['runner.executable', runner.executable], ['runner.configPath', runner.configPath]] as const
+      : [['runner.executable', runner.executable]] as const),
     ...config.managerScript === undefined ? [] : [['managerScript', config.managerScript]],
   ] as const) {
     if (!isAbsolute(value)) throw new Error(`GCP model deployment ${label} must be absolute`)
@@ -172,6 +203,11 @@ function validate(config: Config): void {
       throw new Error('GCP model deployment target identity is invalid or duplicated')
     }
     targetClasses.add(target.class)
+  }
+  const runnerTargets = new Set(config.runners.map(runner => runner.target))
+  if (runnerTargets.size !== config.runners.length
+    || [...targetClasses].some(target => !runnerTargets.has(target))) {
+    throw new Error('GCP model deployment runners are duplicated or omit a target')
   }
   const ids = new Set<string>()
   const selections = new Set<string>()
@@ -362,7 +398,7 @@ export function apply(ctx: Context, input: Config): void {
   const transport = new ServerManagerStdioTransport({
     executable: process.execPath,
     args: [managerScript, '--registry', config.registryPath, '--state', config.statePath,
-      '--ssh', config.sshExecutable, '--ssh-config', config.sshConfigPath, '--host', config.sshHost],
+      '--runners', JSON.stringify(config.runners)],
     env: managerEnvironment(), maxOperationMs: config.operationTimeoutMs,
   })
   const targets = Object.fromEntries(config.targets.map((target: TargetConfig) => [target.class, {

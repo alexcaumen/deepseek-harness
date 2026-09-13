@@ -18,7 +18,7 @@ export interface ServerManagerStdioOptions {
 
 /** Transport failures never include child output, commands, or private lease payloads. */
 export class ServerManagerTransportError extends Error {
-  constructor(readonly code: 'INVALID_CONFIG' | 'UNAVAILABLE' | 'PROTOCOL_INVALID' | 'ABORTED' | 'TIMEOUT' | 'QUEUE_FULL') {
+  constructor(readonly code: 'INVALID_CONFIG' | 'UNAVAILABLE' | 'TARGET_UNAVAILABLE' | 'PROTOCOL_INVALID' | 'ABORTED' | 'TIMEOUT' | 'QUEUE_FULL') {
     super(`Local model controller transport: ${code}`)
     this.name = 'ServerManagerTransportError'
   }
@@ -160,7 +160,15 @@ export class ServerManagerStdioTransport implements ServerManagerTransport {
         const record = result as Record<string, unknown>
         if (typeof record.id !== 'string' || !this.pending.has(record.id)
           || (Object.hasOwn(record, 'result') === Object.hasOwn(record, 'error'))) throw new Error('frame')
-        this.finish(record.id, Object.hasOwn(record, 'error') ? new ServerManagerTransportError('UNAVAILABLE') : undefined, record.result)
+        let error: ServerManagerTransportError | undefined
+        if (Object.hasOwn(record, 'error')) {
+          const payload = record.error
+          error = payload !== null && typeof payload === 'object' && !Array.isArray(payload)
+            && (payload as Record<string, unknown>).code === 'TARGET_UNAVAILABLE'
+            ? new ServerManagerTransportError('TARGET_UNAVAILABLE')
+            : new ServerManagerTransportError('UNAVAILABLE')
+        }
+        this.finish(record.id, error, record.result)
       } catch {
         this.fail(new ServerManagerTransportError('PROTOCOL_INVALID'))
         return

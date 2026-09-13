@@ -5,6 +5,7 @@
  */
 
 import { createHash, randomBytes } from 'node:crypto'
+import { ServerManagerTransportError } from './stdio-transport.ts'
 export { ServerManagerStdioTransport, ServerManagerTransportError } from './stdio-transport.ts'
 export type { ServerManagerStdioOptions } from './stdio-transport.ts'
 export { installServerManagerLifecycle } from './install.ts'
@@ -21,6 +22,7 @@ import {
   type ModelLifecycleStage,
   type ModelLifecycleStageContext,
   type ModelLifecycleStageReceipt,
+  ModelLifecycleStageRejectedError,
   type ResourceLeaseGrant,
   type ResourceLeaseProvider,
   type ResourceLeaseTarget,
@@ -36,6 +38,7 @@ const LIFECYCLE_STAGES = new Set<ModelLifecycleStage>([
 /** Owner API operations. Deployment maps these names to authenticated routes. */
 export type ServerManagerOperation =
   | 'acquire'
+  | 'expand'
   | 'renew'
   | 'release'
   | 'begin'
@@ -124,7 +127,7 @@ interface WireReceipt {
 interface LeaseState {
   wire: WireReceipt
   grant: ResourceLeaseGrant
-  readonly targetDescriptors: readonly WireTarget[]
+  targetDescriptors: readonly WireTarget[]
   readonly transactions: Map<string, TransactionState>
 }
 
@@ -298,6 +301,34 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
     return grant
   }
 
+  async expand(
+    grant: ResourceLeaseGrant,
+    request: { targets: readonly ResourceLeaseTarget[] },
+    signal: AbortSignal,
+  ): Promise<ResourceLeaseGrant> {
+    const state = this.lease(grant)
+    const classes = [...request.targets]
+    if (classes.length === 0 || classes.length > 3 || new Set(classes).size !== classes.length
+      || !grant.targets.every(target => classes.includes(target))) {
+      throw new ResourceLeaseError('RESOURCE_LEASE_LOST')
+    }
+    const targetDescriptors = sortedTargets(classes.map(target => this.target(target)))
+    const startedAt = this.now()
+    const receipt = await this.invoke('expand', {
+      ...this.boundRequest(state),
+      idempotency_key: this.key(),
+      timeout_ms: this.operationTimeoutMs,
+      ttl_ms: this.leaseTtlMs,
+      targets: targetDescriptors,
+    }, signal)
+    this.validateLeaseReceipt(receipt, 'EXPANDED', classes, targetDescriptors, state.wire)
+    const expanded = this.toGrant(receipt, startedAt, grant)
+    state.wire = receipt
+    state.grant = expanded
+    state.targetDescriptors = targetDescriptors
+    return expanded
+  }
+
   async renew(grant: ResourceLeaseGrant, signal: AbortSignal): Promise<ResourceLeaseGrant> {
     const state = this.lease(grant)
     const startedAt = this.now()
@@ -410,7 +441,7 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
     }, context.signal)
     this.validateTransactionReceipt(receipt, state, transaction,
       disposition === 'COMMIT' ? 'ACTIVATION_COMMITTED' : 'COMPENSATION_AUTHORIZED')
-    if (receipt.transaction_sequence !== Number(sequence) + 1
+    if (receipt.transaction_sequence !== sequence + 1
       || (disposition === 'COMMIT' ? receipt.activation_settlement !== 'COMMITTED'
         : receipt.activation_settlement !== 'COMPENSATING' && receipt.activation_settlement !== 'ACTIVE')) {
       throw new ServerManagerAdapterError('CONTRACT_INVALID')
@@ -498,6 +529,14 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
     decision: string,
   ): Promise<ModelLifecycleStageReceipt> {
     const result = await this.stage(context, stage)
+    const rejected = result.wire.stage_receipt
+    if (stage === 'stop'
+      && rejected?.status === 'FAIL'
+      && rejected.decision === 'SOURCE_RESTORED'
+      && rejected.error_class === 'MODEL_STAGE_NOT_APPLIED_SOURCE_RESTORED'
+      && result.wire.next_allowed_stages?.length === 0) {
+      throw new ModelLifecycleStageRejectedError('stop', 'NO_MUTATION_SOURCE_RESTORED')
+    }
     if (result.wire.stage_receipt?.status !== 'PASS' || result.wire.stage_receipt.decision !== decision) {
       throw new ServerManagerAdapterError('STAGE_REJECTED')
     }
@@ -521,6 +560,7 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
       ...this.boundRequest(state),
       idempotency_key: this.key(),
       timeout_ms: Math.min(timeoutMs, this.operationTimeoutMs),
+      deadline_at: Math.floor(context.deadlineAt),
       transaction_digest: transaction.digest,
       cancellation_generation: state.wire.generation,
       target: this.target(context.target),
@@ -617,6 +657,10 @@ export class ServerManagerModelLifecycleAdapter implements ResourceLeaseProvider
       return value as unknown as WireReceipt
     } catch (error: unknown) {
       if (error instanceof ServerManagerAdapterError || error instanceof ResourceLeaseError) throw error
+      if ((operation === 'acquire' || operation === 'expand') && error instanceof ServerManagerTransportError
+        && error.code === 'TARGET_UNAVAILABLE') {
+        throw new ResourceLeaseError('RESOURCE_TARGET_UNAVAILABLE')
+      }
       throw new ServerManagerAdapterError('TRANSPORT_UNAVAILABLE')
     }
   }

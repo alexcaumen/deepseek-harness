@@ -60,7 +60,10 @@ it('boots from Loader while a held route remains inert at mount and dispatch', a
   }
   const config: DeploymentConfig = {
     admissionReceiptPath, registryPath: join(root, 'registry.json'), statePath, auditPath,
-    sshExecutable: process.execPath, sshConfigPath: join(root, 'ssh-config'), sshHost: 'test-r5300',
+    runners: [{
+      target: 'r5300', kind: 'ssh', executable: process.execPath,
+      configPath: join(root, 'ssh-config'), host: 'test-r5300',
+    }],
     workId: 'gcp-loader-fixture', principalId: 'fixture-user', tenantId: 'fixture-tenant',
     issuerRef: 'giana:issuer:sha256:' + bare('1'), holderRef: 'giana:holder:sha256:' + bare('2'),
     admissionDigest, leaseTtlMs: 60_000, operationTimeoutMs: 30_000, maxClockSkewMs: 1_000,

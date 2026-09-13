@@ -7,12 +7,14 @@ import type {
   ResourceLeaseGrant,
   ResourceLeaseTarget,
 } from '@deepseek-ai/dsh-model-lifecycle/src/index.ts'
+import { ModelLifecycleStageRejectedError } from '@deepseek-ai/dsh-model-lifecycle/src/index.ts'
 import {
   ServerManagerAdapterError,
   ServerManagerModelLifecycleAdapter,
   type ServerManagerOperation,
   type ServerManagerTransport,
 } from '../src/index.ts'
+import { ServerManagerTransportError } from '../src/stdio-transport.ts'
 
 const bare = (digit: string): string => digit.repeat(64)
 const prefixed = (digit: string): string => `sha256:${bare(digit)}`
@@ -64,6 +66,7 @@ class FixtureTransport implements ServerManagerTransport {
   health: 'HEALTHY' | 'UNHEALTHY' = 'HEALTHY'
   corruptNext = false
   duplicateTargetsNext = false
+  failNext: ServerManagerTransportError['code'] | undefined
   mutateNextStage: ((receipt: Record<string, unknown>) => void) | undefined
   private transaction: Record<string, unknown> = {}
 
@@ -72,10 +75,15 @@ class FixtureTransport implements ServerManagerTransport {
     request: Readonly<Record<string, unknown>>,
   ): Promise<unknown> {
     this.calls.push({ operation, request })
-    const targets = operation === 'acquire'
+    if (this.failNext !== undefined) {
+      const code = this.failNext
+      this.failNext = undefined
+      throw new ServerManagerTransportError(code)
+    }
+    const targets = operation === 'acquire' || operation === 'expand'
       ? (request.targets as readonly Record<string, unknown>[]).map(target => target.class)
       : ['r5300']
-    const descriptors = operation === 'acquire'
+    const descriptors = operation === 'acquire' || operation === 'expand'
       ? [...request.targets as readonly Record<string, unknown>[]]
         .sort((left, right) => String(left.class).localeCompare(String(right.class)))
       : [this.target('r5300')]
@@ -96,7 +104,10 @@ class FixtureTransport implements ServerManagerTransport {
       admission_digest: ADMISSION,
       no_secret: true,
     }
-    if (operation === 'renew') {
+    if (operation === 'expand') {
+      base.state = 'EXPANDED'
+      base.expiresAt = this.now + 60_000
+    } else if (operation === 'renew') {
       base.state = 'RENEWED'
       base.expiresAt = this.now + 60_000
     } else if (operation === 'begin') {
@@ -254,6 +265,59 @@ describe('Server Manager model lifecycle gateway', () => {
     expect(transport.calls.map(call => call.operation)).toEqual(['acquire', 'renew', 'release'])
   })
 
+  it('preserves a terminal no-mutation source-restored stop rejection', async () => {
+    const transport = new FixtureTransport()
+    const gateway = adapter(transport)
+    const grant = await gateway.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    transport.mutateNextStage = (receipt) => {
+      receipt.state = 'FAILED_FINAL'
+      receipt.next_allowed_stages = []
+      const stage = receipt.stage_receipt as Record<string, unknown>
+      stage.status = 'FAIL'
+      stage.decision = 'SOURCE_RESTORED'
+      stage.error_class = 'MODEL_STAGE_NOT_APPLIED_SOURCE_RESTORED'
+    }
+
+    await expect(gateway.stop(context(grant))).rejects.toBeInstanceOf(ModelLifecycleStageRejectedError)
+    await gateway.release(grant, 'SETTLED', new AbortController().signal)
+    expect(transport.calls.map(call => call.operation)).toEqual(['acquire', 'begin', 'stage', 'release'])
+  })
+
+  it('expands one lease atomically while preserving its identity and fence', async () => {
+    const transport = new FixtureTransport()
+    const gateway = adapter(transport)
+    const grant = await gateway.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    transport.now += 11_000
+
+    const expanded = await gateway.expand(grant, { targets: ['r5300', 'prdg'] }, new AbortController().signal)
+
+    expect(expanded).toMatchObject({
+      leaseRef: grant.leaseRef,
+      fencingDigest: grant.fencingDigest,
+      targets: ['prdg', 'r5300'],
+      expiresAt: 1_041_000,
+    })
+    expect(expanded.receiptDigest).not.toBe(grant.receiptDigest)
+    expect(transport.calls.map(call => call.operation)).toEqual(['acquire', 'expand'])
+  })
+
+  it('maps only explicit target unavailability during acquire or expansion', async () => {
+    const transport = new FixtureTransport()
+    const gateway = adapter(transport)
+    transport.failNext = 'TARGET_UNAVAILABLE'
+    await expect(gateway.acquire({ targets: ['r5300'] }, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'RESOURCE_TARGET_UNAVAILABLE' })
+
+    const grant = await gateway.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    transport.failNext = 'TARGET_UNAVAILABLE'
+    await expect(gateway.expand(grant, { targets: ['r5300', 'prdg'] }, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'RESOURCE_TARGET_UNAVAILABLE' })
+
+    transport.failNext = 'UNAVAILABLE'
+    await expect(gateway.expand(grant, { targets: ['r5300', 'prdg'] }, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'TRANSPORT_UNAVAILABLE' })
+  })
+
   it('terminally cancels an unavailable-only transaction before settled release', async () => {
     const transport = new FixtureTransport()
     transport.preflight = 'UNAVAILABLE'
@@ -349,7 +413,7 @@ describe('Server Manager model lifecycle gateway', () => {
       source_prestate_digest: bare('c'),
       destination_prestate_digest: bare('d'),
     })
-    expect(request).toMatchObject({ lease_id: LEASE_ID, fence: 1 })
+    expect(request).toMatchObject({ lease_id: LEASE_ID, fence: 1, deadline_at: 1_020_000 })
   })
 
   it('rejects a receipt changed after signing without exposing the wire payload', async () => {

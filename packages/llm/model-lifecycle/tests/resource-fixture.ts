@@ -11,8 +11,15 @@ export function fixtureResources(): ResourceLeaseProvider {
       fencingDigest: `sha256:${'f'.repeat(64)}`, receiptDigest: `sha256:${'e'.repeat(64)}`,
       expiresAt: Date.now() + 60_000, renewAfterMs: 20_000,
     }),
+    expand: async (grant, request) => ({
+      ...grant,
+      targets: [...request.targets],
+      expiresAt: Math.max(Date.now() + 60_000, grant.expiresAt + 1),
+      renewAfterMs: 20_000,
+      receiptDigest: `sha256:${(++sequence).toString(16).padStart(64, '0')}`,
+    }),
     renew: async grant => ({
-      ...grant, expiresAt: Date.now() + 60_000, renewAfterMs: 20_000,
+      ...grant, expiresAt: Math.max(Date.now() + 60_000, grant.expiresAt + 1), renewAfterMs: 20_000,
       receiptDigest: `sha256:${(++sequence).toString(16).padStart(64, '0')}`,
     }),
     release: async () => {},
