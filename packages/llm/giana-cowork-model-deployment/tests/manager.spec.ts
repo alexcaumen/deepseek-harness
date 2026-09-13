@@ -79,12 +79,20 @@ class FakeRemote {
   freeVramMiB = new Map([[0, 42_000], [1, 46_000]])
   deviceResetError: number | undefined
   deviceResetReject = false
+  devicePrecheckResults: Array<PreviewManagerRemoteResult | Error> = []
+  onDevicePrecheck: (() => void) | undefined
   onDeviceReset: (() => void) | undefined
   onDeviceResetTelemetry: (() => void) | undefined
   readonly commands: string[] = []
+  readonly calls: Array<{ command: string; timeoutMs: number }> = []
 
-  readonly run = async (target: 'r5300' | 'prdg' | 'ram-cpu', command: string): Promise<PreviewManagerRemoteResult> => {
+  readonly run = async (
+    target: 'r5300' | 'prdg' | 'ram-cpu',
+    command: string,
+    timeoutMs: number,
+  ): Promise<PreviewManagerRemoteResult> => {
     this.commands.push(command)
+    this.calls.push({ command, timeoutMs })
     if (command.includes('GCP_') && (command.includes('docker stop --time 30 "$container_id"')
       || command.includes('systemctl stop "$unit"') || command.includes('\n"$stop_path"\n'))) {
       await this.onStopMutation?.()
@@ -135,6 +143,15 @@ class FakeRemote {
         ? { code: 76, stdout: '' } : { code: 0, stdout: 'CURRENT\n' }
     }
     if (command.includes('GCP_DEVICE_RECOVERY_PRECHECKED')) {
+      this.onDevicePrecheck?.()
+      const lease = /expected_lease='([a-f0-9]{64})'/u.exec(command)
+      const fence = /expected_fence=(\d+)/u.exec(command)
+      const current = target === 'prdg' ? this.prdgHostLease : this.hostLease
+      if (current === undefined || lease === null || fence === null
+        || current.id !== lease[1] || current.fence !== Number(fence[1])) return { code: 76, stdout: '' }
+      const result = this.devicePrecheckResults.shift()
+      if (result instanceof Error) throw result
+      if (result !== undefined) return result
       return { code: 0, stdout: 'GCP_DEVICE_RECOVERY_PRECHECKED\n' }
     }
     if (command.includes('GCP_DEVICE_RECOVERY_APPLIED')) {
@@ -1199,6 +1216,124 @@ describe('Giana CoWork Preview model manager', () => {
     expect(reset).toContain('--query-compute-apps=pid,gpu_uuid')
     expect(reset).toContain('GPU-1')
     expect(remote.telemetry).toContain('GPU-1, None')
+  })
+
+  it('retries only a transient non-mutating recovery precheck before one reset', async () => {
+    const remote = new FakeRemote()
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reset, 45000\nAPPS\n'
+    remote.devicePrecheckResults.push(
+      { code: 78, stdout: '' },
+      new Error('transient transport failure'),
+    )
+    const { adapter } = await fixture(remote, registry(), 30_000, approveRecovery)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('glm-official'), 'f')))
+      .resolves.toMatchObject({ ok: true })
+
+    expect(remote.commands.filter(command => command.includes('GCP_DEVICE_RECOVERY_PRECHECKED'))).toHaveLength(3)
+    expect(remote.commands.filter(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))).toHaveLength(1)
+    const precheckTimeouts = remote.calls
+      .filter(call => call.command.includes('GCP_DEVICE_RECOVERY_PRECHECKED'))
+      .map(call => call.timeoutMs)
+    expect(precheckTimeouts[1]).toBeLessThan(precheckTimeouts[0]!)
+    expect(precheckTimeouts[2]).toBeLessThan(precheckTimeouts[1]!)
+    expect(remote.commands[remote.commands.findIndex(command => command.includes('GCP_DEVICE_RECOVERY_PRECHECKED'))])
+      .toContain('gpu_recovery_action --format=csv,noheader,nounits -i 1) || exit 78')
+    expect(remote.commands[remote.commands.findIndex(command => command.includes('GCP_DEVICE_RECOVERY_PRECHECKED'))])
+      .toContain('apps=$(nvidia-smi --query-compute-apps=pid,gpu_uuid --format=csv,noheader,nounits) || exit 78')
+  })
+
+  it('fails closed after three transient recovery prechecks without resetting', async () => {
+    const remote = new FakeRemote()
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reset, 45000\nAPPS\n'
+    remote.devicePrecheckResults.push(
+      { code: 75, stdout: '' },
+      { code: 255, stdout: '' },
+      new Error('persistent transport failure'),
+    )
+    const { adapter } = await fixture(remote, registry(), 30_000, approveRecovery)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('glm-official'), 'f'))).rejects.toThrow()
+    expect(remote.commands.filter(command => command.includes('GCP_DEVICE_RECOVERY_PRECHECKED'))).toHaveLength(3)
+    expect(remote.commands.some(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))).toBe(false)
+  })
+
+  it('does not retry a definitive recovery precheck mismatch', async () => {
+    const remote = new FakeRemote()
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reset, 45000\nAPPS\n'
+    remote.devicePrecheckResults.push({ code: 76, stdout: '' })
+    const { adapter } = await fixture(remote, registry(), 30_000, approveRecovery)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('glm-official'), 'f'))).rejects.toThrow()
+    expect(remote.commands.filter(command => command.includes('GCP_DEVICE_RECOVERY_PRECHECKED'))).toHaveLength(1)
+    expect(remote.commands.some(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))).toBe(false)
+  })
+
+  it.each([
+    { code: 0, stdout: '' },
+    { code: 0, stdout: 'GCP_DEVICE_RECOVERY_PRECHECKED\nEXTRA\n' },
+    { code: 78, stdout: 'GCP_DEVICE_RECOVERY_PRECHECKED\n' },
+  ])('does not accept or retry an invalid recovery precheck result %#', async (invalidResult) => {
+    const remote = new FakeRemote()
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reset, 45000\nAPPS\n'
+    remote.devicePrecheckResults.push(...Array.from(
+      { length: invalidResult.code === 78 ? 3 : 1 },
+      () => invalidResult,
+    ))
+    const { adapter } = await fixture(remote, registry(), 30_000, approveRecovery)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('glm-official'), 'f'))).rejects.toThrow()
+    const prechecks = remote.commands.filter(command => command.includes('GCP_DEVICE_RECOVERY_PRECHECKED'))
+    expect(prechecks).toHaveLength(invalidResult.code === 78 ? 3 : 1)
+    expect(remote.commands.some(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))).toBe(false)
+  })
+
+  it('does not dispatch another precheck when the approval expires during retry', async () => {
+    const remote = new FakeRemote()
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reset, 45000\nAPPS\n'
+    remote.devicePrecheckResults.push({ code: 75, stdout: '' })
+    const startedAt = Date.now()
+    remote.onDevicePrecheck = () => { vi.spyOn(Date, 'now').mockReturnValue(startedAt + 20_000) }
+    const { adapter } = await fixture(remote, registry(), 30_000, approveRecovery)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('glm-official'), 'f'))).rejects.toThrow()
+    expect(remote.commands.filter(command => command.includes('GCP_DEVICE_RECOVERY_PRECHECKED'))).toHaveLength(1)
+    expect(remote.commands.some(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))).toBe(false)
+  })
+
+  it('does not create a fresh budget after the first recovery precheck attempt', async () => {
+    const remote = new FakeRemote()
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reset, 45000\nAPPS\n'
+    remote.devicePrecheckResults.push({ code: 75, stdout: '' })
+    const startedAt = Date.now()
+    remote.onDevicePrecheck = () => { vi.spyOn(Date, 'now').mockReturnValue(startedAt + 6_000) }
+    const { adapter } = await fixture(remote, registry(), 30_000, approveRecovery)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const shortContext = { ...context(grant, route('glm-official'), 'f'), deadlineAt: startedAt + 5_000 }
+
+    await expect(adapter.preflight(shortContext)).rejects.toThrow()
+    expect(remote.commands.filter(command => command.includes('GCP_DEVICE_RECOVERY_PRECHECKED'))).toHaveLength(1)
+    expect(remote.commands.some(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))).toBe(false)
+  })
+
+  it('fails the generated recovery precheck when its host fence changes', async () => {
+    const remote = new FakeRemote()
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reset, 45000\nAPPS\n'
+    const { adapter } = await fixture(remote, registry(), 30_000, approveRecovery)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const approvedFence = remote.hostLease!.fence
+    remote.onDevicePrecheck = () => { remote.hostLease!.fence += 1 }
+
+    await expect(adapter.preflight(context(grant, route('glm-official'), 'f'))).rejects.toThrow()
+    const prechecks = remote.calls.filter(call => call.command.includes('GCP_DEVICE_RECOVERY_PRECHECKED'))
+    expect(prechecks).toHaveLength(1)
+    expect(prechecks[0]?.command).toContain(`expected_fence=${approvedFence}`)
+    expect(remote.commands.some(command => command.includes('GCP_DEVICE_RECOVERY_APPLIED'))).toBe(false)
   })
 
   it('never offers or performs reset when the affected GPU has a real compute process', async () => {

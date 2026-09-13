@@ -2425,9 +2425,9 @@ export class PreviewManager {
     const checks = consent.devices.flatMap((device) => {
       const expected = `${device.index}, ${device.uuid}, Reset`
       return [
-        `row=$(nvidia-smi --query-gpu=index,uuid,gpu_recovery_action --format=csv,noheader,nounits -i ${device.index})`,
+        `row=$(nvidia-smi --query-gpu=index,uuid,gpu_recovery_action --format=csv,noheader,nounits -i ${device.index}) || exit 78`,
         `[ "$row" = ${shellQuote(expected)} ] || exit 76`,
-        'apps=$(nvidia-smi --query-compute-apps=pid,gpu_uuid --format=csv,noheader,nounits) || exit 76',
+        'apps=$(nvidia-smi --query-compute-apps=pid,gpu_uuid --format=csv,noheader,nounits) || exit 78',
         `if printf '%s\\n' "$apps" | awk -F',' -v uuid=${shellQuote(device.uuid)} '{ gsub(/^[ \\t]+|[ \\t]+$/, "", $1); gsub(/^[ \\t]+|[ \\t]+$/, "", $2); if ($2 == uuid && $1 ~ /^[0-9]+$/) found=1 } END { exit found ? 0 : 1 }'; then exit 76; fi`,
       ]
     })
@@ -2436,13 +2436,22 @@ export class PreviewManager {
       ...checks,
       "printf 'GCP_DEVICE_RECOVERY_PRECHECKED\\n'",
     ].join('; ')
-    let result: PreviewManagerRemoteResult
-    try {
-      result = await this.runFencedMutation(route.target, lease, precheck, budget.remaining())
-    } catch {
-      throw new ManagerError('REMOTE_FAILURE')
+    let result: PreviewManagerRemoteResult | undefined
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      if (consent.expires_at <= Date.now()) throw new ManagerError('REMOTE_FAILURE')
+      try {
+        result = await this.runFencedMutation(route.target, lease, precheck, budget.remaining())
+      } catch {
+        result = undefined
+      }
+      if (result?.code === 0 && result.stdout.trim() === 'GCP_DEVICE_RECOVERY_PRECHECKED') break
+      if (![75, 78, 255].includes(result?.code ?? 255) || attempt === 3) {
+        throw new ManagerError('REMOTE_FAILURE')
+      }
+      const retryDelayMs = Math.min(250 * attempt, budget.remaining())
+      await new Promise(resolve => setTimeout(resolve, retryDelayMs))
     }
-    if (result.code !== 0 || result.stdout.trim() !== 'GCP_DEVICE_RECOVERY_PRECHECKED') {
+    if (result?.code !== 0 || result.stdout.trim() !== 'GCP_DEVICE_RECOVERY_PRECHECKED') {
       throw new ManagerError('REMOTE_FAILURE')
     }
 
