@@ -1513,7 +1513,7 @@ export class PreviewManager {
     const current = resident.kind === 'resident' ? resident : undefined
     const telemetry = await this.remote(
       "awk '/MemAvailable:/{print \"MEM \" $2}' /proc/meminfo; printf 'GPUS\\n'; "
-        + "nvidia-smi --query-gpu=index,uuid,memory.free --format=csv,noheader,nounits; printf 'APPS\\n'; "
+        + "nvidia-smi --query-gpu=index,uuid,gpu_recovery_action,memory.free --format=csv,noheader,nounits; printf 'APPS\\n'; "
         + 'nvidia-smi --query-compute-apps=pid,gpu_uuid,used_gpu_memory --format=csv,noheader,nounits',
       budget.remaining(),
     )
@@ -1529,18 +1529,19 @@ export class PreviewManager {
     if (applicationMarker < 1) return false
     const gpuLines = lines.slice(0, applicationMarker)
     const applicationLines = lines.slice(applicationMarker + 1).filter(line => line.length > 0)
-    const gpu = new Map<number, { readonly uuid: string; readonly freeMiB: number }>()
+    const gpu = new Map<number, { readonly uuid: string; readonly freeMiB: number; readonly recoveryAction: string }>()
     const gpuByUuid = new Map<string, number>()
     for (const line of gpuLines) {
-      const match = /^\s*(\d+)\s*,\s*(GPU-[A-Fa-f0-9-]+)\s*,\s*(\d+)\s*$/u.exec(line)
+      const match = /^\s*(\d+)\s*,\s*(GPU-[A-Fa-f0-9-]+)\s*,\s*([^,]+?)\s*,\s*(\d+)\s*$/u.exec(line)
       if (match === null) return false
       const index = Number(match[1])
       const uuid = match[2]
-      const freeMiB = Number(match[3])
-      if (uuid === undefined) return false
+      const recoveryAction = match[3]
+      const freeMiB = Number(match[4])
+      if (uuid === undefined || recoveryAction === undefined) return false
       if (!Number.isSafeInteger(index) || index < 0 || !Number.isSafeInteger(freeMiB) || freeMiB < 0
         || gpu.has(index) || gpuByUuid.has(uuid)) return false
-      gpu.set(index, { uuid, freeMiB })
+      gpu.set(index, { uuid, freeMiB, recoveryAction })
       gpuByUuid.set(uuid, index)
     }
 
@@ -1588,7 +1589,7 @@ export class PreviewManager {
 
     return route.resources.gpuIndices.every((index) => {
       const gpuState = gpu.get(index)
-      if (gpuState === undefined) return false
+      if (gpuState === undefined || gpuState.recoveryAction !== 'None') return false
       const measuredVramMiB = applications
         .filter((application) => {
           const process = processes.get(application.pid)

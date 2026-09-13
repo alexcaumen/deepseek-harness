@@ -124,7 +124,7 @@ class FakeRemote {
       return {
         code: 0,
         stdout: this.telemetry
-          ?? `MEM 838860800\nGPUS\n0, GPU-0, ${this.freeVramMiB.get(0)}\n1, GPU-1, ${this.freeVramMiB.get(1)}\nAPPS\n${applications}`,
+          ?? `MEM 838860800\nGPUS\n0, GPU-0, None, ${this.freeVramMiB.get(0)}\n1, GPU-1, None, ${this.freeVramMiB.get(1)}\nAPPS\n${applications}`,
       }
     }
     if (command.includes('/get_load')) {
@@ -836,8 +836,8 @@ describe('Giana CoWork Preview model manager', () => {
   })
 
   it.each([
-    'MEM 838860800\nGPUS\n0, GPU-0, 42000\nAPPS\n',
-    'MEM 838860800\nGPUS\n0, GPU-0, 42000\n1, GPU-1, 4000\n1, GPU-2, 42000\nAPPS\n',
+    'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\nAPPS\n',
+    'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, None, 4000\n1, GPU-2, None, 42000\nAPPS\n',
   ])
   ('rejects missing or duplicate GPU telemetry even with reclaimable VRAM', async (telemetry) => {
     const remote = new FakeRemote()
@@ -852,7 +852,7 @@ describe('Giana CoWork Preview model manager', () => {
   it('does not treat configured reclaim ceilings as measured resources', async () => {
     const remote = new FakeRemote()
     remote.residentPort = 18_081
-    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, 42000\n1, GPU-1, 4000\nAPPS\n123, GPU-1, 100\n'
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, None, 4000\nAPPS\n123, GPU-1, 100\n'
     const { adapter } = await fixture(remote)
     const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
 
@@ -880,6 +880,31 @@ describe('Giana CoWork Preview model manager', () => {
     await expect(adapter.preflight(context(grant, route('glm-official'), 'f')))
       .resolves.toMatchObject({ ok: true })
     await adapter.release(grant, 'SETTLED', new AbortController().signal)
+  })
+
+  it.each(['Reset', 'Reboot', 'N/A'])
+  ('does not admit a GPU whose recovery action is %s despite free VRAM', async (recoveryAction) => {
+    const remote = new FakeRemote()
+    remote.telemetry = `MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, ${recoveryAction}, 45000\nAPPS\n`
+    const { adapter } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('glm-official'), 'f')))
+      .resolves.toMatchObject({ ok: false })
+    expect(remote.commands.some(command => command.includes('start-glm') || command.includes('stop-glm'))).toBe(false)
+  })
+
+  it('rechecks GPU recovery action at start before mutating a model', async () => {
+    const remote = new FakeRemote()
+    const { adapter } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const ctx = context(grant, route('glm-official'), 'f')
+    await adapter.preflight(ctx)
+    await adapter.capturePrestate(ctx)
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, Reset, 45000\nAPPS\n'
+
+    await expect(adapter.start(ctx)).rejects.toThrow()
+    expect(remote.commands.some(command => command.includes('start-glm'))).toBe(false)
   })
 
   it('rechecks free capacity at start after a successful preflight', async () => {
