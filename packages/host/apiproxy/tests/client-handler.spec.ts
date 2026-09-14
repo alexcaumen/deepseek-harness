@@ -371,6 +371,40 @@ describe('unary round trip', () => {
     await expect(never.sessions.list({})).rejects.toThrow()
   })
 
+  it('lets governed model selection outlive the generic unary timeout while preserving caller cancellation', async () => {
+    let release: (() => void) | undefined
+    const selected = new Promise<void>((resolve) => { release = resolve })
+    const api = scriptedApi({
+      sessions: {
+        selectModel: async (request, signal) => {
+          await selected
+          if (signal?.aborted) {
+            return { rpcId: request.rpcId, result: { ok: false, error: {
+              code: 'cancelled', message: 'Model selection was cancelled', details: {},
+            } } }
+          }
+          return ok(request, { selected: {
+            provider: request.payload.provider, model: request.payload.model,
+          } })
+        },
+      },
+    })
+    const c = client(api, 25)
+    const pending = c.sessions.selectModel({
+      sessionId: sid('s1'), provider: 'local', model: 'cold-model',
+    })
+    await new Promise(resolve => setTimeout(resolve, 50))
+    release?.()
+    await expect(pending).resolves.toMatchObject({ result: { ok: true } })
+
+    const gate = new AbortController()
+    const cancelled = c.sessions.selectModel({
+      sessionId: sid('s1'), provider: 'local', model: 'cold-model',
+    }, gate.signal)
+    gate.abort(new Error('selection cancelled by caller'))
+    await expect(cancelled).rejects.toThrow(/selection cancelled by caller/)
+  })
+
   it('aborts a unary call through the caller-supplied external signal', async () => {
     // Real-fetch semantics: on abort the rejection is the signal's reason, and the abort
     // works even when the transport ignores the signal entirely (hung impl).

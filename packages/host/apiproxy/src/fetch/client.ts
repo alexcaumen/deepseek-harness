@@ -415,7 +415,12 @@ export abstract class AbstractApiClient implements IApiClient {
     create: (payload, signal) => this.callUnary('session.create', payload, signal),
     history: (payload, signal) => this.callUnary('session.history', payload, signal),
     models: (payload, signal) => this.callUnary('session.models', payload, signal),
-    selectModel: (payload, signal) => this.callUnary('session.selectModel', payload, signal),
+    // A governed local-model switch may include artifact verification, eviction,
+    // load, and warm-up. Those stages own their own bounded deadlines; the
+    // carrier must only propagate an explicit caller/connection cancellation.
+    selectModel: (payload, signal) => this.callUnary(
+      'session.selectModel', payload, signal, 'caller-signal-only',
+    ),
     rename: (payload, signal) => this.callUnary('session.rename', payload, signal),
     fork: (payload, signal) => this.callUnary('session.fork', payload, signal),
     prompt: (payload, signal) => this.callUnary('session.prompt', payload, signal),
