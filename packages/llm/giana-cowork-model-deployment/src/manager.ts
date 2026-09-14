@@ -2226,6 +2226,10 @@ export class PreviewManager {
           : route.runtime.kind === 'systemd'
             ? systemdMutationCommand(route.runtime, 'start')
             : scriptMutationCommand(route.runtime, 'start')
+        // Once the exact start command is ready to cross the host boundary, own
+        // its possible result durably. A caller timeout or lost remote reply may
+        // otherwise leave a running model without a compensatable route record.
+        await markStartedMutation?.()
         const started = await this.runFencedMutation(route.target, lease, command, budget.remaining())
         if (started.code !== 0) throw new ManagerError('UNKNOWN_COMMIT')
         if (route.runtime.kind === 'systemd' && !/(?:^|\n)GCP_SYSTEMD_MUTATION_APPLIED\s*$/u.test(started.stdout)) {
@@ -2237,7 +2241,6 @@ export class PreviewManager {
         if (route.runtime.kind === 'script' && !/(?:^|\n)GCP_SCRIPT_MUTATION_APPLIED\s*$/u.test(started.stdout)) {
           throw new ManagerError('UNKNOWN_COMMIT')
         }
-        await markStartedMutation?.()
         if (!await this.waitHealthy(route, budget)) return { status: 'FAIL', decision: 'FAILED', evidence: { ready: false } }
       }
       if (!await this.endpoints.ensure(route, budget.remaining(30_000))) {
@@ -2432,7 +2435,11 @@ export class PreviewManager {
       '[ "$current_fence" = "$expected_fence" ] && [ "$current_lease" = "$expected_lease" ] || exit 76',
       'now=$(date +%s%3N); [ "$current_expires" -gt "$now" ] || exit 76',
     ].join('; ')
-    return this.remote(target, fenced, timeoutMs)
+    try {
+      return await this.remote(target, fenced, timeoutMs)
+    } catch {
+      throw new ManagerError('UNKNOWN_COMMIT')
+    }
   }
 
   private async resetDevices(

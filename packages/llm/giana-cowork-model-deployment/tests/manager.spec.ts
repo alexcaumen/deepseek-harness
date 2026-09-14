@@ -55,6 +55,8 @@ class FakeRemote {
   telemetry: string | undefined
   processTable: string | undefined
   startError: number | undefined
+  startReplyLost = false
+  onStartMutation: (() => Promise<void>) | undefined
   onTelemetry: (() => void) | undefined
   onStopMutation: (() => Promise<void>) | undefined
   activeRequestCounts: number[] = []
@@ -228,6 +230,8 @@ class FakeRemote {
         this.residentPort = 8_000
         this.freeVramMiB.set(0, 6_000)
         this.freeVramMiB.set(1, 6_000)
+        await this.onStartMutation?.()
+        if (this.startReplyLost) throw new Error('start reply lost after mutation')
       } else if (command.includes('docker stop --time 30 "$container_id"')) {
         this.residentPort = undefined
         this.freeVramMiB.set(0, 42_000)
@@ -2186,6 +2190,7 @@ describe('Giana CoWork Preview model manager', () => {
     await evictionEnvelope(manager, statePath)
 
     await expect(adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' })).rejects.toThrow()
+    expect(remote.commands.some(command => command.includes('/get_load'))).toBe(true)
     expect(remote.commands.some(command => command.includes('stop-glm'))).toBe(false)
     expect(remote.residentPort).toBe(18_081)
   })
@@ -2406,7 +2411,7 @@ describe('Giana CoWork Preview model manager', () => {
     const { adapter, manager, statePath } = await fixture(remote, registry(systemdRuntime()), 30_000)
     const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
     const glm = context(grant, route('glm-official'), '9')
-    const qwen = { ...context(grant, route('qwen-local'), '9'), deadlineAt: Date.now() + 1_000 }
+    const qwen = context(grant, route('qwen-local'), '9')
     await adapter.preflight(qwen)
     await adapter.capturePrestate(qwen)
     const eviction = await evictionEnvelope(manager, statePath)
@@ -2415,7 +2420,8 @@ describe('Giana CoWork Preview model manager', () => {
     await adapter.verifyStopped(glm)
     remote.modelsError = 7
 
-    await expect(adapter.start(qwen)).rejects.toThrow()
+    const startQwen = { ...qwen, deadlineAt: Date.now() + 1_000 }
+    await expect(adapter.start(startQwen)).rejects.toThrow()
     const launched = JSON.parse(await readFile(statePath, 'utf8')).transactions[bare('9')]
     expect(launched.startedRouteId).toBe(launched.destinationRouteId)
     expect(remote.residentPort).toBe(8_000)
@@ -2429,6 +2435,38 @@ describe('Giana CoWork Preview model manager', () => {
     await adapter.start(glm)
     await expect(adapter.health(glm)).resolves.toMatchObject({ ok: true })
     expect(remote.residentPort).toBe(18_081)
+  })
+
+  it('persists conservative launch ownership when the remote start reply is lost', async () => {
+    const remote = new FakeRemote()
+    const { adapter, statePath } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const qwen = context(grant, route('qwen-local'), '9')
+    await adapter.preflight(qwen)
+    await adapter.capturePrestate(qwen)
+    type LaunchOwnershipState = {
+      lease: { quarantined?: boolean }
+      transactions: Record<string, { destinationRouteId?: string; startedRouteId?: string }>
+    }
+    const readLaunchOwnershipState = async (): Promise<LaunchOwnershipState> =>
+      JSON.parse(await readFile(statePath, 'utf8')) as LaunchOwnershipState
+    let ownershipPersistedAtDispatch = false
+    remote.onStartMutation = async () => {
+      const state = await readLaunchOwnershipState()
+      const transaction = state.transactions[bare('9')]!
+      expect(transaction).toBeDefined()
+      ownershipPersistedAtDispatch = transaction.startedRouteId === transaction.destinationRouteId
+    }
+    remote.startReplyLost = true
+
+    await expect(adapter.start(qwen)).rejects.toThrow()
+    const state = await readLaunchOwnershipState()
+    const transaction = state.transactions[bare('9')]!
+    expect(transaction).toBeDefined()
+    expect(ownershipPersistedAtDispatch).toBe(true)
+    expect(transaction.startedRouteId).toBe(transaction.destinationRouteId)
+    expect(state.lease.quarantined).toBe(true)
+    expect(remote.residentPort).toBe(8_000)
   })
 
   it('settles cleanup after a definite cold-start rejection with no previous route', async () => {
