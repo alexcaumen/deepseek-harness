@@ -65,7 +65,7 @@ command=(
   --host 127.0.0.1
   --port 18472
   --dtype bfloat16
-  --max-model-len 4096
+  --max-model-len 32768
   --quantization fp8
   --enforce-eager
   --served-model-name Qwen/Qwen3.8-27B

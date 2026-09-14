@@ -27,7 +27,7 @@
     - id: giana-cowork-model-deployment
       name: '@deepseek-ai/dsh-giana-cowork-model-deployment'
       config:
-        admissionReceiptPath: !!js process.env.DSH_SOURCE_ROOT + '/configs/giana-cowork-preview/GCP_DUAL_TARGET_LOCAL_MODEL_PREVIEW_ADMISSION_20260913.json'
+        admissionReceiptPath: !!js process.env.DSH_SOURCE_ROOT + '/configs/giana-cowork-preview/GCP_DUAL_TARGET_LOCAL_MODEL_PREVIEW_ADMISSION_20260915.json'
         registryPath: !!js process.env.DSH_SOURCE_ROOT + '/configs/giana-cowork-preview/gcp.model-registry.json'
         statePath: !!js process.env.DSH_HOME + '/state/giana-cowork-preview/model-manager-state-v2.json'
         auditPath: !!js process.env.DSH_HOME + '/state/giana-cowork-preview/model-lifecycle-audit.jsonl'
@@ -47,7 +47,7 @@
         tenantId: giana-cowork-preview
         issuerRef: giana:issuer:sha256:8fcaed49cd538cb6494053c7f2958fe9f48091e19f4258105fb5aa2a571e392a
         holderRef: giana:holder:sha256:23a5fc97f64fa90efc8fd2a913cab32474ba267195d6c6be89beb70ba809c5ee
-        admissionDigest: be38aebd0c53984ffd3ef7d5462a49204f5dcf76276240f2c53cd7f6bf57b5e1
+        admissionDigest: bba72fc758c7e4729c284522c910b90feceb5148ceb07cfbaeec3dcd4232b537
         leaseTtlMs: 1800000
         operationTimeoutMs: 1500000
         maxClockSkewMs: 10000
@@ -57,7 +57,7 @@
             currentnessDigest: 9dec2105ddfccfe64aa21b337a9f0669eba2d01e359d75318074afa7bcbceb37
           - class: prdg
             identityDigest: bf7a58918d355c553f4852af75b3875e208d140a5060fe62cb4215cfceae64c5
-            currentnessDigest: dcd5fe7ae073cfec0d43044cc9b7cb97ce81e988d5ef172a578a6a560b14add9
+            currentnessDigest: 8f1ce22cfbf3de77e8c559180638ddcb1ad28b69981cc6a45309d2c8d9b2c942
         localProviderIds:
           - glm-local-r5300
           - qwen-local-r5300
@@ -69,7 +69,7 @@
             provider: glm-local-r5300
             model: GLM-5.3-Flash-official-fp8-canary
             disposition: AVAILABLE
-            admissionReceiptDigest: sha256:be38aebd0c53984ffd3ef7d5462a49204f5dcf76276240f2c53cd7f6bf57b5e1
+            admissionReceiptDigest: sha256:bba72fc758c7e4729c284522c910b90feceb5148ceb07cfbaeec3dcd4232b537
             revisionDigest: sha256:af139ab51af2a3ad155f9b012e1351ec074b7b3672262db7a9ebb6c845742aa4
             targets:
               - r5300
@@ -85,7 +85,7 @@
             provider: qwen-local-r5300
             model: Qwen/Qwen3.8-27B
             disposition: AVAILABLE
-            admissionReceiptDigest: sha256:be38aebd0c53984ffd3ef7d5462a49204f5dcf76276240f2c53cd7f6bf57b5e1
+            admissionReceiptDigest: sha256:bba72fc758c7e4729c284522c910b90feceb5148ceb07cfbaeec3dcd4232b537
             revisionDigest: sha256:5da5832e0b3c0351bfb24486451b28649e629a6d14ef17c215358d8721b8b7d2
             targets:
               - r5300

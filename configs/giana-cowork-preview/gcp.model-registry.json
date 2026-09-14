@@ -2,7 +2,7 @@
   "schema": "giana.cowork.preview.model-registry.v2",
   "issuerRef": "giana:issuer:sha256:8fcaed49cd538cb6494053c7f2958fe9f48091e19f4258105fb5aa2a571e392a",
   "holderRef": "giana:holder:sha256:23a5fc97f64fa90efc8fd2a913cab32474ba267195d6c6be89beb70ba809c5ee",
-  "admissionDigest": "be38aebd0c53984ffd3ef7d5462a49204f5dcf76276240f2c53cd7f6bf57b5e1",
+  "admissionDigest": "bba72fc758c7e4729c284522c910b90feceb5148ceb07cfbaeec3dcd4232b537",
   "renewAfterMs": 120000,
   "slots": [{
     "target": "r5300",
@@ -28,7 +28,7 @@
     {
       "class": "prdg",
       "identity_digest": "bf7a58918d355c553f4852af75b3875e208d140a5060fe62cb4215cfceae64c5",
-      "currentness_digest": "dcd5fe7ae073cfec0d43044cc9b7cb97ce81e988d5ef172a578a6a560b14add9"
+      "currentness_digest": "8f1ce22cfbf3de77e8c559180638ddcb1ad28b69981cc6a45309d2c8d9b2c942"
     }
   ],
   "routes": [
@@ -106,7 +106,7 @@
         "kind": "script",
         "startPath": "/opt/gcp-prdg/runtime/prdg-qwen38-start.sh",
         "stopPath": "/opt/gcp-prdg/runtime/prdg-qwen38-stop.sh",
-        "startSha256": "1c78932ec912693e2f97f9c4ff338a5bf8ab25bef137f72a17b9e58b721276aa",
+        "startSha256": "fea57d07515d4615b8c851230ae849a18ee17bccde8a93a70aaeb0ae16669ad0",
         "stopSha256": "94c2f1fb7a7cb0903e62080d2ad24ab79abe4a81e258c2c31cd4dc30e3cd493b",
         "pidFile": "/opt/gcp-prdg/state/qwen38.pid",
         "processMarker": "GCP_PRDG_QWEN38_R2",

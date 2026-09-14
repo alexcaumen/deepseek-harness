@@ -31,7 +31,7 @@ function evidence() {
     baseURL: BASE_URL,
     verifiedAt: '2026-09-05T09:55:00Z',
     expiresAt: '2026-09-05T10:05:00Z',
-    checks: { text: true, image: true, totalContext4096: true, maxTokens1024: true, reasoningHigh: true },
+    checks: { text: true, image: true, totalContext65536: true, maxTokens1024: true, reasoningHigh: true },
   }
 }
 
@@ -102,14 +102,14 @@ describe('local-model candidate merge', () => {
       availabilityProbe: { model: MODEL, timeoutMs: 10_000, phase: 'dispatch' },
       models: [{
         id: MODEL, name: 'GLM 5.3 Flash Official FP8 (Local)',
-        contextWindow: 4096, maxTokens: 1024,
+        contextWindow: 65_536, maxTokens: 1024,
         input: ['text', 'image'], reasoningEfforts: { high: 'high' },
       }],
     })
     const resolved = resolveProfiles({ [PROVIDER]: profile }).get(PROVIDER)!
     expect(resolved.configuredMaxTokens.get(MODEL)).toBe(1024)
     expect(resolved.reasoning).toBe('high')
-    expect(resolved.piProvider.getModels()[0]).toMatchObject({ contextWindow: 4096, maxTokens: 1024, input: ['text', 'image'] })
+    expect(resolved.piProvider.getModels()[0]).toMatchObject({ contextWindow: 65_536, maxTokens: 1024, input: ['text', 'image'] })
     expect(profile.apiKeyEnv).toBeUndefined()
     expect(profile.compat).toBeUndefined()
     expect(profile.models?.[0]?.compat).toBeUndefined()
@@ -131,13 +131,22 @@ describe('local-model candidate merge', () => {
   it('keeps an admitted Qwen route selectable but probes it only after lifecycle dispatch', () => {
     const qwen = {
       displayName: 'Qwen3.8-27B', api: 'openai-completions', baseURL: 'http://127.0.0.1:49178/v1',
-      models: [{ id: 'Qwen/Qwen3.8-27B' }],
+      models: [{ id: 'Qwen/Qwen3.8-27B', contextWindow: 1_000_000, maxTokens: 131_072 }],
     }
     const result = prepared({ 'llm-pi-ai': { providers: { 'qwen-local-r5300': qwen } } })
     expect(providers(result.settings)['qwen-local-r5300']).toEqual({
       ...qwen,
       availabilityProbe: { model: 'Qwen/Qwen3.8-27B', timeoutMs: 10_000, phase: 'dispatch' },
+      models: [{
+        id: 'Qwen/Qwen3.8-27B', name: 'Qwen3.8-27B', contextWindow: 32_768, maxTokens: 4_096,
+      }],
     })
+    const resolved = resolveProfiles({
+      'qwen-local-r5300': providers(result.settings)['qwen-local-r5300']!,
+    }).get('qwen-local-r5300')!
+    expect(resolved.configuredMaxTokens.get('Qwen/Qwen3.8-27B')).toBe(4_096)
+    expect(resolved.piProvider.getModels()[0]).toMatchObject({ contextWindow: 32_768, maxTokens: 4_096 })
+    expect(prepared(result.settings).settings).toEqual(result.settings)
   })
 
   it.each(['glm-uncensored-local-r5300', 'deepseek-vision-local-r5300', 'deepseek-vision-uncensored-local-r5300'])(

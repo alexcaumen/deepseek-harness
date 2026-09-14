@@ -23,8 +23,13 @@ const yaml = require('yaml') as {
 const PROVIDER = 'glm-local-r5300'
 const MODEL = 'GLM-5.3-Flash-official-fp8-canary'
 const DISPLAY = 'GLM 5.3 Flash Official FP8 (Local)'
+const GLM_CONTEXT_WINDOW = 65_536
+const GLM_MAX_TOKENS = 1_024
 const QWEN_PROVIDER = 'qwen-local-r5300'
 const QWEN_MODEL = 'Qwen/Qwen3.8-27B'
+const QWEN_DISPLAY = 'Qwen3.8-27B'
+const QWEN_CONTEXT_WINDOW = 32_768
+const QWEN_MAX_TOKENS = 4_096
 const HELD_PROVIDER_IDS = new Set([
   'glm-uncensored-local-r5300',
   'deepseek-vision-local-r5300',
@@ -129,7 +134,7 @@ function ready(options: MergeOptions, baseURL: string): boolean {
     || typeof record.baseURL !== 'string' || loopbackURL(record.baseURL) !== baseURL
     || !Number.isFinite(options.now) || !Number.isFinite(verifiedAt) || !Number.isFinite(expiresAt)
     || verifiedAt > options.now || expiresAt <= options.now || expiresAt <= verifiedAt
-    || !['text', 'image', 'totalContext4096', 'maxTokens1024', 'reasoningHigh']
+    || !['text', 'image', 'totalContext65536', 'maxTokens1024', 'reasoningHigh']
       .every(key => checks[key] === true)) {
     fail('Readiness must include an externally verified first-request lazy driver and be current and bound to this exact endpoint, model, and policy.')
   }
@@ -199,8 +204,8 @@ export function mergeLocalModelSettings(source: Mapping, options: MergeOptions):
     ...oldModel,
     id: MODEL,
     name: DISPLAY,
-    contextWindow: 4096,
-    maxTokens: 1024,
+    contextWindow: GLM_CONTEXT_WINDOW,
+    maxTokens: GLM_MAX_TOKENS,
     reasoningEfforts: { high: 'high' },
     input: ['text', 'image'],
   }
@@ -215,9 +220,19 @@ export function mergeLocalModelSettings(source: Mapping, options: MergeOptions):
   }
   if (providers[QWEN_PROVIDER] !== undefined) {
     const qwen = mapping(providers[QWEN_PROVIDER])
+    const listedQwen = models(qwen.models) ?? []
+    const oldQwen = listedQwen.find(model => model.id === QWEN_MODEL) ?? {}
     providers[QWEN_PROVIDER] = {
       ...qwen,
+      displayName: QWEN_DISPLAY,
       availabilityProbe: { model: QWEN_MODEL, timeoutMs: 10_000, phase: 'dispatch' },
+      models: [{
+        ...oldQwen,
+        id: QWEN_MODEL,
+        name: QWEN_DISPLAY,
+        contextWindow: QWEN_CONTEXT_WINDOW,
+        maxTokens: QWEN_MAX_TOKENS,
+      }],
     }
   }
   settings['llm-pi-ai'] = { ...llm, providers }

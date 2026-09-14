@@ -1,0 +1,95 @@
+{
+  "schema": "giana.cowork.preview.local-model-admission.v2",
+  "issued_at": "2026-09-15T01:02:49+08:00",
+  "issuer_ref": "giana:issuer:sha256:8fcaed49cd538cb6494053c7f2958fe9f48091e19f4258105fb5aa2a571e392a",
+  "holder_ref": "giana:holder:sha256:23a5fc97f64fa90efc8fd2a913cab32474ba267195d6c6be89beb70ba809c5ee",
+  "authorization_basis": "Alex authorized isolated Giana CoWork Preview integration, automatic R5300-first routing, PRDG fallback, and direct HEQA of governed local models in this Codex task.",
+  "scope": {
+    "product": "Giana CoWork Preview",
+    "environment": "isolated-staging-only",
+    "targets": ["r5300", "prdg"],
+    "official_giana_cowork": false,
+    "putri_v15": false,
+    "public_listener": false,
+    "production_green": false
+  },
+  "startup_policy": {
+    "mutate_gpu_at_mount": false,
+    "preserve_exact_recognized_resident_route": true,
+    "cold_start_without_user_request": false,
+    "new_session_default": "glm53-official-fp8",
+    "qwen_forced_at_startup": false,
+    "automatic_order": ["r5300", "prdg"],
+    "eviction_requires_native_approval": true
+  },
+  "target_identities": [
+    {
+      "target": "r5300",
+      "basis": "r5300-pve-01|GPU-8300afae-7723-4a43-a6ac-7804166c4018|GPU-bdf65c79-5672-1627-b052-f16fef5e7a01",
+      "digest": "91eda62878736036ed54fa46478df41b8bb3dd8fb6b4103a21cc7357eaa56ffa"
+    },
+    {
+      "target": "prdg",
+      "basis": "PRD-GServer|Ubuntu-22.04|GPU-52912ebe-f529-8f7c-6a54-429df886bc7f",
+      "digest": "bf7a58918d355c553f4852af75b3875e208d140a5060fe62cb4215cfceae64c5"
+    }
+  ],
+  "target_currentness": [
+    {
+      "target": "r5300",
+      "observed_at": "2026-09-15T01:02:42+08:00",
+      "basis": "r5300|boot:6c05097f-17a6-484a-aada-853a1e609789|kernel:7.0.2-6-pve|launcher:0b8045fb2c3f3334714c4e2eff00153fa1f091cd25d8ed1ee9c27f89a16ce684|qwen-image:sha256:716e50e11551b69fce41b67e73aa4f4549e3079f9fd13af7773f8dfa9c014890|dots:gpu0",
+      "digest": "9dec2105ddfccfe64aa21b337a9f0669eba2d01e359d75318074afa7bcbceb37"
+    },
+    {
+      "target": "prdg",
+      "observed_at": "2026-09-15T01:02:49+08:00",
+      "basis": "prdg|boot:c3d9eebb-67ca-4034-b133-1ac307f9ca44|kernel:6.6.87.2-microsoft-standard-WSL2|python:3.11.14|vllm:0.27.1|torch:2.13.0+cu130|model-commit:1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0|manifest:961f81d06097db0c87867559913adab5bf6692998b7af423cea859867b30c7b2|cache-verified:32/32:55586114863|launcher-start:fea57d07515d4615b8c851230ae849a18ee17bccde8a93a70aaeb0ae16669ad0|launcher-stop:94c2f1fb7a7cb0903e62080d2ad24ab79abe4a81e258c2c31cd4dc30e3cd493b|context-window:32768|max-output:4096",
+      "digest": "8f1ce22cfbf3de77e8c559180638ddcb1ad28b69981cc6a45309d2c8d9b2c942"
+    }
+  ],
+  "routes": [
+    {
+      "id": "glm53-official-fp8",
+      "disposition": "AVAILABLE",
+      "provider": "glm-local-r5300",
+      "model": "GLM-5.3-Flash-official-fp8-canary",
+      "revision_digest": "af139ab51af2a3ad155f9b012e1351ec074b7b3672262db7a9ebb6c845742aa4",
+      "targets": ["r5300"],
+      "stable_local_port": 18081,
+      "default_for_new_sessions": true
+    },
+    {
+      "id": "qwen38-local",
+      "disposition": "AVAILABLE",
+      "provider": "qwen-local-r5300",
+      "model": "Qwen/Qwen3.8-27B",
+      "revision_digest": "5da5832e0b3c0351bfb24486451b28649e629a6d14ef17c215358d8721b8b7d2",
+      "model_commit": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+      "model_manifest_sha256": "961f81d06097db0c87867559913adab5bf6692998b7af423cea859867b30c7b2",
+      "targets": ["r5300", "prdg"],
+      "stable_local_port": 18000,
+      "context_window": 32768,
+      "max_output_tokens": 4096,
+      "default_for_new_sessions": false
+    }
+  ],
+  "held_routes": [
+    "glm53-orcarouter-mlx-mixed-4-5-6",
+    "glm53-uncensored-fp8",
+    "glm53-uncensored-gguf-q6k",
+    "deepseek-v4-flash-vision-regular",
+    "deepseek-v4-flash-vision-uncensored"
+  ],
+  "invariants": {
+    "target_qualified_endpoint_bridge": true,
+    "three_zero_drain_samples": true,
+    "three_release_samples": true,
+    "exact_identity_before_mutation": true,
+    "host_monotonic_fence": true,
+    "rollback_to_captured_healthy_source": true,
+    "dots_port_17302_and_resident_process_untouched": true,
+    "no_f_drive_write": true,
+    "no_canonical_gcw_or_putri_v15_write": true
+  }
+}

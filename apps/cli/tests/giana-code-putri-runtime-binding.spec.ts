@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -19,6 +20,12 @@ const PATCH_PATH = join(REPO_ROOT, 'configs', 'giana-code-putri.patch.yml')
 const BASE_MANIFEST_PATH = join(REPO_ROOT, 'packages', 'bundle', 'base', 'package.json')
 const PRDG_QWEN_START_PATH = join(
   REPO_ROOT, 'configs', 'giana-cowork-preview', 'runtime', 'prdg-qwen38-start.sh',
+)
+const MODEL_REGISTRY_PATH = join(
+  REPO_ROOT, 'configs', 'giana-cowork-preview', 'gcp.model-registry.json',
+)
+const MODEL_ADMISSION_PATH = join(
+  REPO_ROOT, 'configs', 'giana-cowork-preview', 'GCP_DUAL_TARGET_LOCAL_MODEL_PREVIEW_ADMISSION_20260915.json',
 )
 
 function entriesFromPatch(): PatchEntry[] {
@@ -63,6 +70,40 @@ describe('Giana CoWork runtime binding', () => {
     expect(launcher).toContain('--model "${model}"')
     expect(launcher).toContain('8>&- 9>&-')
     expect(launcher).toContain('digest.hexdigest() != entry["sha256"]')
+  })
+
+  it('binds the exact PRDG launcher and 32K contract across admission, registry, and runtime patch', () => {
+    const launcherDigest = createHash('sha256').update(readFileSync(PRDG_QWEN_START_PATH)).digest('hex')
+    const registry = JSON.parse(readFileSync(MODEL_REGISTRY_PATH, 'utf8')) as {
+      admissionDigest: string
+      routes: Array<{ id: string; target: string; runtime: { startSha256?: string } }>
+    }
+    const admissionBytes = readFileSync(MODEL_ADMISSION_PATH)
+    const admissionDigest = createHash('sha256').update(admissionBytes).digest('hex')
+    const admission = JSON.parse(admissionBytes.toString('utf8')) as {
+      routes: Array<{ id: string; targets: string[]; context_window?: number; max_output_tokens?: number }>
+    }
+    const patch = configById(entriesFromPatch(), 'giana-cowork-model-deployment')
+    const patchRoutes = patch.routes as Array<{
+      id: string
+      targets?: string[]
+      admissionReceiptDigest?: string
+    }>
+
+    expect(launcherDigest).toBe('fea57d07515d4615b8c851230ae849a18ee17bccde8a93a70aaeb0ae16669ad0')
+    expect(registry.admissionDigest).toBe(admissionDigest)
+    expect(registry.routes.find(route => route.id === 'qwen38-local' && route.target === 'prdg')?.runtime.startSha256)
+      .toBe(launcherDigest)
+    expect(admission.routes.find(route => route.id === 'qwen38-local')).toMatchObject({
+      targets: ['r5300', 'prdg'],
+      context_window: 32_768,
+      max_output_tokens: 4_096,
+    })
+    expect(patchRoutes.filter(route => route.id === 'qwen38-local')).toHaveLength(1)
+    expect(patchRoutes.find(route => route.id === 'qwen38-local')).toMatchObject({
+      targets: ['r5300', 'prdg'],
+      admissionReceiptDigest: `sha256:${admissionDigest}`,
+    })
   })
 
   it('adds model lifecycle without replacing the established plugin composition', () => {
@@ -110,7 +151,7 @@ describe('Giana CoWork runtime binding', () => {
     expect(configById(entries, 'giana-cowork-model-deployment')).toMatchObject({
       principalId: 'alex',
       tenantId: 'giana-cowork-preview',
-      admissionDigest: 'be38aebd0c53984ffd3ef7d5462a49204f5dcf76276240f2c53cd7f6bf57b5e1',
+      admissionDigest: 'bba72fc758c7e4729c284522c910b90feceb5148ceb07cfbaeec3dcd4232b537',
       runners: [
         { target: 'r5300', kind: 'ssh', host: 'r5300' },
         { target: 'prdg', kind: 'wsl', distribution: 'Ubuntu-22.04' },
@@ -124,7 +165,7 @@ describe('Giana CoWork runtime binding', () => {
         {
           class: 'prdg',
           identityDigest: 'bf7a58918d355c553f4852af75b3875e208d140a5060fe62cb4215cfceae64c5',
-          currentnessDigest: 'dcd5fe7ae073cfec0d43044cc9b7cb97ce81e988d5ef172a578a6a560b14add9',
+          currentnessDigest: '8f1ce22cfbf3de77e8c559180638ddcb1ad28b69981cc6a45309d2c8d9b2c942',
         },
       ],
       routes: [
