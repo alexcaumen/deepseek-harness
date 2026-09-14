@@ -21,10 +21,29 @@ const MAX_FRAME_BYTES = 262_144
 const MAX_CAPTURE_BYTES = 1_048_576
 const MAX_HTTP_HEADER_BYTES = 65_536
 const ENDPOINT_RECOVERY_TIMEOUT_MS = 15_000
+const STATE_RENAME_RETRY_DELAYS_MS = [10, 20, 40, 80, 160] as const
 
 export type TargetClass = typeof TARGETS[number]
 type Stage = typeof STAGES[number]
 type TransactionKind = 'MODEL_ROUTE' | 'IDLE_UNLOAD' | 'SHUTDOWN'
+
+/** Retry only the short-lived Windows rename failures seen during atomic replacement. */
+export async function replaceStateFile(
+  temporary: string,
+  target: string,
+  renameFile: typeof rename = rename,
+): Promise<void> {
+  for (const delayMs of [...STATE_RENAME_RETRY_DELAYS_MS, undefined]) {
+    try {
+      await renameFile(temporary, target)
+      return
+    } catch (error: unknown) {
+      const code = (error as NodeJS.ErrnoException | null)?.code
+      if (delayMs === undefined || (code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY')) throw error
+      await new Promise(resolve => setTimeout(resolve, delayMs))
+    }
+  }
+}
 
 interface TargetDescriptor {
   readonly class: TargetClass
@@ -984,7 +1003,7 @@ export class PreviewManagerStateStore {
       await handle.writeFile(`${JSON.stringify(this.state)}\n`, 'utf8')
       await handle.sync()
       await handle.close()
-      await rename(temporary, this.path)
+      await replaceStateFile(temporary, this.path)
     } catch (error: unknown) {
       await handle.close().catch(() => {})
       await rm(temporary, { force: true }).catch(() => {})
@@ -2254,7 +2273,11 @@ export class PreviewManager {
         && await this.endpoints.healthy(route, budget.remaining(15_000))
       return { status: healthy ? 'PASS' : 'FAIL', decision: healthy ? 'HEALTHY' : 'UNHEALTHY', evidence: { healthy } }
     }
-    const healthy = await this.routeProbe(route, budget)
+    // The health stage already proves the admitted process, listener, and exact
+    // model. Re-check that identity here, then probe the same local endpoint the
+    // LLM adapter will use. A second completion issued directly on the host was
+    // redundant and could race dynamic worker membership after inference.
+    const healthy = await this.routeHealthy(route, budget)
       && await this.endpoints.probe(route, budget.remaining(120_000))
     return { status: healthy ? 'PASS' : 'FAIL', decision: healthy ? 'HEALTHY' : 'UNHEALTHY', evidence: { healthy } }
   }
@@ -2777,22 +2800,6 @@ export class PreviewManager {
       if (!Array.isArray(payload.data) || !payload.data.some(entry => record(entry).id === route.runtime.expectedModel)) {
         return false
       }
-      const after = await this.processPresence(route, budget)
-      return after.kind === 'running' && await this.listenerOwnedByRoute(route, after, budget)
-    } catch { return false }
-  }
-
-  private async routeProbe(route: ManagedRoute, budget: StageBudget): Promise<boolean> {
-    const before = await this.processPresence(route, budget)
-    if (before.kind !== 'running' || !await this.listenerOwnedByRoute(route, before, budget)) return false
-    const body = JSON.stringify({ model: route.runtime.expectedModel, messages: [{ role: 'user', content: 'Reply with OK.' }], max_tokens: 4, stream: false })
-    const timeoutSeconds = Math.max(1, Math.min(120, Math.floor((budget.remaining() - 15_000) / 1000)))
-    const command = `curl -fsS --max-time ${timeoutSeconds} -H 'Content-Type: application/json' --data-binary ${shellQuote(body)} http://127.0.0.1:${route.runtime.remotePort}/v1/chat/completions`
-    const result = await this.remote(route.target, command, budget.remaining((timeoutSeconds + 10) * 1000))
-    if (result.code !== 0) return false
-    try {
-      const payload = record(JSON.parse(result.stdout) as unknown)
-      if (!Array.isArray(payload.choices) || payload.choices.length === 0) return false
       const after = await this.processPresence(route, budget)
       return after.kind === 'running' && await this.listenerOwnedByRoute(route, after, budget)
     } catch { return false }

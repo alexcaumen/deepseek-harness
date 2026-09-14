@@ -29,12 +29,33 @@ import {
   parsePreviewManagerRegistry,
   PreviewManager,
   PreviewManagerStateStore,
+  replaceStateFile,
   type PreviewManagerArguments,
   type PreviewManagerRemoteResult,
 } from '../src/manager.ts'
 
 const bare = (digit: string): string => digit.repeat(64)
 const prefixed = (digit: string): string => `sha256:${bare(digit)}`
+
+describe('state-file replacement', () => {
+  it('retries bounded transient Windows rename failures', async () => {
+    let attempts = 0
+    await expect(replaceStateFile('temporary', 'target', async () => {
+      attempts += 1
+      if (attempts < 3) throw Object.assign(new Error('temporarily locked'), { code: 'EPERM' })
+    })).resolves.toBeUndefined()
+    expect(attempts).toBe(3)
+  })
+
+  it('does not retry a permanent rename failure', async () => {
+    let attempts = 0
+    await expect(replaceStateFile('temporary', 'target', async () => {
+      attempts += 1
+      throw Object.assign(new Error('disk full'), { code: 'ENOSPC' })
+    })).rejects.toMatchObject({ code: 'ENOSPC' })
+    expect(attempts).toBe(1)
+  })
+})
 const evictionKey = Buffer.alloc(32, 0x5a)
 const temporaryPaths: string[] = []
 
@@ -1867,8 +1888,8 @@ describe('Giana CoWork Preview model manager', () => {
   it('leaves an adopted resident GLM unchanged when its capability probe fails', async () => {
     const remote = new FakeRemote()
     remote.residentPort = 18_081
-    remote.probeError = 7
-    const { adapter } = await fixture(remote, registry(systemdRuntime()))
+    const { adapter, endpoints } = await fixture(remote, registry(systemdRuntime()))
+    endpoints.probeFailure = true
     const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
     const ctx = context(grant, route('glm-official'), 'f')
 
@@ -1888,7 +1909,7 @@ describe('Giana CoWork Preview model manager', () => {
 
   it('switches from GLM to Qwen only after drain, stop, and verified release', async () => {
     const remote = new FakeRemote()
-    const { adapter, manager, statePath } = await fixture(remote, registry(systemdRuntime()), 180_000)
+    const { adapter, endpoints, manager, statePath } = await fixture(remote, registry(systemdRuntime()), 180_000)
     const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
     const glm = context(grant, route('glm-official'), 'f')
     await adapter.preflight(glm)
@@ -1917,7 +1938,8 @@ describe('Giana CoWork Preview model manager', () => {
     await adapter.health(qwen)
     await adapter.probe(qwen)
     await adapter.settleActivation(qwen, 'COMMIT')
-    expect(remote.commands.some(command => command.includes('--max-time 120') && command.includes(':8000/v1/chat/completions'))).toBe(true)
+    expect(endpoints.calls).toContain('probe:qwen-local@r5300')
+    expect(remote.commands.some(command => command.includes('/v1/chat/completions'))).toBe(false)
     await adapter.release(grant, 'SETTLED', new AbortController().signal)
 
     expect(remote.residentPort).toBe(8_000)
