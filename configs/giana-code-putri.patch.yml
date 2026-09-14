@@ -118,6 +118,7 @@
         remoteWorkspace: /srv/gianaos-data/objects/putri
         remoteToolRuntimeUrl: http://127.0.0.1:18644/mcp/tool-runtime
         permission: allow
+        turnIdleTimeoutMs: 660000
         contextWindow: 1000000
         maxTokens: 131072
 

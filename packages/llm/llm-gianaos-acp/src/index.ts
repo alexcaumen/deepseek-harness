@@ -92,6 +92,8 @@ export interface Config {
   contextWindow: number
   /** Maximum output tokens requested from the bound model route. */
   maxTokens: number
+  /** Maximum interval without ACP progress before the transport is retired. */
+  turnIdleTimeoutMs: number
 }
 
 export const Config: z<Config> = z.object({
@@ -111,6 +113,7 @@ export const Config: z<Config> = z.object({
   permission: z.union(['allow', 'reject'] as const).default('allow'),
   contextWindow: z.natural().min(1).default(DEFAULT_CONTEXT_WINDOW),
   maxTokens: z.natural().min(1).default(DEFAULT_MAX_TOKENS),
+  turnIdleTimeoutMs: z.natural().min(1_000).default(660_000),
 })
 
 export interface AcpTurnEvent {
@@ -155,6 +158,14 @@ class AcpTurnEventQueue implements AsyncIterable<AcpTurnEvent> {
 interface AcpTurnBuffer {
   events: AcpTurnEventQueue
   seenToolCalls: Set<string>
+  touch: () => void
+}
+
+class AcpTurnIdleTimeoutError extends Error {
+  constructor(readonly timeoutMs: number) {
+    super(`Putri made no ACP progress for ${Math.ceil(timeoutMs / 1_000)} seconds`)
+    this.name = 'AcpTurnIdleTimeoutError'
+  }
 }
 
 /**
@@ -483,13 +494,35 @@ class GianaOsAcpAdapter extends LlmAdapter {
     const entered = await this.enterSession(key, agent, localSession, options.signal)
     const session = entered.session
     const releaseRemoteTurn = entered.release
-    const turn: AcpTurnBuffer = { events: new AcpTurnEventQueue(), seenToolCalls: new Set() }
+    const turn: AcpTurnBuffer = { events: new AcpTurnEventQueue(), seenToolCalls: new Set(), touch: () => {} }
     session.currentTurn = turn
-    const abort = (): void => {
+    let rejectLocal!: (error: unknown) => void
+    const localFailure = new Promise<never>((_resolve, reject) => { rejectLocal = reject })
+    let localFailureSettled = false
+    let idleTimer: ReturnType<typeof setTimeout> | undefined
+    const failLocal = (error: unknown): void => {
+      if (localFailureSettled) return
+      localFailureSettled = true
+      rejectLocal(error)
+    }
+    const cancelRemote = (): void => {
       void session.connection.cancel({ sessionId: session.remoteSessionId }).catch(() => {})
     }
+    const armIdleTimer = (): void => {
+      if (idleTimer !== undefined) clearTimeout(idleTimer)
+      idleTimer = setTimeout(() => {
+        cancelRemote()
+        failLocal(new AcpTurnIdleTimeoutError(this.config.turnIdleTimeoutMs))
+      }, this.config.turnIdleTimeoutMs)
+    }
+    turn.touch = armIdleTimer
+    const abort = (): void => {
+      cancelRemote()
+      failLocal(options.signal?.reason instanceof Error
+        ? options.signal.reason
+        : new Error('Putri request was cancelled'))
+    }
     options.signal?.addEventListener('abort', abort, { once: true })
-    if (options.signal?.aborted === true) abort()
     let remotePrompt: ReturnType<AcpSession['connection']['prompt']>
     try {
       remotePrompt = session.connection.prompt({
@@ -505,15 +538,19 @@ class GianaOsAcpAdapter extends LlmAdapter {
       await disposal
       throw this.promptFailure(error, options.signal)
     }
-    const promptOutcome = remotePrompt.then(result => ({ ok: true as const, stopReason: result.stopReason }),
-      (error: unknown) => ({
-        ok: false as const,
-        error,
-        disposal: this.retireSession(key, session),
-      })).finally(() => {
-      turn.events.close()
-      releaseRemoteTurn()
-    })
+    const promptOutcome = Promise.race([remotePrompt, localFailure])
+      .then(result => ({ ok: true as const, stopReason: result.stopReason }),
+        (error: unknown) => ({
+          ok: false as const,
+          error,
+          disposal: this.retireSession(key, session),
+        })).finally(() => {
+        if (idleTimer !== undefined) clearTimeout(idleTimer)
+        turn.events.close()
+        releaseRemoteTurn()
+      })
+    armIdleTimer()
+    if (options.signal?.aborted === true) abort()
 
     try {
       yield* projectAcpTurnEvents(turn.events)
@@ -596,6 +633,13 @@ class GianaOsAcpAdapter extends LlmAdapter {
   }
 
   private promptFailure(error: unknown, signal?: AbortSignal): LlmError {
+    if (error instanceof AcpTurnIdleTimeoutError) {
+      return new LlmError(
+        `${error.message}. The affected Putri connection was closed; retry this turn.`,
+        'GIANAOS_ACP_STALLED',
+        { cause: error },
+      )
+    }
     return new LlmError(
       error instanceof Error ? `Putri ACP failed: ${error.message}` : 'Putri ACP failed',
       signal?.aborted === true ? 'ABORTED' : 'GIANAOS_ACP_ERROR',
@@ -629,6 +673,7 @@ class GianaOsAcpAdapter extends LlmAdapter {
         const update = params.update
         const turn = currentSession?.currentTurn
         if (turn === undefined) return Promise.resolve()
+        turn.touch()
         if (update.sessionUpdate === 'agent_message_chunk') {
           const text = contentText(update.content)
           turn.events.push({ kind: 'text', text })

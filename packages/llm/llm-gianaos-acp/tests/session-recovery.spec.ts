@@ -38,7 +38,7 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve }
 }
 
-function fakeAcpChild(mode: 'success' | 'close-on-prompt', remoteSessionId = 'remote-putri'): FakeAcpChild {
+function fakeAcpChild(mode: 'success' | 'close-on-prompt' | 'hang-on-prompt', remoteSessionId = 'remote-putri'): FakeAcpChild {
   const stdin = new PassThrough()
   const stdout = new PassThrough()
   const loads: unknown[] = []
@@ -69,7 +69,7 @@ function fakeAcpChild(mode: 'success' | 'close-on-prompt', remoteSessionId = 're
         prompts.push(message.params)
         if (mode === 'close-on-prompt') {
           stdout.end()
-        } else {
+        } else if (mode === 'success') {
           respond(message.id, { stopReason: 'end_turn' })
         }
         break
@@ -123,12 +123,14 @@ function config(): Config {
     permission: 'allow',
     contextWindow: 1_000_000,
     maxTokens: 131_072,
+    turnIdleTimeoutMs: 660_000,
   }
 }
 
 function adapterFixture(
   children: readonly FakeAcpChild[],
   revokes: readonly (() => Promise<void>)[] = [],
+  configOverrides: Partial<Config> = {},
 ): AdapterFixture {
   const sessionId = SessionId('local-putri')
   const localSession = Session.create(sessionId)
@@ -171,7 +173,7 @@ function adapterFixture(
     },
   } as unknown as Context
 
-  apply(context, config())
+  apply(context, { ...config(), ...configOverrides })
   if (adapter === undefined) throw new Error('Putri adapter was not registered')
   return { adapter, sessionId, spawn }
 }
@@ -214,6 +216,38 @@ describe('Putri ACP route binding', () => {
 })
 
 describe('Putri ACP session recovery', () => {
+  it('retires a stalled transport and reloads the durable session on retry', async () => {
+    const first = fakeAcpChild('hang-on-prompt')
+    const second = fakeAcpChild('success')
+    const fixture = adapterFixture([first, second], [], { turnIdleTimeoutMs: 20 })
+
+    await expect(drain(fixture.adapter, request(fixture.sessionId))).rejects.toMatchObject({
+      code: 'GIANAOS_ACP_STALLED',
+      message: 'Putri made no ACP progress for 1 seconds. The affected Putri connection was closed; retry this turn.',
+    })
+    const chunks = await drain(fixture.adapter, request(fixture.sessionId))
+
+    expect(fixture.spawn).toHaveBeenCalledTimes(2)
+    expect(second.loads).toEqual([expect.objectContaining({ sessionId: 'remote-putri' })])
+    expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
+  })
+
+  it('retires a cancelled stalled transport without waiting for remote settlement', async () => {
+    const first = fakeAcpChild('hang-on-prompt')
+    const second = fakeAcpChild('success')
+    const fixture = adapterFixture([first, second])
+    const controller = new AbortController()
+
+    const cancelled = drain(fixture.adapter, request(fixture.sessionId, { signal: controller.signal }))
+    await vi.waitFor(() => { expect(first.prompts).toHaveLength(1) })
+    controller.abort(new Error('cancelled by user'))
+
+    await expect(cancelled).rejects.toMatchObject({ code: 'ABORTED' })
+    const chunks = await drain(fixture.adapter, request(fixture.sessionId))
+    expect(second.loads).toEqual([expect.objectContaining({ sessionId: 'remote-putri' })])
+    expect(chunks.at(-1)).toEqual({ type: 'finish', reason: { kind: 'stop' } })
+  })
+
   it('retires a cached session when prompt dispatch throws synchronously', async () => {
     const first = fakeAcpChild('success')
     const second = fakeAcpChild('success')
