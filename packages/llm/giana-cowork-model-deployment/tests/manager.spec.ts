@@ -1798,6 +1798,33 @@ describe('Giana CoWork Preview model manager', () => {
     expect(remote.commands.some(command => command.includes('systemctl stop "$unit"'))).toBe(false)
   })
 
+  it('adopts an exact resident when GPU process attribution is unavailable', async () => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    remote.telemetry = 'MEM 838860800\nGPUS\n0, GPU-0, None, 42000\n1, GPU-1, None, 4000\nAPPS\n'
+    const { adapter, endpoints } = await fixture(remote, registry(systemdRuntime()))
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const ctx = context(grant, route('glm-official'), 'f')
+
+    await expect(adapter.preflight(ctx)).resolves.toMatchObject({ ok: true })
+    await expect(adapter.capturePrestate(ctx)).resolves.toMatchObject({
+      residency: { kind: 'RESIDENT', routeId: 'glm-official' },
+    })
+    await expect(adapter.health(ctx)).resolves.toMatchObject({ ok: true })
+    await expect(adapter.probe(ctx)).resolves.toMatchObject({ ok: true })
+    await adapter.settleActivation(ctx, 'COMMIT')
+    await expect(adapter.release(grant, 'SETTLED', new AbortController().signal)).resolves.toBeUndefined()
+
+    expect(remote.commands.some(command => command.includes('MemAvailable'))).toBe(true)
+    expect(remote.commands.some(command => command.includes('systemd-run --unit="$unit"'))).toBe(false)
+    expect(remote.commands.some(command => command.includes('systemctl stop "$unit"'))).toBe(false)
+    expect(endpoints.calls).toEqual([
+      'ensure:glm-official@r5300',
+      'healthy:glm-official@r5300',
+      'probe:glm-official@r5300',
+    ])
+  })
+
   it('fails closed before adopting a resident model when its local endpoint cannot be bound', async () => {
     const remote = new FakeRemote()
     remote.residentPort = 18_081

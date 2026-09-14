@@ -2537,6 +2537,8 @@ export class PreviewManager {
     const resident = await this.residency(route.target, budget)
     if (resident.kind === 'unknown') return { kind: 'unavailable', evidence: { reason: 'RESIDENCY_UNKNOWN' } }
     const current = resident.kind === 'resident' ? resident : undefined
+    const exactResident = current?.route.id === route.id
+      && current.route.revisionDigest === route.revisionDigest
     const telemetry = await this.remote(
       route.target,
       "awk '/MemAvailable:/{print \"MEM \" $2}' /proc/meminfo; printf 'GPUS\\n'; "
@@ -2609,6 +2611,22 @@ export class PreviewManager {
     }
     if (applications.some(application => !processes.has(application.pid))) {
       return { kind: 'unavailable', evidence: { reason: 'APPLICATION_OWNER_UNKNOWN' } }
+    }
+
+    if (exactResident) {
+      // Exact resident adoption does not allocate again. Keep telemetry and process
+      // validation above, then leave endpoint ownership, health, and capability to
+      // the following transaction stages. This also covers WSL drivers that report
+      // aggregate VRAM but omit per-process compute attribution.
+      return {
+        kind: 'available',
+        evidence: {
+          reason: 'EXACT_RESIDENT_ADOPTION',
+          routeId: route.id,
+          target: route.target,
+          processGroups: current.processGroups,
+        },
+      }
     }
 
     const currentGroups = new Set(current?.processGroups ?? [])
