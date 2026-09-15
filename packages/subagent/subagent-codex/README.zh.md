@@ -18,7 +18,7 @@
 
 ## 能力与上下文
 
-本提供方不声明任何可选的启动时能力，并报告 `inheritsParentContext: false`。Codex 会接收独立文本任务和父会话 cwd，但不会接收父会话的对话、角色设定、工具筛选器、深度策略或结构化输出约定。临时 Codex 线程 ID 与轮次 ID 仅在此次运行内部可见，绝不会持久化到父会话。
+本提供方声明支持一次性 `agentOptions`，并报告 `inheritsParentContext: false`。非空的每次运行 `agentOptions.model` 只为该子级覆盖配置模型，并作为官方 `thread/start.model` 发送；非空的 `agentOptions.reasoningEffort` 作为官方 `turn/start.effort` 发送。省略任一字段会分别保留已配置模型后备或原生 Codex effort 默认值，并发运行之间的选择彼此隔离。`agentOptions.provider` 会作为路由元数据接受非空校验，但传输权威仍是原生 Codex。Codex 会接收独立文本任务和父会话 cwd，但不会接收父会话的对话、角色设定、工具筛选器、深度策略、结构化输出约定或父级凭证。临时 Codex 线程 ID 与轮次 ID 仅在此次运行内部可见，绝不会持久化到父会话。
 
 ## 配置
 
@@ -36,7 +36,7 @@
 | `approve-for-me` | `approvalPolicy: on-request`、`approvalsReviewer: auto_review`、`sandbox: workspace-write` | 由 Codex 自动评审权限请求，不等待人工。 |
 | `dangerously-bypass-approvals-and-sandbox` | `approvalPolicy: never`、`sandbox: danger-full-access` | 跳过审批与 sandbox；必须显式选择该值。 |
 
-生产环境会解析锁定的 `@openai/codex@0.147.0` 依赖所声明的 `codex` bin，并使用当前 Node 可执行文件启动该 JavaScript wrapper。Wrapper 会选择匹配的原生平台载荷；提供方既不检查也不回退 `PATH` 中的宿主 `codex`。父会话 cwd、`HOME` 与 `CODEX_HOME` 继续让原生 Codex 配置和身份验证保持权威。配置的 `model` 会原样传入每次临时 `thread/start`；省略时不包含该字段，提供方不会发现模型、改写别名、选择 `modelProvider` 或 `serviceTier`，也不会设置回退。所选权限模式仍是唯一的其他线程级覆盖。本插件不创建 `CODEX_HOME`、不执行登录，也不探测账户。子进程 seam 会先移除具有凭证特征的环境变量，再应用显式 `env` 覆盖。
+生产环境会解析锁定的 `@openai/codex@0.147.0` 依赖所声明的 `codex` bin，并使用当前 Node 可执行文件启动该 JavaScript wrapper。Wrapper 会选择匹配的原生平台载荷；提供方既不检查也不回退 `PATH` 中的宿主 `codex`。父会话 cwd、`HOME` 与 `CODEX_HOME` 继续让原生 Codex 配置和身份验证保持权威。有效的一次性模型依次取自请求覆盖、已配置 `model` 与原生 Codex 设置；只有选中的值会发送到该次运行的临时 `thread/start`。请求的 reasoning effort 只会发送到该次运行的 `turn/start`；省略时保留原生默认值。提供方不会发现模型、改写别名、选择 `modelProvider` 或 `serviceTier`，也不会在运行结束后保留请求覆盖。所选权限模式仍是唯一的其他线程级覆盖。本插件不创建 `CODEX_HOME`、不执行登录、不探测账户，也不记录路由值或凭证。子进程 seam 会先移除具有凭证特征的环境变量，再应用显式 `env` 覆盖。
 
 本包是可选的 Profile Bundle。将它安装进目标 Profile 后重启该 Profile；安装会把官方 wrapper 与一个兼容的原生平台载荷带入该 Profile，而包所声明的 `cordis.patch.yml` 层只注册休眠的 `codex` Host provider，不会启动 Codex 进程。移除该包后，下一次 Profile 启动会撤回这一 provider 及其私有运行时闭包。
 
@@ -107,7 +107,7 @@ dsh --profile <name>
 
 #### 模型看到的内容
 
-Codex 子级会在一个全新的临时线程中，以单个轮次接收这些独立文本块。它的工作区是父会话 cwd；其模型、系统指令、工具和身份验证来自原生 Codex 配置，但提供方实例可以配置模型覆盖。所选提供方实例的 Profile 配置会固定该线程的环境、非交互审批策略与沙箱模式，而可执行版本来自 Bundle 锁定的平台载荷。
+Codex 子级会在一个全新的临时线程中，以单个轮次接收这些独立文本块。它的工作区是父会话 cwd；模型依次取自一次性请求覆盖、提供方配置后备或原生 Codex 设置。一次性 reasoning effort 只为该轮覆盖原生默认值。系统指令、工具与身份验证仍由原生 Codex 负责。所选提供方实例的 Profile 配置会固定该线程的环境、非交互审批策略与沙箱模式，而可执行版本来自 Bundle 锁定的平台载荷。
 
 #### 对 token 的影响
 

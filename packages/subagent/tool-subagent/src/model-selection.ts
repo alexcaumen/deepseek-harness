@@ -12,12 +12,18 @@ export interface AllowedModelRoute {
   readonly provider: string
   /** Provider-owned exact model id. */
   readonly model: string
+  /** Deployment-declared efforts for provider-managed routes. */
+  readonly reasoningEfforts?: string[]
+  /** Default effort shown for a provider-managed route. */
+  readonly defaultReasoningEffort?: string
 }
 
 /** Schema shared by tool configuration and durable policy state. */
 export const AllowedModelRouteSchema: z<AllowedModelRoute> = z.object({
   provider: z.string().min(1).required(),
   model: z.string().min(1).required(),
+  reasoningEfforts: z.array(z.string().min(1)).default(undefined as unknown as string[]),
+  defaultReasoningEffort: z.string().min(1),
 })
 
 /** Route-selection authority captured for one Session. */
@@ -54,6 +60,23 @@ export function assertAllowedModelRoutes(routes: unknown): asserts routes is rea
       throw new Error(`subagent model selection repeats route "${route.provider}/${route.model}"`)
     }
     seen.add(key)
+    const efforts = 'reasoningEfforts' in candidate ? candidate.reasoningEfforts : undefined
+    const defaultEffort = 'defaultReasoningEffort' in candidate
+      ? candidate.defaultReasoningEffort
+      : undefined
+    if (efforts !== undefined) {
+      if (!Array.isArray(efforts) || efforts.length === 0
+        || efforts.some(effort => typeof effort !== 'string' || effort.length === 0)
+        || new Set(efforts).size !== efforts.length) {
+        throw new Error(`subagent model selection route "${route.provider}/${route.model}" has invalid reasoning efforts`)
+      }
+      if (defaultEffort !== undefined
+        && (typeof defaultEffort !== 'string' || !efforts.includes(defaultEffort))) {
+        throw new Error(`subagent model selection route "${route.provider}/${route.model}" has an invalid default reasoning effort`)
+      }
+    } else if (defaultEffort !== undefined) {
+      throw new Error(`subagent model selection route "${route.provider}/${route.model}" declares a default without reasoning efforts`)
+    }
   }
   if (routes.length === 0) {
     throw new Error('subagent model selection requires at least one allowed route')
@@ -159,7 +182,16 @@ export function assertAllowedModelSelection(
   if (provider === undefined || model === undefined) {
     throw new Error('cannot select child LLM values without an effective provider and model')
   }
-  if (policy.routes.some(route => route.provider === provider && route.model === model)) return
+  const route = policy.routes.find(route => route.provider === provider && route.model === model)
+  if (route !== undefined) {
+    if (request.reasoning_effort !== undefined && route.reasoningEfforts !== undefined
+      && !route.reasoningEfforts.includes(request.reasoning_effort)) {
+      throw new Error(
+        `reasoning effort "${request.reasoning_effort}" is not allowed for child LLM route "${provider}/${model}"`,
+      )
+    }
+    return
+  }
   throw new Error(`child LLM route "${provider}/${model}" is not allowed for this Session`)
 }
 

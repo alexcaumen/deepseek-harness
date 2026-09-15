@@ -6,9 +6,9 @@ import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import * as yaml from 'js-yaml'
 import { describe, expect, it, vi } from 'vitest'
-import type { Agent } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentOptions } from '@deepseek-ai/dsh-agent'
 import type { InvariantInstaller } from '@deepseek-ai/dsh-invariants'
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import { ReasoningEffortId, type ContentBlock } from '@deepseek-ai/dsh-llm'
 import SubagentRuntime from '@deepseek-ai/dsh-subagent'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import type {
@@ -83,8 +83,14 @@ const fakeParent = {
 function request(
   prompt: ContentBlock[] = [{ type: 'text', text: 'do the task' }],
   signal = new AbortController().signal,
+  agentOptions?: AgentOptions,
 ) {
-  return { prompt, parent: fakeParent, signal }
+  return {
+    prompt,
+    parent: fakeParent,
+    signal,
+    ...agentOptions === undefined ? {} : { agentOptions },
+  }
 }
 
 async function nextTask(): Promise<void> {
@@ -436,6 +442,7 @@ describe('task admission and package contracts', () => {
     expect(provider).toMatchObject({
       name: 'codex',
       capabilities: {
+        agentOptions: true,
         outputSchema: false,
         depthLimit: false,
         toolFilter: false,
@@ -590,6 +597,34 @@ describe('task admission and package contracts', () => {
     expect(() => codex.Config({ model: '' })).toThrow()
   })
 
+  it('rejects blank configured and one-shot route values before spawning', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SubagentRuntime)
+    await ctx.plugin(LocalSubprocessRuntime)
+    const spawn = vi.spyOn(ctx.subprocess, 'spawn')
+
+    await expect(ctx.plugin(codex, { model: '   ' }))
+      .rejects.toThrow('configured model must be a non-empty string')
+    await ctx.plugin(codex, { model: 'configured-native' })
+    await expect(ctx.subagents.start('codex', request(
+      undefined,
+      undefined,
+      { model: ' ' },
+    ))).rejects.toThrow('agentOptions.model must be a non-empty string')
+    await expect(ctx.subagents.start('codex', request(
+      undefined,
+      undefined,
+      { reasoningEffort: ReasoningEffortId(' ') },
+    ))).rejects.toThrow('agentOptions.reasoningEffort must be a non-empty string')
+    await expect(ctx.subagents.start('codex', request(
+      undefined,
+      undefined,
+      { provider: ' ' },
+    ))).rejects.toThrow('agentOptions.provider must be a non-empty string')
+    expect(spawn).not.toHaveBeenCalled()
+    await ctx.fiber.dispose()
+  })
+
   it.each([
     ['never', { approvalPolicy: 'never' }],
     ['approve-for-me', {
@@ -657,6 +692,143 @@ describe('task admission and package contracts', () => {
         env: {},
       })
     }
+  })
+
+  it('applies one-shot model and effort overrides over the configured model fallback', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SubagentRuntime)
+    await ctx.plugin(LocalSubprocessRuntime)
+    const child = fakeChild()
+    vi.spyOn(ctx.subprocess, 'spawn').mockReturnValue(child.handle)
+    await ctx.plugin(codex, {
+      model: 'configured-native',
+      permissionMode: 'approve-for-me',
+    })
+
+    const starting = ctx.subagents.start('codex', request(
+      undefined,
+      undefined,
+      {
+        provider: 'codex-native',
+        model: 'gpt-6-astra',
+        reasoningEffort: ReasoningEffortId('xhigh'),
+      },
+    ))
+    const initialize = await child.peer.nextMethod('initialize')
+    child.peer.respond(initialize, { userAgent: 'codex-cli 0.147.0' })
+    await child.peer.nextMethod('initialized')
+    const threadStart = await child.peer.nextMethod('thread/start')
+    expect(threadStart.params).toEqual({
+      cwd: process.cwd(),
+      ephemeral: true,
+      model: 'gpt-6-astra',
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'auto_review',
+      sandbox: 'workspace-write',
+    })
+    child.peer.respond(threadStart, { thread: { id: 'thread-override', ephemeral: true } })
+    const run = await starting
+    const turnStart = await child.peer.nextMethod('turn/start')
+    expect(turnStart.params).toEqual({
+      threadId: 'thread-override',
+      input: [{ type: 'text', text: 'do the task', text_elements: [] }],
+      effort: 'xhigh',
+    })
+    child.peer.send(
+      { id: turnStart.id, result: { turn: { id: 'turn-override' } } },
+      agentMessage('override answer', 'final_answer', 'turn-override', 'thread-override'),
+      turnCompleted('completed', 'turn-override', 'thread-override'),
+    )
+    await expect(run.result).resolves.toEqual({
+      output: [{ type: 'text', text: 'override answer' }],
+      stopReason: 'completed',
+    })
+    await run.dispose()
+    await ctx.fiber.dispose()
+  })
+
+  it('keeps model and effort overrides isolated across concurrent one-shot runs', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SubagentRuntime)
+    await ctx.plugin(LocalSubprocessRuntime)
+    const first = fakeChild()
+    const second = fakeChild()
+    vi.spyOn(ctx.subprocess, 'spawn')
+      .mockReturnValueOnce(first.handle)
+      .mockReturnValueOnce(second.handle)
+    await ctx.plugin(codex, { model: 'configured-native' })
+
+    const firstStarting = ctx.subagents.start('codex', request(
+      [{ type: 'text', text: 'first task' }],
+      undefined,
+      {
+        provider: 'codex-native',
+        model: 'gpt-6-astra',
+        reasoningEffort: ReasoningEffortId('low'),
+      },
+    ))
+    const secondStarting = ctx.subagents.start('codex', request(
+      [{ type: 'text', text: 'second task' }],
+      undefined,
+      {
+        provider: 'codex-native',
+        model: 'gpt-5.6-sol',
+        reasoningEffort: ReasoningEffortId('high'),
+      },
+    ))
+
+    const [firstInitialize, secondInitialize] = await Promise.all([
+      first.peer.nextMethod('initialize'),
+      second.peer.nextMethod('initialize'),
+    ])
+    first.peer.respond(firstInitialize, { userAgent: 'codex-cli 0.147.0' })
+    second.peer.respond(secondInitialize, { userAgent: 'codex-cli 0.147.0' })
+    await Promise.all([
+      first.peer.nextMethod('initialized'),
+      second.peer.nextMethod('initialized'),
+    ])
+    const [firstThread, secondThread] = await Promise.all([
+      first.peer.nextMethod('thread/start'),
+      second.peer.nextMethod('thread/start'),
+    ])
+    expect(firstThread.params).toMatchObject({ model: 'gpt-6-astra' })
+    expect(secondThread.params).toMatchObject({ model: 'gpt-5.6-sol' })
+    first.peer.respond(firstThread, { thread: { id: 'thread-first', ephemeral: true } })
+    second.peer.respond(secondThread, { thread: { id: 'thread-second', ephemeral: true } })
+    const [firstRun, secondRun] = await Promise.all([firstStarting, secondStarting])
+    const [firstTurn, secondTurn] = await Promise.all([
+      first.peer.nextMethod('turn/start'),
+      second.peer.nextMethod('turn/start'),
+    ])
+    expect(firstTurn.params).toMatchObject({
+      threadId: 'thread-first',
+      effort: 'low',
+    })
+    expect(secondTurn.params).toMatchObject({
+      threadId: 'thread-second',
+      effort: 'high',
+    })
+    expect(JSON.stringify(firstThread) + JSON.stringify(firstTurn))
+      .not.toContain('gpt-5.6-sol')
+    expect(JSON.stringify(secondThread) + JSON.stringify(secondTurn))
+      .not.toContain('gpt-6-astra')
+
+    first.peer.send(
+      { id: firstTurn.id, result: { turn: { id: 'turn-first' } } },
+      agentMessage('first answer', 'final_answer', 'turn-first', 'thread-first'),
+      turnCompleted('completed', 'turn-first', 'thread-first'),
+    )
+    second.peer.send(
+      { id: secondTurn.id, result: { turn: { id: 'turn-second' } } },
+      agentMessage('second answer', 'final_answer', 'turn-second', 'thread-second'),
+      turnCompleted('completed', 'turn-second', 'thread-second'),
+    )
+    await expect(Promise.all([firstRun.result, secondRun.result])).resolves.toEqual([
+      { output: [{ type: 'text', text: 'first answer' }], stopReason: 'completed' },
+      { output: [{ type: 'text', text: 'second answer' }], stopReason: 'completed' },
+    ])
+    await Promise.all([firstRun.dispose(), secondRun.dispose()])
+    await ctx.fiber.dispose()
   })
 
   it('resolves the safe permission default when apply is called directly', async () => {

@@ -27,6 +27,10 @@ const MODEL_REGISTRY_PATH = join(
 const MODEL_ADMISSION_PATH = join(
   REPO_ROOT, 'configs', 'giana-cowork-preview', 'GCP_DUAL_TARGET_LOCAL_MODEL_PREVIEW_ADMISSION_20260915.json',
 )
+const GCP_PRESET_PATHS = ['standard', 'code', 'cordis'].map(name => ({
+  name,
+  path: join(REPO_ROOT, 'apps', 'cli', 'config', 'agent-presets', name, 'agent.cordis.yml'),
+}))
 
 function entriesFromPatch(): PatchEntry[] {
   const parsed: unknown = yaml.load(readFileSync(PATCH_PATH, 'utf8'), { schema: entryListSchema })
@@ -63,6 +67,57 @@ function evaluatedBoolean(value: unknown, env: Record<string, string>): boolean 
 }
 
 describe('Giana CoWork runtime binding', () => {
+  it.each(GCP_PRESET_PATHS)('enables collision-free model-selectable delegation in $name', ({ path }) => {
+    const parsed: unknown = yaml.load(readFileSync(path, 'utf8'), { schema: entryListSchema })
+    expect(Array.isArray(parsed)).toBe(true)
+    const delegation = (parsed as PatchEntry[]).find(entry => entry.id === 'delegation')
+    const tools = delegation?.config as unknown as PatchEntry[]
+    expect(Array.isArray(tools)).toBe(true)
+    const byId = (id: string): Record<string, unknown> => {
+      const config = tools.find(entry => entry.id === id)?.config
+      if (config === undefined) throw new TypeError(`missing ${id} preset config`)
+      return config
+    }
+    const spawn = byId('tool-subagent')
+    const fork = byId('tool-subagent-fork')
+    const codex = byId('tool-subagent-codex')
+    const astra = byId('tool-subagent-codex-astra')
+    const spawnPolicy = spawn.modelSelectionPolicy as {
+      discoveryToolName: string
+      allowedModels: Array<{ provider: string; model: string }>
+    }
+    const forkPolicy = fork.modelSelectionPolicy as typeof spawnPolicy
+    const codexPolicy = codex.modelSelectionPolicy as {
+      preflight: string
+      discoveryToolName: string
+      allowedModels: Array<{ provider: string; model: string }>
+    }
+
+    expect(spawnPolicy.discoveryToolName).toBe('list_subagent_models')
+    expect(spawnPolicy.allowedModels).toContainEqual({ provider: 'gianaos', model: 'putri' })
+    expect(spawnPolicy.allowedModels).toContainEqual({
+      provider: 'glm-uncensored-local-r5300', model: 'glm-5.3-flash-uncensored-fp8',
+    })
+    expect(forkPolicy.discoveryToolName).toBe('list_subagent_fork_models')
+    expect(forkPolicy.allowedModels).toEqual(spawnPolicy.allowedModels)
+    expect(codexPolicy.preflight).toBe('provider')
+    expect(codexPolicy.discoveryToolName).toBe('list_codex_subagent_models')
+    expect(codexPolicy.allowedModels.some(route =>
+      route.provider === 'codex-native' && route.model === 'gpt-6-astra')).toBe(true)
+    expect(codexPolicy.allowedModels.some(route =>
+      route.provider === 'codex-native' && route.model === 'gpt-5.6-sol')).toBe(true)
+    expect(astra.agentOptions).toEqual({
+      provider: 'codex-native',
+      model: 'gpt-6-astra',
+      reasoningEffort: 'high',
+    })
+    expect(new Set([
+      spawnPolicy.discoveryToolName,
+      forkPolicy.discoveryToolName,
+      codexPolicy.discoveryToolName,
+    ]).size).toBe(3)
+  })
+
   it('pins exact PRDG Qwen artifacts and closes lifecycle lock descriptors before detach', () => {
     const launcher = readFileSync(PRDG_QWEN_START_PATH, 'utf8')
     expect(launcher).toContain('manifest_sha256=961f81d06097db0c87867559913adab5bf6692998b7af423cea859867b30c7b2')

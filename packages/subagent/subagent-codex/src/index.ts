@@ -32,6 +32,19 @@ export const inject = ['subagents', 'subprocess']
 
 const DEFAULT_PROVIDER_NAME = 'codex'
 
+const CODEX_START_CAPABILITIES: SubagentCapabilities = Object.freeze({
+  ...NO_START_CAPABILITIES,
+  agentOptions: true,
+})
+
+function optionalNonBlank(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`subagent-codex: ${field} must be a non-empty string`)
+  }
+  return value
+}
+
 /** Deployment-owned model, permission, environment, and process-release settings. */
 export interface Config {
   /** Provider name on `ctx.subagents` (default `codex`). */
@@ -61,7 +74,7 @@ export const Config: z<Config> = z.object({
 type ResolvedConfig = Omit<Required<Config>, 'model'> & Pick<Config, 'model'>
 
 class CodexProvider implements SubagentProvider {
-  readonly capabilities: SubagentCapabilities = NO_START_CAPABILITIES
+  readonly capabilities: SubagentCapabilities = CODEX_START_CAPABILITIES
   readonly inheritsParentContext = false
 
   constructor(
@@ -71,6 +84,15 @@ class CodexProvider implements SubagentProvider {
   ) {}
 
   start(request: ResolvedSubagentStartRequest) {
+    const model = optionalNonBlank(
+      request.agentOptions?.model ?? this.config.model,
+      'agentOptions.model',
+    )
+    const reasoningEffort = optionalNonBlank(
+      request.agentOptions?.reasoningEffort,
+      'agentOptions.reasoningEffort',
+    )
+    optionalNonBlank(request.agentOptions?.provider, 'agentOptions.provider')
     const parentCwd = request.parent.session.header.cwd
     if (parentCwd === undefined) {
       throw new Error(
@@ -94,7 +116,8 @@ class CodexProvider implements SubagentProvider {
     }
     const spec: CodexRunSpec = {
       cwd,
-      ...this.config.model === undefined ? {} : { model: this.config.model },
+      ...model === undefined ? {} : { model },
+      ...reasoningEffort === undefined ? {} : { reasoningEffort },
       permissionMode: this.config.permissionMode,
       env: this.config.env,
       disposeGraceMs: this.config.disposeGraceMs,
@@ -115,9 +138,10 @@ class CodexProvider implements SubagentProvider {
  * @param config - registry name, optional model, permission mode, child environment, and disposal grace.
  */
 export function apply(ctx: Context, config: Config): void {
+  const model = optionalNonBlank(config.model, 'configured model')
   const resolved: ResolvedConfig = {
     providerName: config.providerName ?? DEFAULT_PROVIDER_NAME,
-    ...config.model === undefined ? {} : { model: config.model },
+    ...model === undefined ? {} : { model },
     env: config.env as Record<string, string>,
     permissionMode: config.permissionMode ?? DEFAULT_CODEX_PERMISSION_MODE,
     disposeGraceMs: config.disposeGraceMs as number,

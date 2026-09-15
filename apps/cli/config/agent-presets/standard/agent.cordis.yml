@@ -202,6 +202,16 @@
         provider: spawn
         toolName: subagent
         backgroundMode: continuable
+        modelSelectionPolicy:
+          discoveryToolName: list_subagent_models
+          allowedModels:
+            - { provider: glm-local-r5300, model: GLM-5.3-Flash-official-fp8-canary }
+            - { provider: qwen-local-r5300, model: Qwen/Qwen3.8-27B }
+            - { provider: glm-uncensored-local-r5300, model: glm-5.3-flash-uncensored-fp8 }
+            - { provider: deepseek-vision-local-r5300, model: deepseek-v4-flash-vision-exp-unsloth-ud-q8-k-xl }
+            - { provider: deepseek-vision-uncensored-local-r5300, model: deepseek-v4-flash-vision-uncensored-derived-q8-0 }
+            - { provider: gianaos, model: putri }
+            - { provider: princess-os, model: lara }
 
     - id: tool-subagent-fork
       name: '@deepseek-ai/dsh-tool-subagent'
@@ -209,6 +219,16 @@
         provider: fork
         toolName: subagent_fork
         backgroundMode: continuable
+        modelSelectionPolicy:
+          discoveryToolName: list_subagent_fork_models
+          allowedModels:
+            - { provider: glm-local-r5300, model: GLM-5.3-Flash-official-fp8-canary }
+            - { provider: qwen-local-r5300, model: Qwen/Qwen3.8-27B }
+            - { provider: glm-uncensored-local-r5300, model: glm-5.3-flash-uncensored-fp8 }
+            - { provider: deepseek-vision-local-r5300, model: deepseek-v4-flash-vision-exp-unsloth-ud-q8-k-xl }
+            - { provider: deepseek-vision-uncensored-local-r5300, model: deepseek-v4-flash-vision-uncensored-derived-q8-0 }
+            - { provider: gianaos, model: putri }
+            - { provider: princess-os, model: lara }
 
     # Princess OS installs the official dormant providers. They start only
     # when the model explicitly delegates a bounded one-shot coding task.
@@ -219,6 +239,26 @@
         toolName: subagent_codex
         backgroundMode: one-shot
         maxDepth: provider-managed
+        modelSelectionPolicy:
+          preflight: provider
+          discoveryToolName: list_codex_subagent_models
+          allowedModels:
+            - provider: codex-native
+              model: gpt-6-astra
+              reasoningEfforts: [low, medium, high, xhigh, max, ultra]
+              defaultReasoningEffort: high
+            - provider: codex-native
+              model: gpt-5.6-sol
+              reasoningEfforts: [low, medium, high, xhigh, max, ultra]
+              defaultReasoningEffort: low
+            - provider: codex-native
+              model: gpt-5.6-terra
+              reasoningEfforts: [low, medium, high, xhigh, max, ultra]
+              defaultReasoningEffort: medium
+            - provider: codex-native
+              model: gpt-5.6-luna
+              reasoningEfforts: [low, medium, high, xhigh, max]
+              defaultReasoningEffort: medium
 
     - id: tool-subagent-codex-astra
       name: '@deepseek-ai/dsh-tool-subagent'
@@ -227,6 +267,10 @@
         toolName: subagent_codex_astra
         backgroundMode: one-shot
         maxDepth: provider-managed
+        agentOptions:
+          provider: codex-native
+          model: gpt-6-astra
+          reasoningEffort: high
 
     - id: tool-subagent-claude-code
       name: '@deepseek-ai/dsh-tool-subagent'

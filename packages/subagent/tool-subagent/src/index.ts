@@ -62,6 +62,10 @@ export interface Config {
   modelSelectionPolicy?: {
     /** Non-empty exact-route allowlist. */
     allowedModels: AllowedModelRoute[]
+    /** Use the shared LLM registry, or trust the configured subagent provider. */
+    preflight?: 'llm' | 'provider'
+    /** Unique discovery tool owned by this delegation tool instance. */
+    discoveryToolName?: string
   }
   /**
    * Expose `run_in_background` (default true). Disabled instances omit the
@@ -107,12 +111,18 @@ export interface Config {
   maxDepth?: number | 'provider-managed'
 }
 
-export const Config: z<Config> = z.object({
+export const Config = z.object({
   provider: z.string().required(),
   toolName: z.string().default('subagent'),
-  modelSelectionPolicy: z.object({
+  modelSelectionPolicy: (z.object({
     allowedModels: z.array(AllowedModelRouteSchema).min(1).required(),
-  }).default(undefined as unknown as { allowedModels: AllowedModelRoute[] }),
+    preflight: z.union(['llm', 'provider'] as const),
+    discoveryToolName: z.string().min(1),
+  }) as unknown as z<NonNullable<Config['modelSelectionPolicy']>>).default(undefined as unknown as {
+    allowedModels: AllowedModelRoute[]
+    preflight?: 'llm' | 'provider'
+    discoveryToolName?: string
+  }),
   enableRunInBackground: z.boolean().default(true),
   backgroundMode: z.union(['one-shot', 'continuable'] as const).default('one-shot'),
   // Prevent Schemastery from materializing omitted agentOptions as `{}`.
@@ -134,7 +144,7 @@ export const Config: z<Config> = z.object({
     deny: z.array(z.string()).default(undefined as unknown as string[]),
   }).default(undefined as unknown as { allow: string[]; deny: string[] }),
   maxDepth: z.union([z.natural().max(Number.MAX_SAFE_INTEGER), z.const('provider-managed' as const)]).default(3),
-})
+}) as unknown as z<Config>
 
 /** Render text blocks from the canonical JSON block array without trusting arbitrary values. */
 function outputValueText(values: JsonValue[]): string {
@@ -330,6 +340,10 @@ export function apply(ctx: Context, config: Config): void {
   }
   if (config.modelSelectionPolicy !== undefined) {
     assertAllowedModelRoutes(config.modelSelectionPolicy.allowedModels)
+    if (config.modelSelectionPolicy.preflight === 'provider'
+      && config.modelSelectionPolicy.allowedModels.some(route => route.reasoningEfforts === undefined)) {
+      throw new Error('provider-managed subagent model selection requires declared reasoning efforts for every route')
+    }
   }
   const backgroundEnabled = config.enableRunInBackground !== false
   const continuable = (config.backgroundMode ?? 'one-shot') === 'continuable'
@@ -337,6 +351,8 @@ export function apply(ctx: Context, config: Config): void {
   const configuredPolicy: ModelSelectionPolicy | undefined = config.modelSelectionPolicy === undefined
     ? undefined
     : { routes: config.modelSelectionPolicy.allowedModels.map(route => ({ ...route })) }
+  const modelPreflight = config.modelSelectionPolicy?.preflight ?? 'llm'
+  const discoveryToolName = config.modelSelectionPolicy?.discoveryToolName ?? 'list_subagent_models'
 
   const assertSubagentProviderConfiguration = (
     provider: SubagentProvider,
@@ -359,7 +375,12 @@ export function apply(ctx: Context, config: Config): void {
   const install = (runtimeCtx: Context, modelSelectionPolicy: ModelSelectionPolicy | undefined): void => {
     const modelSelectionEnabled = modelSelectionPolicy !== undefined
     if (modelSelectionPolicy !== undefined) {
-      registerListSubagentModels(runtimeCtx, modelSelectionPolicy)
+      registerListSubagentModels(
+        runtimeCtx,
+        modelSelectionPolicy,
+        discoveryToolName,
+        modelPreflight === 'provider',
+      )
     }
     // Load order and HMR replacement can change provider availability while
     // this fiber remains active.
@@ -370,7 +391,7 @@ export function apply(ctx: Context, config: Config): void {
       const providerRouteDefaults = provider.agentRouteDefaults
       const choiceDescription = !modelSelectionEnabled
         ? ''
-        : ' Child LLM selection is optional. Omit `provider`, `model`, and `reasoning_effort` to use configured child defaults. Supply `provider` and `model` together after using `list_subagent_models` to inspect authorized routes and efforts. Changing the effective route without naming an effort uses the selected model\'s default effort.'
+        : ` Child LLM selection is optional. Omit \`provider\`, \`model\`, and \`reasoning_effort\` to use configured child defaults. Supply \`provider\` and \`model\` together after using \`${discoveryToolName}\` to inspect authorized routes and efforts. Changing the effective route without naming an effort uses the selected model's default effort.`
           + (provider.inheritsParentContext
             ? ' Changing the route can prevent provider-side reuse of the inherited conversation prefix.'
             : '')
@@ -480,17 +501,19 @@ export function apply(ctx: Context, config: Config): void {
               childAgentOptions,
               modelRequest,
             )
-            const llm = runtimeCtx.get('llm')
-            if (llm === undefined) {
-              throw new Error('cannot resolve the selected child LLM route because the `llm` service is unavailable')
+            if (modelPreflight === 'llm') {
+              const llm = runtimeCtx.get('llm')
+              if (llm === undefined) {
+                throw new Error('cannot resolve the selected child LLM route because the `llm` service is unavailable')
+              }
+              await preflightChildLlmRoute(
+                llm,
+                parentOptions,
+                childAgentOptions,
+                exec.signal,
+                providerRouteDefaults === undefined,
+              )
             }
-            await preflightChildLlmRoute(
-              llm,
-              parentOptions,
-              childAgentOptions,
-              exec.signal,
-              providerRouteDefaults === undefined,
-            )
             if (runtimeCtx.subagents.getProvider(config.provider) !== provider) {
               throw new Error(`subagent provider "${config.provider}" changed while resolving the child LLM route; retry the delegation`)
             }
@@ -583,19 +606,29 @@ export function apply(ctx: Context, config: Config): void {
   const selectForAgent = (agent: NonNullable<Context['agent']>): ModelSelectionPolicy | undefined => {
     const freshSession = agent.session.firstLiveSeq === 0
       && agent.session.events[0]?.type !== 'session/end-seed'
-    let allowedModels = subagentModelSelectionPolicy(agent.session)
+    let allowedModels = subagentModelSelectionPolicy(agent.session, toolName)
     if (allowedModels === undefined) {
       const parentId = agent.session.header.origin === 'subagent'
         ? agent.session.header.parentSession
         : undefined
       if (parentId !== undefined) {
         const parent = ctx.get('agents')?.get(parentId)
-        allowedModels = parent === undefined ? undefined : subagentModelSelectionPolicy(parent.session)
+        allowedModels = parent === undefined
+          ? undefined
+          : subagentModelSelectionPolicy(parent.session, toolName)
       } else if (freshSession) {
         allowedModels = configuredPolicy.routes.map(route => ({ ...route }))
       }
     }
-    if (allowedModels !== undefined) recordSubagentModelSelection(agent.session, allowedModels)
+    if (allowedModels !== undefined) {
+      recordSubagentModelSelection(
+        agent.session,
+        allowedModels,
+        toolName,
+        discoveryToolName,
+        config.provider,
+      )
+    }
     return allowedModels === undefined ? undefined : { routes: allowedModels }
   }
 
@@ -621,7 +654,7 @@ export function apply(ctx: Context, config: Config): void {
     if (scopedInstalls.has(candidate) || installing.has(candidate)
       || !belongsToComposition(candidate)
       || !delegationAllowsTool(candidate, toolName)
-      || !delegationAllowsTool(candidate, 'list_subagent_models')) return
+      || !delegationAllowsTool(candidate, discoveryToolName)) return
     installing.add(candidate)
     let fiber: ReturnType<Context['inject']>
     try {

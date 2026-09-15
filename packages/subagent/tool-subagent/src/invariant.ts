@@ -7,7 +7,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { InvariantFailure, InvariantInstaller } from '@deepseek-ai/dsh-invariants'
 import { delegationAllowsTool } from '@deepseek-ai/dsh-subagent'
-import { subagentModelSelectionPolicy } from './model-selection-state.ts'
+import { subagentModelSelectionPolicies } from './model-selection-state.ts'
 
 const PACKAGE_NAME = '@deepseek-ai/dsh-tool-subagent'
 
@@ -19,23 +19,29 @@ export const inject = ['invariants']
 /** Assert that a durable selection policy has both model-facing definitions. */
 const install: InvariantInstaller = Object.assign((ctx: Context, fail: InvariantFailure) => {
   ctx.on('agent/pre-step', async ({ agent }, next) => {
-    if (subagentModelSelectionPolicy(agent.session) !== undefined) {
-      if (!delegationAllowsTool(agent, 'subagent')
-        || !delegationAllowsTool(agent, 'list_subagent_models')) return next()
-      const schemas = ctx.tools.schemas(agent)
-      const selectable = schemas.some((schema) => {
-        const properties = (schema.parameters as { properties?: Record<string, unknown> }).properties
-        return properties?.['provider'] !== undefined
-          && properties['model'] !== undefined
-          && properties['reasoning_effort'] !== undefined
-      })
-      if (!selectable || !schemas.some(schema => schema.name === 'list_subagent_models')) {
-        fail('a subagent/model-selection-policy Session must expose route fields and list_subagent_models')
+    const schemas = ctx.tools.schemas(agent)
+    for (const policy of subagentModelSelectionPolicies(agent.session)) {
+      if (!delegationAllowsTool(agent, policy.definitionId)
+        || !delegationAllowsTool(agent, policy.discoveryToolName)) continue
+      const definition = schemas.find(schema => schema.name === policy.definitionId)
+      const providerPresent = policy.providerName === undefined
+        ? definition !== undefined
+        : ctx.subagents.getProvider(policy.providerName) !== undefined
+      if (!providerPresent) continue
+      const properties = definition === undefined
+        ? undefined
+        : (definition.parameters as { properties?: Record<string, unknown> }).properties
+      const selectable = properties?.['provider'] !== undefined
+        && properties['model'] !== undefined
+        && properties['reasoning_effort'] !== undefined
+      if (!selectable || !schemas.some(schema => schema.name === policy.discoveryToolName)) {
+        fail(`a subagent/model-selection-policy Session must expose route fields on ${policy.definitionId}`
+          + ` and ${policy.discoveryToolName}`)
       }
     }
     return next()
   }, { global: true })
-}, { inject: ['tools'] })
+}, { inject: ['tools', 'subagents'] })
 
 /**
  * Register this package's invariant companion.

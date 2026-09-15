@@ -26,6 +26,7 @@ import {
 import { applyChildComposition, resolveChildAgentOptions, usesModelDefaultReasoning } from '@deepseek-ai/dsh-subagent'
 import {
   recordSubagentModelSelection,
+  subagentModelSelectionPolicies,
   subagentModelSelectionPolicy,
 } from '../src/model-selection-state.ts'
 
@@ -49,10 +50,14 @@ function resultText(result: { content: { type: string; text?: string }[] }): str
 
 let callId = 0
 function callSubagent(ctx: Context, agent: Agent, arguments_: unknown) {
+  return callNamedSubagent(ctx, agent, 'subagent', arguments_)
+}
+
+function callNamedSubagent(ctx: Context, agent: Agent, name: string, arguments_: unknown) {
   return ctx.tools.execute({
     signal,
     callId: CallId(`model-selection-${++callId}`),
-    name: 'subagent',
+    name,
     arguments: arguments_,
     agent,
   })
@@ -255,6 +260,273 @@ describe('subagent model selection policy', () => {
     expect(denied.isError).toBe(true)
     expect(resultText(denied)).toContain('is not allowed for this Session')
     await handle.dispose()
+    await ctx.fiber.dispose()
+  })
+
+  it('uses provider-managed route metadata without requiring a matching LLM adapter', async () => {
+    const { ctx, requests } = await boot('native', { agentOptions: true })
+    const handle = await ctx.agents.create({
+      sessionId: SessionId('provider-managed-selection'),
+      agentOptions: { provider: 'alpha', model: 'parent' },
+      setup: async (agentCtx) => {
+        await agentCtx.plugin(tool, {
+          provider: 'native',
+          maxDepth: 'provider-managed',
+          modelSelectionPolicy: {
+            preflight: 'provider',
+            discoveryToolName: 'list_native_subagent_models',
+            allowedModels: [{
+              provider: 'codex-native',
+              model: 'gpt-6-astra',
+              reasoningEfforts: ['high', 'xhigh'],
+              defaultReasoningEffort: 'high',
+            }],
+          },
+        })
+      },
+    })
+
+    const discovery = await ctx.tools.execute({
+      signal,
+      callId: CallId('provider-managed-discovery'),
+      name: 'list_native_subagent_models',
+      arguments: { provider: 'codex-native', model: 'gpt-6-astra' },
+      agent: handle.agent,
+    })
+    expect(discovery.isError).toBe(false)
+    expect(resultText(discovery)).toContain('high (default)')
+    expect(resultText(discovery)).toContain('xhigh')
+
+    const selected = await callSubagent(ctx, handle.agent, {
+      description: 'native child',
+      prompt: 'do work',
+      provider: 'codex-native',
+      model: 'gpt-6-astra',
+      reasoning_effort: 'xhigh',
+    })
+    expect(selected.isError).toBe(false)
+    expect(requests[0]?.agentOptions).toEqual({
+      provider: 'codex-native',
+      model: 'gpt-6-astra',
+      reasoningEffort: 'xhigh',
+    })
+
+    const rejected = await callSubagent(ctx, handle.agent, {
+      description: 'invalid effort',
+      prompt: 'do work',
+      provider: 'codex-native',
+      model: 'gpt-6-astra',
+      reasoning_effort: 'unsupported',
+    })
+    expect(rejected.isError).toBe(true)
+    expect(resultText(rejected)).toContain('is not allowed')
+    await handle.dispose()
+    await ctx.fiber.dispose()
+  })
+
+  it('allows ordinary turns while a persisted provider is absent, added, then removed', async () => {
+    const ctx = new Context()
+    await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(Invariants)
+    await ctx.plugin(AgentLoop, { agents: [] })
+    await ctx.plugin(SubagentRuntime)
+    ctx.llm.registerAdapter(['alpha'], new MockAdapter([
+      textResponse('dormant complete'),
+      textResponse('mounted complete'),
+      textResponse('removed complete'),
+    ], REASONING))
+    const handle = await ctx.agents.create({
+      sessionId: SessionId('dormant-provider-invariant'),
+      agentOptions: { provider: 'alpha', model: 'parent' },
+      setup: async (agentCtx) => {
+        await agentCtx.plugin(tool, {
+          provider: 'optional-native',
+          toolName: 'subagent_codex',
+          maxDepth: 'provider-managed',
+          modelSelectionPolicy: {
+            preflight: 'provider',
+            discoveryToolName: 'list_codex_subagent_models',
+            allowedModels: [{
+              provider: 'codex-native',
+              model: 'gpt-6-astra',
+              reasoningEfforts: ['high'],
+              defaultReasoningEffort: 'high',
+            }],
+          },
+        })
+      },
+    })
+    const ordinaryTurn = async (text: string, expectedReply: string): Promise<void> => {
+      const completedBefore = handle.agent.session.events
+        .filter(event => event.type === 'turn/end').length
+      handle.agent.followup(createUserMessage({
+        content: [{ type: 'text', text }],
+        source: { kind: 'user' },
+      }))
+      await handle.agent.whenIdle()
+      const completed = handle.agent.session.events.filter(event => event.type === 'turn/end')
+      expect(completed).toHaveLength(completedBefore + 1)
+      expect(completed.at(-1)?.data.reason).toEqual({ kind: 'completed' })
+      const reply = handle.agent.session.events
+        .filter(event => event.type === 'assistant/message').at(-1)
+      expect(reply?.type === 'assistant/message' ? reply.data.message.content : undefined)
+        .toEqual([{ type: 'text', text: expectedReply }])
+    }
+
+    expect(ctx.tools.get('subagent_codex', handle.agent)).toBeUndefined()
+    expect(ctx.tools.get('list_codex_subagent_models', handle.agent)).toBeDefined()
+    await ordinaryTurn('provider is dormant', 'dormant complete')
+
+    const provider = await mock.mountScriptedProvider(ctx, {
+      name: 'optional-native',
+      capabilities: { agentOptions: true },
+    })
+    await vi.waitFor(() => {
+      expect(ctx.tools.get('subagent_codex', handle.agent)).toBeDefined()
+    })
+    await ordinaryTurn('provider is mounted', 'mounted complete')
+
+    await provider.dispose()
+    await vi.waitFor(() => {
+      expect(ctx.tools.get('subagent_codex', handle.agent)).toBeUndefined()
+    })
+    await ordinaryTurn('provider was removed', 'removed complete')
+    expect(subagentModelSelectionPolicies(handle.agent.session)).toContainEqual({
+      definitionId: 'subagent_codex',
+      discoveryToolName: 'list_codex_subagent_models',
+      providerName: 'optional-native',
+      allowedModels: [{
+        provider: 'codex-native',
+        model: 'gpt-6-astra',
+        reasoningEfforts: ['high'],
+        defaultReasoningEffort: 'high',
+      }],
+    })
+
+    await handle.dispose()
+    await ctx.fiber.dispose()
+  })
+
+  it.each([
+    ['local-first', ['local', 'native']],
+    ['native-first', ['native', 'local']],
+  ] as const)('isolates distinct local and native policies in %s installation order', async (_label, order) => {
+    const ctx = new Context()
+    const localRequests: SubagentStartRequest[] = []
+    const nativeRequests: SubagentStartRequest[] = []
+    await mountAgentLoopTestDependencies(ctx)
+    await ctx.plugin(AgentLoop, { agents: [] })
+    await ctx.plugin(SubagentRuntime)
+    await mock.mountScriptedProvider(ctx, {
+      name: 'local-selectable',
+      capabilities: { agentOptions: true },
+      onStart: (request) => { localRequests.push(request) },
+    })
+    await mock.mountScriptedProvider(ctx, {
+      name: 'native-selectable',
+      capabilities: { agentOptions: true },
+      onStart: (request) => { nativeRequests.push(request) },
+    })
+    ctx.llm.registerAdapter(['alpha'], new MockAdapter([], REASONING))
+    const localConfig: tool.Config = {
+      provider: 'local-selectable',
+      toolName: 'subagent',
+      maxDepth: 'provider-managed',
+      modelSelectionPolicy: {
+        allowedModels: ALLOWED_MODELS,
+        discoveryToolName: 'list_subagent_models',
+      },
+    }
+    const nativeRoutes = [{
+      provider: 'codex-native',
+      model: 'gpt-6-astra',
+      reasoningEfforts: ['high', 'xhigh'],
+      defaultReasoningEffort: 'high',
+    }]
+    const nativeConfig: tool.Config = {
+      provider: 'native-selectable',
+      toolName: 'subagent_codex',
+      maxDepth: 'provider-managed',
+      modelSelectionPolicy: {
+        preflight: 'provider',
+        allowedModels: nativeRoutes,
+        discoveryToolName: 'list_codex_subagent_models',
+      },
+    }
+    const configs = { local: localConfig, native: nativeConfig }
+    const handle = await ctx.agents.create({
+      sessionId: SessionId(`two-policy-owners-${_label}`),
+      agentOptions: { provider: 'alpha', model: 'parent' },
+      setup: async (agentCtx) => {
+        for (const key of order) await agentCtx.plugin(tool, configs[key])
+      },
+    })
+
+    expect(ctx.tools.get('subagent', handle.agent)).toBeDefined()
+    expect(ctx.tools.get('subagent_codex', handle.agent)).toBeDefined()
+    expect(ctx.tools.get('list_subagent_models', handle.agent)).toBeDefined()
+    expect(ctx.tools.get('list_codex_subagent_models', handle.agent)).toBeDefined()
+    expect(subagentModelSelectionPolicy(handle.agent.session, 'subagent')).toEqual(ALLOWED_MODELS)
+    expect(subagentModelSelectionPolicy(handle.agent.session, 'subagent_codex')).toEqual(nativeRoutes)
+    expect(subagentModelSelectionPolicies(handle.agent.session).map(policy => policy.definitionId))
+      .toEqual(order.map(key => configs[key].toolName ?? 'subagent'))
+
+    const localDiscovery = await ctx.tools.execute({
+      signal,
+      callId: CallId(`local-discovery-${_label}`),
+      name: 'list_subagent_models',
+      arguments: { provider: 'alpha', model: 'fast' },
+      agent: handle.agent,
+    })
+    expect(resultText(localDiscovery)).toContain('alpha/fast')
+    expect(resultText(localDiscovery)).not.toContain('codex-native')
+    const nativeDiscovery = await ctx.tools.execute({
+      signal,
+      callId: CallId(`native-discovery-${_label}`),
+      name: 'list_codex_subagent_models',
+      arguments: { provider: 'codex-native' },
+      agent: handle.agent,
+    })
+    expect(resultText(nativeDiscovery)).toContain('codex-native/gpt-6-astra')
+    expect(resultText(nativeDiscovery)).not.toContain('alpha/fast')
+
+    expect((await callNamedSubagent(ctx, handle.agent, 'subagent', {
+      description: 'local child',
+      prompt: 'local work',
+      provider: 'alpha',
+      model: 'fast',
+      reasoning_effort: 'low',
+    })).isError).toBe(false)
+    expect((await callNamedSubagent(ctx, handle.agent, 'subagent_codex', {
+      description: 'native child',
+      prompt: 'native work',
+      provider: 'codex-native',
+      model: 'gpt-6-astra',
+      reasoning_effort: 'xhigh',
+    })).isError).toBe(false)
+    expect(localRequests[0]?.agentOptions).toMatchObject({ provider: 'alpha', model: 'fast' })
+    expect(nativeRequests[0]?.agentOptions).toEqual({
+      provider: 'codex-native',
+      model: 'gpt-6-astra',
+      reasoningEffort: 'xhigh',
+    })
+
+    const restored = await ctx.agents.create({
+      sessionId: SessionId(`two-policy-restored-${_label}`),
+      seed: handle.agent.session.events,
+      agentOptions: { provider: 'alpha', model: 'parent' },
+      setup: async (agentCtx) => {
+        for (const key of [...order].reverse()) await agentCtx.plugin(tool, configs[key])
+      },
+    })
+    expect(subagentModelSelectionPolicy(restored.agent.session, 'subagent')).toEqual(ALLOWED_MODELS)
+    expect(subagentModelSelectionPolicy(restored.agent.session, 'subagent_codex')).toEqual(nativeRoutes)
+    expect(ctx.tools.get('list_subagent_models', restored.agent)).toBeDefined()
+    expect(ctx.tools.get('list_codex_subagent_models', restored.agent)).toBeDefined()
+    await restored.dispose()
+    await handle.dispose()
+    expect(ctx.tools.get('list_subagent_models', handle.agent)).toBeUndefined()
+    expect(ctx.tools.get('list_codex_subagent_models', handle.agent)).toBeUndefined()
     await ctx.fiber.dispose()
   })
 

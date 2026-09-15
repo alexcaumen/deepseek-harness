@@ -38,13 +38,36 @@ async function listSubagentModels(
   policy: ModelSelectionPolicy,
   request: ListSubagentModelsRequest,
   signal: AbortSignal,
+  providerManaged: boolean,
 ): Promise<string> {
+  if (request.model !== undefined && request.provider === undefined) {
+    throw new Error('`model` requires `provider`')
+  }
+  if (providerManaged) {
+    if (request.provider === undefined) {
+      return [...new Set(policy.routes.map(route => route.provider))].join('\n')
+    }
+    if (request.provider.length === 0) throw new Error('`provider` must be non-empty')
+    const routes = policy.routes.filter(route => route.provider === request.provider)
+    if (routes.length === 0) {
+      throw new Error(`subagent provider route "${request.provider}" is not allowed for this Session`)
+    }
+    if (request.model === undefined) {
+      return routes.map(route => `${route.provider}/${route.model}`).join('\n')
+    }
+    if (request.model.length === 0) throw new Error('`model` must be non-empty')
+    const route = routes.find(candidate => candidate.model === request.model)
+    if (route === undefined) {
+      throw new Error(`child LLM route "${request.provider}/${request.model}" is not allowed for this Session`)
+    }
+    const efforts = route.reasoningEfforts?.map(effort => (
+      `${effort}${route.defaultReasoningEffort === effort ? ' (default)' : ''}`
+    )).join('\n') ?? '(provider uses its configured effort)'
+    return `${route.provider}/${route.model}\nReasoning efforts:\n${efforts}`
+  }
   const llm = ctx.get('llm')
   if (llm === undefined) {
     throw new Error('cannot discover child LLM routes because the `llm` service is unavailable')
-  }
-  if (request.model !== undefined && request.provider === undefined) {
-    throw new Error('`model` requires `provider`')
   }
   if (request.provider === undefined) {
     const providers = llm.listProviders()
@@ -83,9 +106,14 @@ async function listSubagentModels(
  * @param ctx - Agent context that owns the definition.
  * @param policy - exact routes authorized for that Session.
  */
-export function registerListSubagentModels(ctx: Context, policy: ModelSelectionPolicy): void {
+export function registerListSubagentModels(
+  ctx: Context,
+  policy: ModelSelectionPolicy,
+  toolName = 'list_subagent_models',
+  providerManaged = false,
+): void {
   ctx.tools.register(defineTool({
-    name: 'list_subagent_models',
+    name: toolName,
     description:
       'Discover LLM routes authorized for subagents without changing the current Agent. Call with no arguments '
       + 'to list providers, with `provider` to list its advertised models, or with `provider` and `model` to inspect '
@@ -106,7 +134,7 @@ export function registerListSubagentModels(ctx: Context, policy: ModelSelectionP
       render: (_args, result) => [{ type: 'text', text: result }],
     },
     execute(args, exec) {
-      return listSubagentModels(ctx, policy, args, exec.signal)
+      return listSubagentModels(ctx, policy, args, exec.signal, providerManaged)
     },
   }))
 }
