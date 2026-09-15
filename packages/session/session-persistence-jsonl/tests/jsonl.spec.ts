@@ -563,6 +563,26 @@ describe('JsonlSessionPersistence: durability and crash semantics', () => {
       .rejects.toThrow(/unsupported legacy request\/header reason "fallback" at seq 0/)
   })
 
+  it('cold-loads the cataloged subagent model policy from a stored v0 log', async () => {
+    const m = meta('subagent-model-policy', '/policy')
+    const path = rawLogPath(root, m.cwd, m.id)
+    await mkdir(sessionDir(root, m.cwd, m.id), { recursive: true })
+    const policyEvent = {
+      type: 'subagent/model-selection-policy',
+      seq: 0,
+      time: 1,
+      data: { allowedModels: [{ provider: 'alpha', model: 'fast' }] },
+    }
+    await writeFile(path, [
+      JSON.stringify(toHeaderLine(m)),
+      JSON.stringify(policyEvent),
+      '',
+    ].join('\n'))
+
+    const loaded = await ctx.sessionPersistence.load(m.id)
+    expect(loaded.events).toEqual([policyEvent])
+  })
+
   it('persists a forked child seed through the existing session write path', async () => {
     const source = ctx.sessions.create(SessionId('persist-parent'), { meta: { cwd: '/workspace' } })
     appendClosedTurn(source)

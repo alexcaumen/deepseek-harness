@@ -197,6 +197,14 @@
         backgroundMode: one-shot
         maxDepth: provider-managed
 
+    - id: tool-subagent-codex-astra
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: codex-astra
+        toolName: subagent_codex_astra
+        backgroundMode: one-shot
+        maxDepth: provider-managed
+
     - id: tool-subagent-claude-code
       name: '@deepseek-ai/dsh-tool-subagent'
       config:

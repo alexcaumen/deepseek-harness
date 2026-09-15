@@ -10,7 +10,7 @@ import { evaluate } from '@deepseek-ai/cordis-plugin-loader'
 interface PatchEntry {
   id?: string
   name?: string
-  disabled?: boolean
+  disabled?: unknown
   config?: Record<string, unknown>
   insert?: PatchEntry[]
 }
@@ -183,7 +183,12 @@ describe('Giana CoWork runtime binding', () => {
       ['mcp-connectors', '@deepseek-ai/dsh-mcp-client', undefined],
       ['mcp-windows-desktop', '@deepseek-ai/dsh-mcp-client', undefined],
       ['tool-access-policy', '@grinviro/dsh-tool-access-policy', undefined],
-      ['subagent-codex', '@deepseek-ai/dsh-subagent-codex', undefined],
+      ['subagent-codex', '@deepseek-ai/dsh-subagent-codex', {
+        __jsExpr: '!process.env.GIANA_CODEX_ACTIVE_HOME',
+      }],
+      ['subagent-codex-astra', '@deepseek-ai/dsh-subagent-codex', {
+        __jsExpr: '!process.env.GIANA_CODEX_ACTIVE_HOME',
+      }],
       ['subagent-claude-code', '@deepseek-ai/dsh-subagent-claude-code', undefined],
       ['mcp-tool-runtime', '@deepseek-ai/dsh-mcp-server-tool-runtime', undefined],
     ])
@@ -386,6 +391,17 @@ describe('Giana CoWork runtime binding', () => {
     })
     expect(configById(entries, 'subagent-codex')).toEqual({
       providerName: 'codex',
+      env: {
+        CODEX_HOME: { __jsExpr: 'process.env.GIANA_CODEX_ACTIVE_HOME' },
+      },
+      permissionMode: 'never',
+    })
+    expect(configById(entries, 'subagent-codex-astra')).toEqual({
+      providerName: 'codex-astra',
+      model: 'gpt-6-astra',
+      env: {
+        CODEX_HOME: { __jsExpr: 'process.env.GIANA_CODEX_ACTIVE_HOME' },
+      },
       permissionMode: 'never',
     })
     expect(configById(entries, 'subagent-claude-code')).toEqual({

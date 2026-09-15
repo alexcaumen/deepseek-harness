@@ -522,7 +522,7 @@ Source: [`packages/llm/llm-retry/src/types.ts:11`](../packages/llm/llm-retry/src
 'model-lifecycle/effective-route': ModelEffectiveRouteEventData
 ```
 
-Source: [`packages/llm/model-lifecycle/src/index.ts:169`](../packages/llm/model-lifecycle/src/index.ts)
+Source: [`packages/llm/model-lifecycle/src/index.ts:177`](../packages/llm/model-lifecycle/src/index.ts)
 
 ### `permission/*`
 
@@ -734,7 +734,25 @@ Source: [`packages/core/session/src/types.ts:254`](../packages/core/session/src/
 'subagent/descriptor': SubagentDescriptorData
 ```
 
-Source: [`packages/subagent/subagent/src/descriptor.ts:37`](../packages/subagent/subagent/src/descriptor.ts)
+Source: [`packages/subagent/subagent/src/descriptor.ts:39`](../packages/subagent/subagent/src/descriptor.ts)
+
+<a id="subagentmodel-selection-policy--log-only"></a>
+
+#### `subagent/model-selection-policy` — log-only
+
+```ts persistence-catalog
+/**
+ * Exact child routes authorized for this Session's model-selectable
+ * delegation definition. Log-only: it has no surface operation and never
+ * enters model history.
+ */
+'subagent/model-selection-policy': {
+  /** Exact routes this Session may select explicitly for a child. */
+  allowedModels: AllowedModelRoute[]
+}
+```
+
+Source: [`packages/subagent/tool-subagent/src/model-selection-state.ts:15`](../packages/subagent/tool-subagent/src/model-selection-state.ts)
 
 ### `team/*`
 

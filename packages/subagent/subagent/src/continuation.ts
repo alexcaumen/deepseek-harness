@@ -30,7 +30,7 @@ import type {
   AgentSetupCommit,
   CreateAgentOptions,
 } from '@deepseek-ai/dsh-agent'
-import { boundContextSummary, createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
+import { ReasoningEffortId, boundContextSummary, createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageId, MessageSource } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
@@ -422,12 +422,14 @@ export class SubagentContinuationManager {
     // before a child exists, and the detached value is what reaches the log.
     const agentProvider = childAgentOptions.provider
     const agentModel = childAgentOptions.model
+    const agentReasoningEffort = childAgentOptions.reasoningEffort
     const descriptor = snapshotSubagentDescriptor({
       mode: 'continuable',
       provider: spec.provider,
       label: spec.label,
       ...agentProvider !== undefined ? { agentProvider } : {},
       ...agentModel !== undefined ? { agentModel } : {},
+      ...agentReasoningEffort !== undefined ? { agentReasoningEffort } : {},
       ...request.persona !== undefined ? { persona: request.persona } : {},
       ...request.toolFilter !== undefined ? { toolFilter: request.toolFilter } : {},
     })
@@ -608,7 +610,6 @@ export class SubagentContinuationManager {
    * @throws {SubagentError} when the sender is unauthorized, the parent is not
    *   live, or continuation admission is closing.
    */
-  // oxlint-disable-next-line typescript/require-await -- keep rejection semantics without yielding during admission
   async reportFrom(
     child: Agent,
     content: ContentBlock[],
@@ -984,6 +985,9 @@ export class SubagentContinuationManager {
         agentOptions: {
           ...descriptor.agentProvider !== undefined ? { provider: descriptor.agentProvider } : {},
           ...descriptor.agentModel !== undefined ? { model: descriptor.agentModel } : {},
+          ...descriptor.agentReasoningEffort !== undefined
+            ? { reasoningEffort: ReasoningEffortId(descriptor.agentReasoningEffort) }
+            : {},
         },
         composition: { persona: descriptor.persona, toolFilter: descriptor.toolFilter },
         signal: options.signal,

@@ -7,8 +7,9 @@
  *
  * The descriptor deliberately snapshots explicit fields rather than the
  * merge-extensible `AgentOptions` object: an unrelated extension value cannot
- * make continuation fail merely because it is not JSON, and later composition
- * inputs require a deliberate {@link SUBAGENT_DESCRIPTOR_VERSION} change. It
+ * make continuation fail merely because it is not JSON. Optional route-owned
+ * fields remain additive for v2 readers; incompatible or required composition
+ * changes require a deliberate {@link SUBAGENT_DESCRIPTOR_VERSION} change. It
  * omits `subagentDepth` — cold resume trusts the persisted header's
  * `delegationDepth` as the monotone floor — and `outputSchema`, which belongs
  * to one activation's result contract rather than durable child composition.
@@ -23,6 +24,7 @@
 
 import { snapshotJsonValue } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { ToolRestriction } from '@deepseek-ai/dsh-tools'
 
 declare module '@deepseek-ai/dsh-session/types' {
@@ -41,8 +43,8 @@ declare module '@deepseek-ai/dsh-session/types' {
 /**
  * The current descriptor format version, stamped into every appended
  * `subagent/descriptor` event and required verbatim by {@link foldSubagentDescriptor}.
- * Supporting another composition input is a deliberate version change, never
- * an implicit extra field.
+ * Incompatible composition changes require a deliberate version change; new
+ * optional fields must remain absent-compatible with existing v2 records.
  */
 export const SUBAGENT_DESCRIPTOR_VERSION = 2
 
@@ -65,6 +67,8 @@ export interface OneShotSubagentDescriptorData extends SubagentDescriptorBase {
    * replaying parent tool results or exposing the child prompt.
    */
   readonly label?: string
+  /** Child tool scoping used to keep inherited delegation tools bounded. */
+  readonly toolFilter?: ToolRestriction
 }
 
 /** A session-backed subagent whose declared composition supports cold resume. */
@@ -76,6 +80,8 @@ export interface ContinuableSubagentDescriptorData extends SubagentDescriptorBas
   readonly agentProvider?: string
   /** Resolved child `agentOptions.model`, when one was declared. */
   readonly agentModel?: string
+  /** Resolved child `agentOptions.reasoningEffort`, when one was declared. */
+  readonly agentReasoningEffort?: ReasoningEffortId
   /** Per-child persona that shadows the deployment persona on resume. */
   readonly persona?: string
   /** Child tool scoping reapplied on resume. */
@@ -100,6 +106,8 @@ export interface OneShotSubagentDescriptorInput extends SubagentDescriptorInputB
   readonly mode: 'one-shot'
   /** Optional initial delegation `description` used as the durable creation label. */
   readonly label?: string
+  /** Requested child tool scoping. */
+  readonly toolFilter?: ToolRestriction
 }
 
 /** Input for a continuable child's durable identity and resumable composition. */
@@ -111,6 +119,8 @@ export interface ContinuableSubagentDescriptorInput extends SubagentDescriptorIn
   readonly agentProvider?: string
   /** Requested child `agentOptions.model`. */
   readonly agentModel?: string
+  /** Requested child `agentOptions.reasoningEffort`. */
+  readonly agentReasoningEffort?: ReasoningEffortId
   /** Requested per-child persona. */
   readonly persona?: string
   /** Requested child tool scoping. */
@@ -128,11 +138,12 @@ const DESCRIPTOR_BASE_KEYS = [
   'provider',
   'label',
 ] as const
-const ONE_SHOT_DESCRIPTOR_KEYS = new Set(DESCRIPTOR_BASE_KEYS)
+const ONE_SHOT_DESCRIPTOR_KEYS = new Set([...DESCRIPTOR_BASE_KEYS, 'toolFilter'])
 const CONTINUABLE_DESCRIPTOR_KEYS = new Set([
   ...DESCRIPTOR_BASE_KEYS,
   'agentProvider',
   'agentModel',
+  'agentReasoningEffort',
   'persona',
   'toolFilter',
 ])
@@ -218,11 +229,15 @@ function parseSubagentDescriptor(value: unknown): SubagentDescriptorData | undef
   }
   if (mode === 'one-shot') {
     const label = optionalString(value, 'label')
+    const toolFilter = Object.hasOwn(value, 'toolFilter')
+      ? parseToolFilter(value['toolFilter'])
+      : undefined
     return {
       version: SUBAGENT_DESCRIPTOR_VERSION,
       mode,
       provider,
       ...label !== undefined ? { label } : {},
+      ...toolFilter !== undefined ? { toolFilter } : {},
     }
   }
   const label = value['label']
@@ -231,6 +246,7 @@ function parseSubagentDescriptor(value: unknown): SubagentDescriptorData | undef
   }
   const agentProvider = optionalString(value, 'agentProvider')
   const agentModel = optionalString(value, 'agentModel')
+  const agentReasoningEffort = optionalString(value, 'agentReasoningEffort') as ReasoningEffortId | undefined
   const persona = optionalString(value, 'persona')
   const toolFilter = Object.hasOwn(value, 'toolFilter')
     ? parseToolFilter(value['toolFilter'])
@@ -242,6 +258,7 @@ function parseSubagentDescriptor(value: unknown): SubagentDescriptorData | undef
     label,
     ...agentProvider !== undefined ? { agentProvider } : {},
     ...agentModel !== undefined ? { agentModel } : {},
+    ...agentReasoningEffort !== undefined ? { agentReasoningEffort } : {},
     ...persona !== undefined ? { persona } : {},
     ...toolFilter !== undefined ? { toolFilter } : {},
   }
@@ -275,6 +292,7 @@ export function snapshotSubagentDescriptor(input: SubagentDescriptorInput): Suba
       mode: input.mode,
       provider: input.provider,
       ...input.label !== undefined ? { label: input.label } : {},
+      ...input.toolFilter !== undefined ? { toolFilter: input.toolFilter } : {},
     }
     : {
       version: SUBAGENT_DESCRIPTOR_VERSION,
@@ -283,6 +301,7 @@ export function snapshotSubagentDescriptor(input: SubagentDescriptorInput): Suba
       label: input.label,
       ...input.agentProvider !== undefined ? { agentProvider: input.agentProvider } : {},
       ...input.agentModel !== undefined ? { agentModel: input.agentModel } : {},
+      ...input.agentReasoningEffort !== undefined ? { agentReasoningEffort: input.agentReasoningEffort } : {},
       ...input.persona !== undefined ? { persona: input.persona } : {},
       ...input.toolFilter !== undefined ? { toolFilter: input.toolFilter } : {},
     }

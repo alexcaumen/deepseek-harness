@@ -27,6 +27,41 @@ import type {} from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-agent-presets'
 import { delegationDepthOf } from './depth.ts'
 
+const modelDefaultReasoning = new WeakSet<AgentOptions>()
+const delegatedToolRestrictions = new WeakMap<Agent, ToolRestriction>()
+
+/** Mark options as intentionally using the selected model's default effort. */
+export function markModelDefaultReasoning(options: AgentOptions): AgentOptions {
+  modelDefaultReasoning.add(options)
+  return options
+}
+
+/** Whether route resolution intentionally cleared an inherited effort. */
+export function usesModelDefaultReasoning(options: AgentOptions | undefined): boolean {
+  return options !== undefined && modelDefaultReasoning.has(options)
+}
+
+/** Snapshot the fixed tool boundary attached to one delegated child. */
+export function delegatedToolRestriction(agent: Agent): ToolRestriction | undefined {
+  return delegatedToolRestrictions.get(agent)
+}
+
+/** Whether one fixed delegation boundary admits a named inherited capability. */
+export function delegationAllowsTool(agent: Agent, toolName: string): boolean {
+  const filter = delegatedToolRestriction(agent)
+  if (filter === undefined) return true
+  if (filter.allow !== undefined && !filter.allow.includes(toolName)) return false
+  return filter.deny?.includes(toolName) !== true
+}
+
+/** Detach mutable caller arrays before retaining a child's runtime boundary. */
+function snapshotToolRestriction(filter: ToolRestriction): ToolRestriction {
+  return Object.freeze({
+    ...filter.allow === undefined ? {} : { allow: Object.freeze([...filter.allow]) },
+    ...filter.deny === undefined ? {} : { deny: Object.freeze([...filter.deny]) },
+  })
+}
+
 /** Thrown when starting a child would exceed the requested depth cap. */
 export class SubagentDepthError extends Error {
   constructor(public readonly attemptedDepth: number, public readonly maxDepth: number) {
@@ -56,10 +91,37 @@ export function resolveChildDepth(parent: Agent, maxDepth: number | undefined): 
   return childDepth
 }
 
+/** Read the parent options most recently committed to its request log. */
+export function parentAgentOptionsForDelegation(parent: Agent): AgentOptions {
+  const resolved = parent.session.requestContext()
+  const assembled = parent.session.requestHeader()?.config
+  if (resolved === undefined && assembled === undefined) return { ...parent.options }
+  const {
+    provider: _createdProvider,
+    model: _createdModel,
+    reasoningEffort: _createdReasoningEffort,
+    maxTokens: _createdMaxTokens,
+    ...createdOptions
+  } = parent.options
+  const provider = resolved?.provider ?? assembled?.provider
+  const model = resolved?.model ?? assembled?.model
+  const reasoningEffort = assembled?.reasoningEffort
+  const maxTokens = assembled?.maxTokens ?? parent.options.maxTokens
+  return {
+    ...createdOptions,
+    ...provider !== undefined ? { provider } : {},
+    ...model !== undefined ? { model } : {},
+    ...reasoningEffort !== undefined ? { reasoningEffort } : {},
+    ...maxTokens !== undefined ? { maxTokens } : {},
+  }
+}
+
 /**
  * Resolve the child's `AgentOptions`: the parent's latest resolved request
- * route (or creation route before its first request) unless the delegation
- * overrides it, stamped with the child's own delegation depth.
+ * route and route-owned effort (or creation values before its first request)
+ * unless the delegation overrides them, stamped with the child's own
+ * delegation depth. A changed route without an explicit effort clears the
+ * inherited effort so the selected model can use its own default.
  * @param parent - the delegating parent whose route the child inherits.
  * @param requested - per-child overrides, if any.
  * @param childDepth - the resolved delegation depth to stamp.
@@ -70,18 +132,24 @@ export function resolveChildAgentOptions(
   requested: AgentOptions | undefined,
   childDepth: number,
 ): AgentOptions {
-  const resolved = parent.session.requestContext()
-  const assembled = parent.session.requestHeader()?.config
-  const parentProvider = resolved?.provider ?? assembled?.provider ?? parent.options.provider
-  const parentModel = resolved?.model ?? assembled?.model ?? parent.options.model
-  const parentMaxTokens = assembled?.maxTokens ?? parent.options.maxTokens
-  return {
+  const parentOptions = parentAgentOptionsForDelegation(parent)
+  const parentProvider = parentOptions.provider
+  const parentModel = parentOptions.model
+  const parentReasoningEffort = parentOptions.reasoningEffort
+  const parentMaxTokens = parentOptions.maxTokens
+  const childOptions: AgentOptions = {
     ...parentProvider !== undefined ? { provider: parentProvider } : {},
     ...parentModel !== undefined ? { model: parentModel } : {},
+    ...parentReasoningEffort !== undefined ? { reasoningEffort: parentReasoningEffort } : {},
     ...parentMaxTokens !== undefined ? { maxTokens: parentMaxTokens } : {},
     ...requested,
     subagentDepth: childDepth,
   }
+  const routeChanged = childOptions.provider !== parentProvider || childOptions.model !== parentModel
+  if (usesModelDefaultReasoning(requested) || (routeChanged && requested?.reasoningEffort === undefined)) {
+    delete childOptions.reasoningEffort
+  }
+  return childOptions
 }
 
 /**
@@ -173,7 +241,13 @@ export function applyChildComposition(
   if (composition.persona !== undefined) {
     childCtx.systemPrompt.section({ name: 'deployment:persona', order: 0, text: composition.persona })
   }
-  if (composition.toolFilter !== undefined) childCtx.tools.restrict(composition.toolFilter)
+  if (composition.toolFilter !== undefined) {
+    const child = childCtx.agent
+    if (child === undefined) throw new Error('child composition requires an Agent scope')
+    const toolFilter = snapshotToolRestriction(composition.toolFilter)
+    delegatedToolRestrictions.set(child, toolFilter)
+    childCtx.tools.restrict(toolFilter)
+  }
 }
 
 /** Policy seeded onto a child session's log at the delegation boundary. */

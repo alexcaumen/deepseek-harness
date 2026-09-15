@@ -12,7 +12,7 @@ import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import * as SubagentSpawn from '@deepseek-ai/dsh-subagent-spawn-in-process'
 import * as SubagentFork from '@deepseek-ai/dsh-subagent-fork-in-process'
 import type { GenerateOptions, MessageId, StreamChunk } from '@deepseek-ai/dsh-llm'
-import { CallId, createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
+import { CallId, ReasoningEffortId, createUserMessage, LlmAdapter } from '@deepseek-ai/dsh-llm'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import InvariantRegistry from '@deepseek-ai/dsh-invariants'
 import { MockAdapter, maxTokensResponse, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
@@ -2423,27 +2423,58 @@ describe('continuable errors', () => {
     hold.resolve(undefined)
   })
 
-  it('reapplies the descriptor model route on cold resume', async () => {
-    const { ctx, parent } = await setup([textResponse('first'), textResponse('resumed')])
+  it('reapplies the descriptor model route and effort on cold resume', async () => {
+    const adapter = new MockAdapter([textResponse('first'), textResponse('resumed')], {
+      efforts: [
+        { id: ReasoningEffortId('low'), name: 'Low' },
+        { id: ReasoningEffortId('high'), name: 'High' },
+      ],
+      defaultEffort: ReasoningEffortId('high'),
+    })
+    const { ctx, parent } = await setupWith(adapter)
+    parkParent(ctx, parent)
     const started = await ctx.subagents.startContinuable({
       ...startSpec(parent),
       request: {
         prompt: message('routed work'),
         parent,
-        agentOptions: { provider: 'mock', model: 'child-model' },
+        agentOptions: {
+          provider: 'mock',
+          model: 'child-model',
+          reasoningEffort: ReasoningEffortId('low'),
+        },
       },
     })
     await waitNoActivation(ctx, started.childId)
     const loaded = await ctx.sessionPersistence.load(started.childId)
     expect(loaded.events.find(event => event.type === 'subagent/descriptor')?.data)
-      .toMatchObject({ agentProvider: 'mock', agentModel: 'child-model' })
+      .toMatchObject({
+        version: 2,
+        agentProvider: 'mock',
+        agentModel: 'child-model',
+        agentReasoningEffort: 'low',
+      })
+    expect(loaded.events.find(event => event.type === 'request/header')?.data)
+      .toMatchObject({
+        reason: 'initial',
+        header: { config: { provider: 'mock', model: 'child-model', reasoningEffort: 'low' } },
+      })
 
-    // The resumed Activation runs on the declared route, not the parent's.
+    // The resumed Activation runs on the declared route and effort, not the parent's.
     await followup(ctx, parent, started.childId, message('again'))
-    await vi.waitFor(() => {
-      expect(ctx.agents.get(started.childId)?.options.model).toBe('child-model')
-    })
     await waitNoActivation(ctx, started.childId)
+    expect(adapter.requests).toHaveLength(2)
+    expect(adapter.requests[1]).toMatchObject({
+      provider: 'mock',
+      model: 'child-model',
+      reasoningEffort: 'low',
+    })
+    const resumed = await ctx.sessionPersistence.load(started.childId)
+    expect(resumed.events.filter(event => event.type === 'request/header').at(-1)?.data)
+      .toMatchObject({
+        reason: 'resume',
+        header: { config: { provider: 'mock', model: 'child-model', reasoningEffort: 'low' } },
+      })
   })
 
   it('unloading the manager drains its live activations', async () => {

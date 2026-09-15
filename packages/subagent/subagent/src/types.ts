@@ -84,6 +84,8 @@ export interface SubagentRunEndInfo {
  * to `maxDepth`; the other names match.
  */
 export interface SubagentCapabilities {
+  /** Whether the provider applies child Agent route options. */
+  readonly agentOptions?: boolean
   readonly outputSchema: boolean
   readonly depthLimit: boolean
   readonly toolFilter: boolean
@@ -116,6 +118,11 @@ export interface SubagentStartRequest {
    * remaining turn work when it fires afterward.
    */
   readonly signal: AbortSignal
+  /**
+   * Optional host-Agent provider, model, reasoning-effort, and output-token
+   * overrides. Model-selectable callers must check the provider capability
+   * before dispatch; in-process providers merge these over the parent options.
+   */
   readonly agentOptions?: AgentOptions
   /**
    * Object-rooted JSON Schema within `assertObjectJsonSchema`'s enforced subset. Start rejects
@@ -300,6 +307,11 @@ export interface SubagentProvider {
    * It says nothing about tool registration, injected services, or authority inheritance.
    */
   readonly inheritsParentContext: boolean
+  /**
+   * Static route defaults for a provider whose missing route fields do not
+   * inherit from the parent. Requires `agentOptions` support.
+   */
+  readonly agentRouteDefaults?: Readonly<Pick<AgentOptions, 'provider' | 'model' | 'reasoningEffort'>>
   /**
    * Establish a ONE-SHOT child and return its handle after publication.
    * The service has already validated that every requested start-time

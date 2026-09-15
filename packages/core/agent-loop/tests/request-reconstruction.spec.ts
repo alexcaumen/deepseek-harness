@@ -203,6 +203,61 @@ describe('request stability across the loop', () => {
     }
   })
 
+  it('preserves an explicit-to-default effort reset across cold resume', async () => {
+    const reasoning: LlmModelReasoningInfo = {
+      efforts: [
+        { id: ReasoningEffortId('low'), name: 'Low' },
+        { id: ReasoningEffortId('high'), name: 'High' },
+      ],
+      defaultEffort: ReasoningEffortId('high'),
+    }
+    const adapter = new MockAdapter([textResponse('explicit'), textResponse('default')], reasoning)
+    const ctx = await harness(adapter)
+    const agent = ctx.agentLoop.create(SessionId('effort-reset'), {
+      provider: 'mock',
+      model: 'mock',
+      reasoningEffort: ReasoningEffortId('low'),
+    })
+    ctx.on('agent/request', async ({ turn }, next) => {
+      const config = await next()
+      if (turn !== 2) return config
+      const { reasoningEffort: _removed, ...defaulted } = config
+      return defaulted
+    })
+
+    send(agent, 'explicit')
+    await waitForIdle(ctx, agent)
+    send(agent, 'reset to default')
+    await waitForIdle(ctx, agent)
+
+    expect(adapter.requests.map(request => request.reasoningEffort)).toEqual([
+      ReasoningEffortId('low'),
+      ReasoningEffortId('high'),
+    ])
+    const beforeResume = agent.session.events.filter(event => event.type === 'request/header')
+    expect(beforeResume.at(-1)?.data.header.adapterDefaults).toEqual({ reasoningEffort: true })
+
+    const resumedAdapter = new MockAdapter([textResponse('resumed default')], reasoning)
+    const resumedCtx = await harness(resumedAdapter)
+    const resumed = await resumedCtx.agents.create({
+      sessionId: SessionId('effort-reset-resumed'),
+      seed: structuredClone(agent.session.events),
+      agentOptions: {
+        provider: 'mock',
+        model: 'mock',
+        // Deliberately stale creation value: durable own history must win.
+        reasoningEffort: ReasoningEffortId('low'),
+      },
+    })
+    send(resumed.agent, 'continue')
+    await waitForIdle(resumedCtx, resumed.agent)
+
+    expect(resumedAdapter.requests[0]?.reasoningEffort).toBe(ReasoningEffortId('high'))
+    const afterResume = resumed.agent.session.events.filter(event => event.type === 'request/header')
+    expect(afterResume.at(-1)?.data.header.adapterDefaults).toEqual({ reasoningEffort: true })
+    expect(afterResume.at(-1)?.data.reason).toBe('resume')
+  })
+
   it('logs an adapter-owned maxTokens default before dispatch', async () => {
     const adapter = new MockAdapter([textResponse('bounded')], undefined, 256_000)
     const ctx = await harness(adapter)

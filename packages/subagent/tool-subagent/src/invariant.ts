@@ -5,7 +5,9 @@
 
 /* jscpd:ignore-start */
 import type { Context } from '@deepseek-ai/cordis'
-import type { InvariantInstaller } from '@deepseek-ai/dsh-invariants'
+import type { InvariantFailure, InvariantInstaller } from '@deepseek-ai/dsh-invariants'
+import { delegationAllowsTool } from '@deepseek-ai/dsh-subagent'
+import { subagentModelSelectionPolicy } from './model-selection-state.ts'
 
 const PACKAGE_NAME = '@deepseek-ai/dsh-tool-subagent'
 
@@ -14,11 +16,26 @@ export const name = 'tool-subagent-invariant'
 /** Service required before the companion can reserve package ownership. */
 export const inject = ['invariants']
 
-/**
- * No runtime invariant: this model-facing adapter has no independent lifecycle stream; execution
- * relations are owned by the capability seam it calls.
- */
-const install: InvariantInstaller = () => {}
+/** Assert that a durable selection policy has both model-facing definitions. */
+const install: InvariantInstaller = Object.assign((ctx: Context, fail: InvariantFailure) => {
+  ctx.on('agent/pre-step', async ({ agent }, next) => {
+    if (subagentModelSelectionPolicy(agent.session) !== undefined) {
+      if (!delegationAllowsTool(agent, 'subagent')
+        || !delegationAllowsTool(agent, 'list_subagent_models')) return next()
+      const schemas = ctx.tools.schemas(agent)
+      const selectable = schemas.some((schema) => {
+        const properties = (schema.parameters as { properties?: Record<string, unknown> }).properties
+        return properties?.['provider'] !== undefined
+          && properties['model'] !== undefined
+          && properties['reasoning_effort'] !== undefined
+      })
+      if (!selectable || !schemas.some(schema => schema.name === 'list_subagent_models')) {
+        fail('a subagent/model-selection-policy Session must expose route fields and list_subagent_models')
+      }
+    }
+    return next()
+  }, { global: true })
+}, { inject: ['tools'] })
 
 /**
  * Register this package's invariant companion.

@@ -12,7 +12,7 @@
 import { createHash } from 'node:crypto'
 import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { LlmError, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import { LlmError, type GenerateOptions, type ReasoningEffortId, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { installSettingsSection, settingsNamespace } from '@deepseek-ai/dsh-settings'
 import { ResourceLeaseError, ResourceLeaseSession, type ResourceLeaseGrant, type ResourceLeaseProvider } from './resource-lease.ts'
@@ -110,7 +110,7 @@ export type ModelLifecycleErrorCode =
 export interface ModelSelectionIdentity {
   readonly provider: string
   readonly model: string
-  readonly reasoningEffort?: string
+  readonly reasoningEffort?: ReasoningEffortId
 }
 
 /** Immutable route data admitted by an external authority. */
@@ -895,7 +895,7 @@ export class ModelLifecycleRuntime extends Service {
           model: options.model,
           ...options.reasoningEffort === undefined
             ? {}
-            : { reasoningEffort: String(options.reasoningEffort) },
+            : { reasoningEffort: options.reasoningEffort },
         },
         ...options.sessionId === undefined ? {} : { sessionId: String(options.sessionId) },
         ...options.signal === undefined ? {} : { signal: options.signal },

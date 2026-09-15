@@ -105,9 +105,14 @@ export {
   applyChildComposition,
   captureDelegatedPolicyOverrides,
   childSessionMeta,
+  delegatedToolRestriction,
+  delegationAllowsTool,
+  markModelDefaultReasoning,
+  parentAgentOptionsForDelegation,
   resolveChildAgentOptions,
   resolveChildDepth,
   SubagentDepthError,
+  usesModelDefaultReasoning,
 } from './child-agent.ts'
 export type { ChildComposition, DelegatedPolicyOverrides } from './child-agent.ts'
 export type {
@@ -284,7 +289,6 @@ export class SubagentRuntime extends Service {
    * @returns the exact Cordis effect disposer.
    */
   registerContinuableSetup(contribution: ContinuableSetupContribution): () => void {
-    // oxlint-disable-next-line typescript/no-misused-promises -- synchronous cleanup; direct return preserves disposer identity
     return this.ctx.effect(
       () => this.setupRegistry.register(contribution),
       'subagents.registerContinuableSetup()',
@@ -384,7 +388,6 @@ export class SubagentRuntime extends Service {
    */
   registerProvider(provider: SubagentProvider): () => void {
     const name = provider.name
-    // oxlint-disable-next-line typescript/no-misused-promises -- synchronous cleanup; direct return preserves disposer identity
     return this.ctx.effect(function* (this: SubagentRuntime) {
       if (this.providers.has(name)) {
         throw new SubagentError(`a subagent provider named "${name}" is already registered`, 'DUPLICATE_PROVIDER')
@@ -436,6 +439,7 @@ export class SubagentRuntime extends Service {
       mode: 'one-shot',
       provider: name,
       ...request.label !== undefined ? { label: request.label } : {},
+      ...request.toolFilter !== undefined ? { toolFilter: request.toolFilter } : {},
     })
     const resolved: ResolvedSubagentStartRequest = { ...request, descriptor }
     return observeRun(this.emitLifecycle, name, request.parent, await provider.start(resolved))

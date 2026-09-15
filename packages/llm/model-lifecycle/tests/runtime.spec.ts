@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import LlmRuntime, { LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { LlmAdapter, LlmError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import ModelLifecycleRuntime, {
@@ -1878,13 +1878,13 @@ describe('governed local-model lifecycle', () => {
     const authority = installRouteAuthority(ctx, [admitted])
 
     await expect(ctx.modelLifecycle.acquireRoute({
-      selection: { provider: 'local', model: 'qwen', reasoningEffort: 'medium' },
+      selection: { provider: 'local', model: 'qwen', reasoningEffort: ReasoningEffortId('medium') },
     })).rejects.toMatchObject({ code: 'REASONING_UNSUPPORTED' })
     expect(log).toEqual([])
     expect(authority.records).toEqual([])
 
     const lease = await ctx.modelLifecycle.acquireRoute({
-      selection: { provider: 'local', model: 'qwen', reasoningEffort: 'high' },
+      selection: { provider: 'local', model: 'qwen', reasoningEffort: ReasoningEffortId('high') },
     })
     expect(lease.managed).toBe(true)
     await lease.release()
@@ -2314,12 +2314,12 @@ describe('governed local-model lifecycle', () => {
 
     const first = await ctx.modelLifecycle.acquireRoute({
       sessionId,
-      selection: { ...qwen.selection, reasoningEffort: 'high' },
+      selection: { ...qwen.selection, reasoningEffort: ReasoningEffortId('high') },
     })
     await first.release()
     const second = await ctx.modelLifecycle.acquireRoute({
       sessionId,
-      selection: { ...qwen.selection, reasoningEffort: 'high' },
+      selection: { ...qwen.selection, reasoningEffort: ReasoningEffortId('high') },
     })
     await second.release()
 

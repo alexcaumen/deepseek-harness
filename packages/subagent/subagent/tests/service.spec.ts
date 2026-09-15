@@ -2,7 +2,7 @@ import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { type Agent } from '@deepseek-ai/dsh-agent'
 
-import { HarnessError } from '@deepseek-ai/dsh-llm'
+import { HarnessError, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { carrierKeyOf } from '@deepseek-ai/dsh-scope'
 import SubagentRuntime, {
   foldSubagentDescriptor,
@@ -299,7 +299,6 @@ describe('SubagentRuntime', () => {
     const heard: string[] = []
     ctx.on('subagent/provider-removed', () => { throw new Error('sync boom') })
     // Runtime listeners may return thenables even though the declaration's observable result is void.
-    // oxlint-disable-next-line typescript/no-misused-promises -- exercises rejected-listener containment
     ctx.on('subagent/provider-removed', async () => { throw new Error('async boom') })
     ctx.on('subagent/provider-removed', () => { throw { toString: () => { throw new Error('coercion') } } })
     ctx.on('subagent/provider-removed', name => void heard.push(name))
@@ -328,6 +327,7 @@ describe('subagent descriptors', () => {
   } as unknown as SessionEvent<'subagent/descriptor'>)
 
   it('omits absent fields, recovers a complete payload, and rejects unsupported versions', () => {
+    expect(SUBAGENT_DESCRIPTOR_VERSION).toBe(2)
     expect(foldSubagentDescriptor([])).toBeUndefined()
     const minimal = snapshotSubagentDescriptor({ mode: 'one-shot', provider: 'spawn' })
     expect(minimal).toEqual({
@@ -348,6 +348,7 @@ describe('subagent descriptors', () => {
       label: 'complete child',
       agentProvider: 'deepseek',
       agentModel: 'chat',
+      agentReasoningEffort: ReasoningEffortId('high'),
       persona: 'reviewer',
       toolFilter: { allow: ['read'], deny: ['bash'] },
     }
@@ -357,6 +358,7 @@ describe('subagent descriptors', () => {
       label: complete.label,
       agentProvider: complete.agentProvider,
       agentModel: complete.agentModel,
+      agentReasoningEffort: complete.agentReasoningEffort,
       persona: complete.persona,
       toolFilter: complete.toolFilter,
     })).toEqual(complete)
@@ -448,6 +450,13 @@ describe('subagent descriptors', () => {
       label: 'l',
       agentModel: [],
     }, 'agentModel must be a string'],
+    ['invalid agent reasoning effort', {
+      version: SUBAGENT_DESCRIPTOR_VERSION,
+      mode: 'continuable',
+      provider: 'spawn',
+      label: 'l',
+      agentReasoningEffort: 7,
+    }, 'agentReasoningEffort must be a string'],
     ['invalid persona', {
       version: SUBAGENT_DESCRIPTOR_VERSION,
       mode: 'continuable',

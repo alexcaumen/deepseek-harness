@@ -334,8 +334,20 @@
           - mcp__windows_desktop__*
     - id: subagent-codex
       name: '@deepseek-ai/dsh-subagent-codex'
+      disabled: !!js "!process.env.GIANA_CODEX_ACTIVE_HOME"
       config:
         providerName: codex
+        env:
+          CODEX_HOME: !!js process.env.GIANA_CODEX_ACTIVE_HOME
+        permissionMode: never
+    - id: subagent-codex-astra
+      name: '@deepseek-ai/dsh-subagent-codex'
+      disabled: !!js "!process.env.GIANA_CODEX_ACTIVE_HOME"
+      config:
+        providerName: codex-astra
+        model: gpt-6-astra
+        env:
+          CODEX_HOME: !!js process.env.GIANA_CODEX_ACTIVE_HOME
         permissionMode: never
     - id: subagent-claude-code
       name: '@deepseek-ai/dsh-subagent-claude-code'

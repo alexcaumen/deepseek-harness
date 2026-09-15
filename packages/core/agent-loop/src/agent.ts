@@ -433,16 +433,30 @@ export class ReactLoopAgent implements Agent {
   ): Promise<{ request: GenerateOptions; preparedCall?: PreparedLlmCall }> {
     const { session } = this
 
-    // A loop instance starts from its declared route, restoring only an explicit
-    // effort owned by that exact model. Later steps re-resolve marked defaults.
-    const persistedHeader = session.requestHeader()
+    // A loop instance starts from its declared route and effort, restoring a
+    // persisted explicit effort only for that exact model. Later steps
+    // re-resolve marked defaults.
+    const ownHistoryBoundary = session.header.seedLength ?? 0
+    const hasOwnRequestHeader = session.events.some(event =>
+      event.type === 'request/header' && event.seq >= ownHistoryBoundary)
+    const persistedHeader = hasOwnRequestHeader ? session.requestHeader() : undefined
     const persistedConfig = persistedHeader?.config
     const route = { provider: this.options.provider ?? '', model: this.options.model ?? '' }
-    const reasoningEffort = persistedConfig?.provider === route.provider
+    const persistedRouteMatches = hasOwnRequestHeader
+      && persistedConfig?.provider === route.provider
       && persistedConfig.model === route.model
-      && persistedHeader?.adapterDefaults?.reasoningEffort !== true
-      ? persistedConfig.reasoningEffort
-      : undefined
+    const creationReasoningEffort = (this.options as AgentOptions & {
+      reasoningEffort?: LlmCallConfig['reasoningEffort']
+    }).reasoningEffort
+    // Once this child has an own request header, its exact-route state wins
+    // even when the recorded value came from the adapter default. Falling back
+    // to creation options here would resurrect an obsolete explicit effort on
+    // cold resume after the user reset the route to its model default.
+    const reasoningEffort = persistedRouteMatches
+      ? persistedHeader?.adapterDefaults?.reasoningEffort === true
+        ? undefined
+        : persistedConfig.reasoningEffort
+      : creationReasoningEffort
     const maxTokens = this.options.maxTokens
     const seedConfig = deepFreeze(structuredClone(
       this.requestHeaderLogged
