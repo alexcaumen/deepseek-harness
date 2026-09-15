@@ -122,6 +122,11 @@ describe('config validation', () => {
     await expect(setup({ maxInlineBytes: 1.5 })).rejects.toThrow(/non-negative integer/)
   })
 
+  it('rejects ambiguous excluded tool names at load', async () => {
+    await expect(setup({ maxInlineBytes: 10, excludeTools: ['tool', 'tool'] })).rejects.toThrow(/unique/)
+    await expect(setup({ maxInlineBytes: 10, excludeTools: [' tool'] })).rejects.toThrow(/nonempty exact tool names/)
+  })
+
 })
 
 describe('oversized plain-text replacement', () => {
@@ -230,6 +235,18 @@ describe('read skip', () => {
     ctx.tools.register(textTool('read', 'x'.repeat(1000)))
     const result = await ctx.tools.execute(exec('read'))
     expect(textOf(result.content)).toBe('x'.repeat(1000))
+    expect(spill?.saves).toHaveLength(0)
+  })
+})
+
+describe('definition-owned projection exclusion', () => {
+  it('leaves a configured exact tool result untouched for its final content projection', async () => {
+    const toolName = 'mcp__windows_desktop__cua_computer_use_screenshot'
+    const body = 'x'.repeat(1000)
+    const { ctx, spill } = await setup({ maxInlineBytes: 10, excludeTools: [toolName] })
+    ctx.tools.register(textTool(toolName, body))
+    const result = await ctx.tools.execute(exec(toolName))
+    expect(textOf(result.content)).toBe(body)
     expect(spill?.saves).toHaveLength(0)
   })
 })

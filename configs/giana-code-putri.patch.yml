@@ -16,6 +16,13 @@
       maxSearchResults: 4
       maxActiveTools: 16
 
+# This exact MCP tool owns an async image projection. Generic text spilling must
+# not rewrite its legacy JSON before that final projection materializes.
+- id: spill-policy
+  config:
+    excludeTools:
+      - mcp__windows_desktop__cua_computer_use_screenshot
+
 - insert:
     - id: model-lifecycle
       name: '@deepseek-ai/dsh-model-lifecycle'
