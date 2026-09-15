@@ -64,8 +64,6 @@ export interface Config {
    * this is spilled and replaced with a preview derived from this same budget.
    */
   maxInlineBytes?: number
-  /** Exact tool names whose own final content projection must run without a prior text spill. */
-  excludeTools?: string[]
 }
 
 /** Cordis plugin name used by loader diagnostics. */
@@ -76,7 +74,6 @@ export const inject = ['tools']
 
 export const Config: z<Config> = z.object({
   maxInlineBytes: z.number(),
-  excludeTools: z.array(z.string()).default([]),
 })
 
 /** All-text content flattened to one UTF-8 string, or `undefined` if any block is non-text. */
@@ -122,11 +119,6 @@ export function apply(ctx: Context, config: Config): void {
   }
   // Narrowed once for the nested arms (closure narrowing does not survive awaits).
   const cap: number = maxInlineBytes
-  const excludeTools = new Set(config.excludeTools ?? [])
-  if (excludeTools.size !== (config.excludeTools ?? []).length
-    || [...excludeTools].some(tool => tool.length === 0 || tool.trim() !== tool)) {
-    throw new Error('spill-policy: excludeTools must contain unique, nonempty exact tool names')
-  }
 
   /**
    * Spill `text` and build the bounded replacement (preview + notice), or
@@ -202,7 +194,7 @@ export function apply(ctx: Context, config: Config): void {
     const decision = await next()
     // Skip `read` to avoid a read → spill → read again loop.
     if (decision.kind !== 'accept' || Object.hasOwn(decision, 'value')
-      || exec.parent !== undefined || exec.name === 'read' || excludeTools.has(exec.name)) return decision
+      || exec.parent !== undefined || exec.name === 'read') return decision
 
     const content = decision.content ?? result.content
     const text = flattenPlainText(content)

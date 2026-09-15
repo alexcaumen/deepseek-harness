@@ -21,7 +21,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { isImageAdmissionError } from '@deepseek-ai/dsh-attachment'
 import type { AttachmentStore, ImageAttachmentRef, ImageMediaType, SaveImageAttachment } from '@deepseek-ai/dsh-attachment'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
-import type { ToolDefinition, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
+import type { PostToolDecision, ToolDefinition, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import { assertSupportedJsonSchema } from '@deepseek-ai/dsh-tools'
 import type { JsonSchemaNode, JsonValue } from '@deepseek-ai/dsh-tools'
 
@@ -35,6 +35,21 @@ export interface ToolBridgeOptions {
 
 /** State for one sync generation: the current set of disposers keyed by public name. */
 export type ToolDisposers = Map<string, () => void>
+
+/** One plugin-instance bridge for execution-local rich-content projections. */
+export interface ToolProjectionBridge {
+  /** Stage rich content for one exact execution while retaining its canonical value. */
+  stage(exec: ToolExecution, value: JsonValue, fallback: ContentBlock[], content: ContentBlock[]): void
+  /** Discard any staged projection for an execution without publishing it. */
+  discard(exec: Readonly<ToolExecution>): void
+  /** Remove the single post-execute listener owned by this bridge. */
+  dispose(): void
+}
+
+/** Narrow writer capability captured by each generation-local executor. */
+interface ToolProjectionWriter {
+  stage(exec: ToolExecution, value: JsonValue, fallback: ContentBlock[], content: ContentBlock[]): void
+}
 
 /** Canonical MCP result exposed to Code Mode without discarding protocol blocks. */
 export type McpResult<Structured extends JsonValue = JsonValue> = {
@@ -143,6 +158,8 @@ export function publicToolName(serverName: string, rawName: string): string {
  * @param opts - Bridge options: server namespace and per-call timeout.
  * @param previous - Disposer map from the prior sync generation; disposed
  *   during the swap phase (only after the fetch phase succeeded).
+ * @param projectionBridge - Connection-owned rich-content bridge shared by
+ *   every tool generation and disposed with the connection supervisor.
  * @returns A map of registered public tool names to their unregister
  *   disposers — the exact set of live registrations owned by this server.
  */
@@ -151,6 +168,7 @@ export async function syncTools(
   ctx: Context,
   opts: ToolBridgeOptions,
   previous: ToolDisposers,
+  projectionBridge: ToolProjectionBridge,
 ): Promise<ToolDisposers> {
   // Phase 1: fetch and build the next generation without touching the registry.
   const definitions = new Map<string, ToolDefinition>()
@@ -174,6 +192,7 @@ export async function syncTools(
         supportedOutputSchema(tool.outputSchema),
         tool.execution?.taskSupport === 'required',
         opts,
+        projectionBridge,
       ))
     }
     cursor = response.nextCursor
@@ -216,11 +235,58 @@ interface McpContentBlock {
 /** Async rich projection staged for one exact ToolRuntime execution. */
 interface PreparedProjection {
   /** Canonical MCP value returned by execute before registry materialization. */
-  value: McpResult
+  value: JsonValue
   /** Synchronous output.render projection expected before finalization. */
   fallback: ContentBlock[]
   /** Image-enriched or explicit-refusal projection prepared during execute. */
   content: ContentBlock[]
+}
+
+/**
+ * Install one connection-owned projection step inside the post-execute
+ * waterfall. Prepended spill policy listeners resume after this step and see
+ * the admitted image rather than the legacy base64 text. Downstream policy
+ * decisions always remain authoritative.
+ */
+export function createToolProjectionBridge(ctx: Context): ToolProjectionBridge {
+  let closed = false
+  let projections = new WeakMap<Readonly<ToolExecution>, PreparedProjection>()
+  const stopListening = ctx.on(
+    'tools/post-execute',
+    async (exec, result, next): Promise<PostToolDecision> => {
+      try {
+        const decision = await next()
+        const projection = projections.get(exec)
+        if (closed || projection === undefined || exec.signal.aborted || result.isError) return decision
+        if (decision.kind !== 'accept'
+          || Object.hasOwn(decision, 'value')
+          || Object.hasOwn(decision, 'content')) return decision
+        if (!isDeepStrictEqual(result.value, projection.value)) return decision
+        if (!isDeepStrictEqual(result.content, projection.fallback)) return decision
+        return {
+          kind: 'accept',
+          content: projection.content,
+          ...decision.additionalContexts === undefined
+            ? {}
+            : { additionalContexts: decision.additionalContexts },
+        }
+      } finally {
+        projections.delete(exec)
+      }
+    },
+  )
+  return {
+    stage(exec, value, fallback, content) {
+      if (!closed && !exec.signal.aborted) projections.set(exec, { value, fallback, content })
+    },
+    discard(exec) { projections.delete(exec) },
+    dispose() {
+      if (closed) return
+      closed = true
+      projections = new WeakMap()
+      stopListening()
+    },
+  }
 }
 
 /** Keep a supported advertised schema; unsupported MCP vocabulary falls back to JsonValue. */
@@ -245,6 +311,7 @@ function supportedOutputSchema(candidate: unknown): JsonSchemaNode | undefined {
  * @param structuredSchema - supported structured-output schema, when advertised.
  * @param taskRequired - whether this MCP tool requires unsupported task execution.
  * @param opts - bridge timeout and namespace options.
+ * @param projectionBridge - connection-owned rich-content projection bridge.
  * @returns a complete ToolRuntime definition.
  */
 function createDefinition(
@@ -257,22 +324,17 @@ function createDefinition(
   structuredSchema: JsonSchemaNode | undefined,
   taskRequired: boolean,
   opts: ToolBridgeOptions,
+  projectionBridge: ToolProjectionBridge,
 ): ToolDefinition {
-  const projections = new WeakMap<ToolExecution, PreparedProjection>()
   return {
     name: publicName,
     description,
     parameters,
     output: createOutput(rawName, structuredSchema),
-    execute: createExecutor(client, ctx, rawName, taskRequired, opts, projections),
-    finalizeContent(exec: Readonly<ToolExecution>, result: Readonly<ToolExecutionResult>) {
-      const projection = projections.get(exec)
-      if (projection === undefined) return undefined
-      projections.delete(exec)
-      if (result.isError) return undefined
-      if (!isDeepStrictEqual(result.value, projection.value)) return undefined
-      if (!isDeepStrictEqual(result.content, projection.fallback)) return undefined
-      return projection.content
+    execute: createExecutor(client, ctx, rawName, taskRequired, opts, projectionBridge),
+    finalizeContent(exec: Readonly<ToolExecution>, _result: Readonly<ToolExecutionResult>) {
+      projectionBridge.discard(exec)
+      return undefined
     },
   }
 }
@@ -312,7 +374,7 @@ function createExecutor(
   rawName: string,
   taskRequired: boolean,
   opts: ToolBridgeOptions,
-  projections: WeakMap<ToolExecution, PreparedProjection>,
+  projections: ToolProjectionWriter,
 ): ToolDefinition['execute'] {
   return async (args: unknown, exec: ToolExecution) => {
     if (taskRequired) {
@@ -361,7 +423,7 @@ function createExecutor(
     if (containsImage(modelContent)) {
       const fallback: ContentBlock[] = [{ type: 'text', text: extractText(content, rawName) }]
       const projected = await prepareImageProjection(ctx, exec, modelContent, rawName)
-      projections.set(exec, { value, fallback, content: projected })
+      projections.stage(exec, value, fallback, projected)
     }
     return value
   }

@@ -7,14 +7,43 @@ import type { ImageAttachmentLimits, ImageAttachmentRef, SaveImageAttachment, St
 import { CallId, LlmAdapter, LlmRuntime } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { GenerateOptions, LlmResolvedModelInfo, StreamChunk } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import { SpillLocator, SpillStore } from '@deepseek-ai/dsh-spill'
+import type { SaveTextSpill, SpillRef } from '@deepseek-ai/dsh-spill'
+import * as SpillPolicy from '@deepseek-ai/dsh-spill-policy'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { type JsonValue } from '@deepseek-ai/dsh-tools'
 import type { PostToolDecision } from '@deepseek-ai/dsh-tools'
-import { publicToolName, syncTools, type ToolBridgeOptions } from '@deepseek-ai/dsh-mcp-client/src/tools.ts'
+import {
+  createToolProjectionBridge,
+  publicToolName,
+  syncTools as syncToolsWithBridge,
+  type ToolBridgeOptions,
+  type ToolDisposers,
+  type ToolProjectionBridge,
+} from '@deepseek-ai/dsh-mcp-client/src/tools.ts'
 import { createTransport } from '@deepseek-ai/dsh-mcp-client/src/transport.ts'
 import type { Config } from '@deepseek-ai/dsh-mcp-client'
 
 const testToolSignal = new AbortController().signal
+
+/** Direct sync tests reuse one bridge per context, matching connection ownership. */
+const testProjectionBridges = new WeakMap<Context, ToolProjectionBridge>()
+
+async function syncTools(
+  client: Client,
+  ctx: Context,
+  opts: ToolBridgeOptions,
+  previous: ToolDisposers,
+  explicitBridge?: ToolProjectionBridge,
+): Promise<ToolDisposers> {
+  let bridge = explicitBridge ?? testProjectionBridges.get(ctx)
+  if (bridge === undefined) {
+    bridge = createToolProjectionBridge(ctx)
+    testProjectionBridges.set(ctx, bridge)
+  }
+  return syncToolsWithBridge(client, ctx, opts, previous, bridge)
+}
 
 // ---- Mock MCP Client ----
 
@@ -104,6 +133,20 @@ class RecordingAttachmentStore extends AttachmentStore {
   }
 }
 
+/** Spill backend used to prove rich MCP projection composes with the real policy. */
+class RecordingSpillStore extends SpillStore {
+  readonly saves: SaveTextSpill[] = []
+
+  saveText(input: SaveTextSpill): Promise<SpillRef> {
+    this.saves.push(input)
+    return Promise.resolve({
+      locator: SpillLocator(`/spill/${input.suggestedName}`),
+      bytes: Buffer.byteLength(input.content, 'utf8'),
+      retrievalHint: 'Use the test spill path.',
+    })
+  }
+}
+
 /** Exact-route fake used only for image-capability admission. */
 class ImageCatalogAdapter extends LlmAdapter {
   override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
@@ -132,8 +175,28 @@ async function mountRichRegistry(): Promise<{ ctx: Context; attachments: Recordi
 function agentOn(model: string | undefined = 'vision'): object {
   return {
     options: model === undefined ? {} : { provider: 'visual', model },
-    session: { requestHeader: () => undefined },
+    session: { header: { id: SessionId('mcp-test') }, requestHeader: () => undefined },
   }
+}
+
+/** Exact legacy screenshot envelope used by the Windows desktop MCP server. */
+function legacyScreenshotBlocks(png: string): JsonValue[] {
+  return [{
+    type: 'text',
+    text: JSON.stringify({
+      status: 'success',
+      message: 'Screenshot captured successfully.',
+      data: {
+        image_b64: png,
+        size: Buffer.from(png, 'base64').length,
+        screenshot_path: null,
+        timestamp: 1789443275.995576,
+        visual_metadata: { identity: 'pywinauto-mcp-sota-2026' },
+        compat: 'claude-computer-use-window-only',
+      },
+      recovery_tip: null,
+    }),
+  }]
 }
 
 /** Require one text block and return its text for diagnostic assertions. */
@@ -528,6 +591,193 @@ describe('tool execution', () => {
     expect(JSON.stringify(result.content)).not.toContain(png)
     if (result.isError) throw new Error('expected legacy screenshot success')
     expect(result.value).toEqual({ content: blocks })
+  })
+
+  it.each(['bridge-first', 'spill-first'] as const)(
+    'publishes a legacy screenshot before spill resumes (%s)',
+    async (mountOrder) => {
+      const rich = await mountRichRegistry()
+      await rich.ctx.plugin(RecordingSpillStore)
+      const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC'
+      const blocks = legacyScreenshotBlocks(png)
+      const rawBlock = blocks[0]
+      if (typeof rawBlock !== 'object' || rawBlock === null || Array.isArray(rawBlock)
+        || typeof rawBlock['text'] !== 'string') throw new Error('expected legacy text block')
+      expect(Buffer.byteLength(rawBlock['text'], 'utf8')).toBeGreaterThan(200)
+      const windowsOpts = { ...defaultOpts, serverName: 'windows_desktop' }
+      let bridge: ReturnType<typeof createToolProjectionBridge>
+      if (mountOrder === 'bridge-first') {
+        bridge = createToolProjectionBridge(rich.ctx)
+        await rich.ctx.plugin(SpillPolicy, { maxInlineBytes: 200 })
+      } else {
+        await rich.ctx.plugin(SpillPolicy, { maxInlineBytes: 200 })
+        bridge = createToolProjectionBridge(rich.ctx)
+      }
+      const client = createMockClient(
+        [{ name: 'cua_computer_use_screenshot', inputSchema: { type: 'object' } }],
+        { content: blocks },
+      )
+      await syncTools(client as never, rich.ctx, windowsOpts, new Map(), bridge)
+
+      const result = await rich.ctx.tools.execute({
+        signal: testToolSignal,
+        callId: CallId(`spill-composition-${mountOrder}`),
+        name: 'mcp__windows_desktop__cua_computer_use_screenshot',
+        arguments: {},
+        agent: agentOn() as never,
+      })
+
+      expect(result.content.map(block => block.type)).toEqual(['text', 'image'])
+      expect((rich.ctx.spillStore as RecordingSpillStore).saves).toHaveLength(0)
+      expect(JSON.stringify(result.content)).not.toContain(png)
+      if (result.isError) throw new Error('expected composed screenshot success')
+      expect(result.value).toEqual({ content: blocks })
+      bridge.dispose()
+    },
+  )
+
+  it('keeps malformed legacy payloads under ordinary spill protection', async () => {
+    const rich = await mountRichRegistry()
+    await rich.ctx.plugin(RecordingSpillStore)
+    await rich.ctx.plugin(SpillPolicy, { maxInlineBytes: 200 })
+    const bridge = createToolProjectionBridge(rich.ctx)
+    const body = JSON.stringify({ malformed: 'x'.repeat(1000), image_b64: 'not-base64' })
+    const client = createMockClient(
+      [{ name: 'cua_computer_use_screenshot', inputSchema: { type: 'object' } }],
+      { content: [{ type: 'text', text: body }] },
+    )
+    const windowsOpts = { ...defaultOpts, serverName: 'windows_desktop' }
+    await syncTools(client as never, rich.ctx, windowsOpts, new Map(), bridge)
+
+    const result = await rich.ctx.tools.execute({
+      signal: testToolSignal,
+      callId: CallId('malformed-spill'),
+      name: 'mcp__windows_desktop__cua_computer_use_screenshot',
+      arguments: {},
+      agent: agentOn() as never,
+    })
+
+    const spill = rich.ctx.spillStore as RecordingSpillStore
+    expect(spill.saves).toHaveLength(1)
+    expect(spill.saves[0]?.content).toBe(body)
+    expect(JSON.stringify(result.content)).not.toContain('x'.repeat(1000))
+    expect(result.content[0]?.type).toBe('text')
+    bridge.dispose()
+  })
+
+  it('does not resurrect a projection replaced by another post-execute policy', async () => {
+    const rich = await mountRichRegistry()
+    await rich.ctx.plugin(RecordingSpillStore)
+    await rich.ctx.plugin(SpillPolicy, { maxInlineBytes: 200 })
+    const bridge = createToolProjectionBridge(rich.ctx)
+    rich.ctx.on('tools/post-execute', async (): Promise<PostToolDecision> => ({
+      kind: 'accept',
+      content: [{ type: 'text', text: 'policy replacement' }],
+    }))
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC'
+    const client = createMockClient(
+      [{ name: 'cua_computer_use_screenshot', inputSchema: { type: 'object' } }],
+      { content: legacyScreenshotBlocks(png) },
+    )
+    const windowsOpts = { ...defaultOpts, serverName: 'windows_desktop' }
+    await syncTools(client as never, rich.ctx, windowsOpts, new Map(), bridge)
+
+    const result = await rich.ctx.tools.execute({
+      signal: testToolSignal,
+      callId: CallId('projection-policy-replacement'),
+      name: 'mcp__windows_desktop__cua_computer_use_screenshot',
+      arguments: {},
+      agent: agentOn() as never,
+    })
+
+    expect(result.content).toEqual([{ type: 'text', text: 'policy replacement' }])
+    expect((rich.ctx.spillStore as RecordingSpillStore).saves).toHaveLength(0)
+    bridge.dispose()
+  })
+
+  it('does not publish through finalization after an equal-content short circuit', async () => {
+    const rich = await mountRichRegistry()
+    rich.ctx.on('tools/post-execute', async (_exec, result): Promise<PostToolDecision> => ({
+      kind: 'accept',
+      content: [...result.content],
+    }))
+    const bridge = createToolProjectionBridge(rich.ctx)
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC'
+    const blocks = legacyScreenshotBlocks(png)
+    const client = createMockClient(
+      [{ name: 'cua_computer_use_screenshot', inputSchema: { type: 'object' } }],
+      { content: blocks },
+    )
+    const windowsOpts = { ...defaultOpts, serverName: 'windows_desktop' }
+    await syncTools(client as never, rich.ctx, windowsOpts, new Map(), bridge)
+
+    const result = await rich.ctx.tools.execute({
+      signal: testToolSignal,
+      callId: CallId('projection-equal-short-circuit'),
+      name: 'mcp__windows_desktop__cua_computer_use_screenshot',
+      arguments: {},
+      agent: agentOn() as never,
+    })
+
+    expect(result.content).toEqual([{ type: 'text', text: textAt(result.content) }])
+    expect(textAt(result.content)).toContain(png)
+    expect(result.content.some(block => block.type === 'image')).toBe(false)
+    bridge.dispose()
+  })
+
+  it('fences late projection publication when the bridge is disposed', async () => {
+    const rich = await mountRichRegistry()
+    const bridge = createToolProjectionBridge(rich.ctx)
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC'
+    const blocks = legacyScreenshotBlocks(png)
+    const client = createMockClient(
+      [{ name: 'cua_computer_use_screenshot', inputSchema: { type: 'object' } }],
+      { content: blocks },
+    )
+    const windowsOpts = { ...defaultOpts, serverName: 'windows_desktop' }
+    await syncTools(client as never, rich.ctx, windowsOpts, new Map(), bridge)
+    bridge.dispose()
+    bridge.dispose()
+
+    const result = await rich.ctx.tools.execute({
+      signal: testToolSignal,
+      callId: CallId('projection-after-dispose'),
+      name: 'mcp__windows_desktop__cua_computer_use_screenshot',
+      arguments: {},
+      agent: agentOn() as never,
+    })
+
+    expect(result.content).toEqual([{ type: 'text', text: textAt(result.content) }])
+    expect(textAt(result.content)).toContain(png)
+    expect(result.content.some(block => block.type === 'image')).toBe(false)
+  })
+
+  it('reuses one projection listener across tool re-syncs', async () => {
+    const rich = await mountRichRegistry()
+    await rich.ctx.plugin(RecordingSpillStore)
+    await rich.ctx.plugin(SpillPolicy, { maxInlineBytes: 200 })
+    const bridge = createToolProjectionBridge(rich.ctx)
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC'
+    const client = createMockClient(
+      [{ name: 'cua_computer_use_screenshot', inputSchema: { type: 'object' } }],
+      { content: legacyScreenshotBlocks(png) },
+    )
+    const windowsOpts = { ...defaultOpts, serverName: 'windows_desktop' }
+    const first = await syncTools(client as never, rich.ctx, windowsOpts, new Map(), bridge)
+    await syncTools(client as never, rich.ctx, windowsOpts, first, bridge)
+
+    const result = await rich.ctx.tools.execute({
+      signal: testToolSignal,
+      callId: CallId('projection-resync'),
+      name: 'mcp__windows_desktop__cua_computer_use_screenshot',
+      arguments: {},
+      agent: agentOn() as never,
+    })
+
+    expect(result.content.map(block => block.type)).toEqual(['text', 'image'])
+    expect(rich.attachments.saved).toHaveLength(1)
+    expect((rich.ctx.spillStore as RecordingSpillStore).saves).toHaveLength(0)
+    bridge.dispose()
   })
 
   it('does not reinterpret unrelated or malformed legacy screenshot JSON', async () => {

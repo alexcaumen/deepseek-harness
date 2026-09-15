@@ -20,7 +20,7 @@ import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/typ
 import type { Context } from '@deepseek-ai/cordis'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import { createTransport } from './transport.ts'
-import { syncTools } from './tools.ts'
+import { createToolProjectionBridge, syncTools } from './tools.ts'
 import type { ToolBridgeOptions, ToolDisposers } from './tools.ts'
 import type { Config } from './index.ts'
 
@@ -133,6 +133,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
   const startupOpts: ToolBridgeOptions = config.failOnStartupError
     ? { ...opts, registrationFailure: 'throw' }
     : opts
+  const projectionBridge = createToolProjectionBridge(ctx)
 
   let disposed = false
   /** Current generation: the connecting or connected client; undefined during backoff waits and after final failure. */
@@ -162,7 +163,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
   function enqueueSync(generation: Client, syncOpts: ToolBridgeOptions = opts): Promise<void> {
     const run = syncChain.then(async () => {
       if (!isCurrent(generation)) return
-      disposers = await syncTools(generation, ctx, syncOpts, disposers)
+      disposers = await syncTools(generation, ctx, syncOpts, disposers, projectionBridge)
     })
     // The chain tail must survive a failed sync; the enqueuing caller owns reporting.
     syncChain = run.catch(() => {})
@@ -326,6 +327,7 @@ export function startConnection(ctx: Context, config: Config, policy: ResolvedRe
     ready,
     async dispose(): Promise<void> {
       disposed = true
+      projectionBridge.dispose()
       if (reconnectTimer !== undefined) {
         clearTimeout(reconnectTimer)
         reconnectTimer = undefined

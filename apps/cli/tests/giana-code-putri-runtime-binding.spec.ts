@@ -111,7 +111,6 @@ describe('Giana CoWork runtime binding', () => {
 
     expect(entries.map(entry => [entry.id, entry.name, entry.disabled])).toEqual([
       ['tools', undefined, undefined],
-      ['spill-policy', undefined, undefined],
       ['model-lifecycle', '@deepseek-ai/dsh-model-lifecycle', undefined],
       ['giana-cowork-model-deployment', '@deepseek-ai/dsh-giana-cowork-model-deployment', undefined],
       ['llm-gianaos-acp', '@grinviro/dsh-llm-gianaos-acp', undefined],
@@ -143,9 +142,6 @@ describe('Giana CoWork runtime binding', () => {
         maxSearchResults: 4,
         maxActiveTools: 16,
       },
-    })
-    expect(configById(entries, 'spill-policy')).toEqual({
-      excludeTools: ['mcp__windows_desktop__cua_computer_use_screenshot'],
     })
     expect(configById(entries, 'model-lifecycle')).toEqual({
       preference: 'automatic',
