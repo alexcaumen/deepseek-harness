@@ -8,7 +8,7 @@
  * @module dsh-llm-deepseek/translate
  */
 
-import { CallId, EMPTY_RESPONSE_CODE, LlmError } from '@deepseek-ai/dsh-llm'
+import { CallId, EMPTY_RESPONSE_CODE, LlmError, MALFORMED_TOOL_CALL_CODE } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, FinishReason, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm'
 import { DONE } from './sse.ts'
 import type { WireChunk, WireUsage } from './types.ts'
@@ -18,9 +18,9 @@ interface OpenBlock {
   index: number
   kind: 'text' | 'reasoning' | 'tool-call'
   text: string
-  /** tool-call only */
-  callId?: string
-  name?: string
+  /** tool-call only, absent until a delta carries a non-empty value. */
+  callId?: string | undefined
+  name?: string | undefined
 }
 
 /**
@@ -61,16 +61,26 @@ export function mapUsage(usage: WireUsage): TokenUsage {
   }
 }
 
-/** Assemble the final ContentBlock for one open block. */
-function closeBlock(block: OpenBlock): ContentBlock {
+/** Keep an established streamed identity when a continuation sends empty or null. */
+function acceptIdentity(current: string | undefined, incoming: unknown): string | undefined {
+  return typeof incoming === 'string' && incoming.length > 0 ? incoming : current
+}
+
+/** The identity field a streamed tool call never received. */
+interface Unidentified {
+  unidentified: 'id' | 'name'
+}
+
+/** Assemble a final block, or report an unusable tool-call identity. */
+function closeBlock(block: OpenBlock): ContentBlock | Unidentified {
   switch (block.kind) {
     case 'text': return { type: 'text', text: block.text }
     case 'reasoning': return { type: 'reasoning', text: block.text }
-    case 'tool-call': return {
-      type: 'tool-call',
-      id: CallId(block.callId ?? ''),
-      name: block.name ?? '',
-      arguments: block.text,
+    case 'tool-call': {
+      const { callId, name } = block
+      if (callId === undefined) return { unidentified: 'id' }
+      if (name === undefined) return { unidentified: 'name' }
+      return { type: 'tool-call', id: CallId(callId), name, arguments: block.text }
     }
   }
 }
@@ -100,9 +110,26 @@ export async function* translate(payloads: AsyncIterable<string>): AsyncGenerato
 
   for await (const payload of payloads) {
     if (payload === DONE) {
+      const ends: StreamChunk[] = []
       for (const block of order) {
-        yield { type: 'block-end', index: block.index, block: closeBlock(block) }
+        const closed = closeBlock(block)
+        if ('unidentified' in closed) {
+          if (pendingUsage) yield { type: 'usage', usage: pendingUsage }
+          yield {
+            type: 'finish',
+            reason: {
+              kind: 'error',
+              failure: {
+                message: `model streamed a tool call with no ${closed.unidentified}`,
+                code: MALFORMED_TOOL_CALL_CODE,
+              },
+            },
+          }
+          return
+        }
+        ends.push({ type: 'block-end', index: block.index, block: closed })
       }
+      yield* ends
       if (pendingUsage) yield { type: 'usage', usage: pendingUsage }
       const reason = pendingFinish ?? { kind: 'stop' as const }
       yield {
@@ -156,8 +183,8 @@ export async function* translate(payloads: AsyncIterable<string>): AsyncGenerato
           toolBlocks.set(call.index, block)
           yield { type: 'block-start', index: block.index, blockType: 'tool-call' }
         }
-        if (call.id !== undefined) block.callId = call.id
-        if (call.function?.name !== undefined) block.name = call.function.name
+        block.callId = acceptIdentity(block.callId, call.id)
+        block.name = acceptIdentity(block.name, call.function?.name)
         const fragment = call.function?.arguments ?? ''
         block.text += fragment
         yield {
