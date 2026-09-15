@@ -487,12 +487,21 @@ describe('tool execution', () => {
   it('projects the legacy Windows screenshot JSON as a durable model image', async () => {
     const rich = await mountRichRegistry()
     const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC'
+    const pngBytes = Buffer.from(png, 'base64').length
     const blocks = [{
       type: 'text',
       text: JSON.stringify({
         status: 'success',
         message: 'Screenshot captured successfully.',
-        data: { image_b64: png },
+        data: {
+          image_b64: png,
+          size: pngBytes,
+          screenshot_path: null,
+          timestamp: 1789443275.995576,
+          visual_metadata: { identity: 'pywinauto-mcp-sota-2026' },
+          compat: 'claude-computer-use-window-only',
+        },
+        recovery_tip: null,
       }),
     }] satisfies JsonValue[]
     const client = createMockClient(
@@ -523,13 +532,31 @@ describe('tool execution', () => {
 
   it('does not reinterpret unrelated or malformed legacy screenshot JSON', async () => {
     const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC'
+    const runtimeResult = (overrides: Record<string, unknown> = {}, dataOverrides: Record<string, unknown> = {}) => JSON.stringify({
+      status: 'success',
+      message: 'Screenshot captured successfully.',
+      data: {
+        image_b64: png,
+        size: Buffer.from(png, 'base64').length,
+        screenshot_path: null,
+        timestamp: 1789443275.995576,
+        visual_metadata: { identity: 'pywinauto-mcp-sota-2026' },
+        compat: 'claude-computer-use-window-only',
+        ...dataOverrides,
+      },
+      recovery_tip: null,
+      ...overrides,
+    })
     const cases = [
-      { serverName: 'windows_desktop', name: 'other', text: JSON.stringify({ status: 'success', message: 'Screenshot captured successfully.', data: { image_b64: png } }) },
-      { serverName: 'other_server', name: 'cua_computer_use_screenshot', text: JSON.stringify({ status: 'success', message: 'Screenshot captured successfully.', data: { image_b64: png } }) },
-      { serverName: 'windows_desktop', name: 'cua_computer_use_screenshot', text: JSON.stringify({ status: 'success', message: 'different', data: { image_b64: png } }) },
-      { serverName: 'windows_desktop', name: 'cua_computer_use_screenshot', text: JSON.stringify({ status: 'success', message: 'Screenshot captured successfully.', data: { image_b64: 'AQ==' } }) },
+      { serverName: 'windows_desktop', name: 'other', text: runtimeResult() },
+      { serverName: 'other_server', name: 'cua_computer_use_screenshot', text: runtimeResult() },
+      { serverName: 'windows_desktop', name: 'cua_computer_use_screenshot', text: runtimeResult({ message: 'different' }) },
+      { serverName: 'windows_desktop', name: 'cua_computer_use_screenshot', text: runtimeResult({}, { compat: 'different' }) },
+      { serverName: 'windows_desktop', name: 'cua_computer_use_screenshot', text: runtimeResult({}, { size: 1 }) },
+      { serverName: 'windows_desktop', name: 'cua_computer_use_screenshot', text: runtimeResult({}, { screenshot_path: 'C:/unexpected.png' }) },
+      { serverName: 'windows_desktop', name: 'cua_computer_use_screenshot', text: runtimeResult({}, { image_b64: 'AQ==', size: 1 }) },
       { serverName: 'windows_desktop', name: 'cua_computer_use_screenshot', text: '{not-json' },
-      { serverName: 'windows_desktop', name: 'cua_computer_use_screenshot', text: JSON.stringify({ status: 'success', message: 'Screenshot captured successfully.', data: { image_b64: Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(1025)]).toString('base64') } }) },
+      { serverName: 'windows_desktop', name: 'cua_computer_use_screenshot', text: runtimeResult({}, { image_b64: Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(1025)]).toString('base64'), size: 1033 }) },
     ]
 
     for (const [index, item] of cases.entries()) {

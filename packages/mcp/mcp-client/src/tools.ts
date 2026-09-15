@@ -389,12 +389,20 @@ function projectLegacyScreenshot(
     return content
   }
   if (!isRecordJson(parsed)
-    || Object.keys(parsed).sort().join(',') !== 'data,message,status'
+    || Object.keys(parsed).sort().join(',') !== 'data,message,recovery_tip,status'
     || parsed['status'] !== 'success'
-    || parsed['message'] !== 'Screenshot captured successfully.') return content
+    || parsed['message'] !== 'Screenshot captured successfully.'
+    || parsed['recovery_tip'] !== null) return content
   const data = parsed['data']
   if (!isRecordJson(data)
-    || Object.keys(data).join(',') !== 'image_b64'
+    || Object.keys(data).sort().join(',') !== 'compat,image_b64,screenshot_path,size,timestamp,visual_metadata'
+    || data['compat'] !== 'claude-computer-use-window-only'
+    || data['screenshot_path'] !== null
+    || !Number.isSafeInteger(data['size'])
+    || (data['size'] as number) <= PNG_SIGNATURE.length
+    || typeof data['timestamp'] !== 'number'
+    || !Number.isFinite(data['timestamp'])
+    || !isRecordJson(data['visual_metadata'])
     || typeof data['image_b64'] !== 'string') return content
   const encoded = data['image_b64']
   if (!CANONICAL_BASE64.test(encoded)) return content
@@ -402,6 +410,9 @@ function projectLegacyScreenshot(
   if (attachments === undefined) return content
   const maxEncodedLength = Math.ceil(attachments.imageLimits.maxImageBytes / 3) * 4
   if (encoded.length > maxEncodedLength) return content
+  const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0
+  const decodedLength = (encoded.length / 4) * 3 - padding
+  if (decodedLength !== data['size'] || decodedLength > attachments.imageLimits.maxImageBytes) return content
   const signature = Buffer.from(encoded.slice(0, 12), 'base64')
   if (!signature.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
     return content
