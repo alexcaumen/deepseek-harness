@@ -195,6 +195,23 @@ export function assertAllowedModelSelection(
   throw new Error(`child LLM route "${provider}/${model}" is not allowed for this Session`)
 }
 
+/** Materialize the exact default that provider-managed discovery advertises. */
+export function applyDeclaredDefaultReasoningEffort(
+  policy: ModelSelectionPolicy | undefined,
+  requested: AgentOptions | undefined,
+  request: DelegationModelRequest,
+): AgentOptions | undefined {
+  if (policy === undefined || requested === undefined || request.reasoning_effort !== undefined
+    || request.provider === undefined || request.model === undefined) return requested
+  const route = policy.routes.find(candidate =>
+    candidate.provider === request.provider && candidate.model === request.model)
+  if (route?.defaultReasoningEffort === undefined) return requested
+  return {
+    ...requested,
+    reasoningEffort: ReasoningEffortId(route.defaultReasoningEffort),
+  }
+}
+
 /** Whether configured Agent options require route preflight. */
 export function hasConfiguredLlmSelection(options: AgentOptions | undefined): boolean {
   return options?.provider !== undefined

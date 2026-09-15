@@ -28,6 +28,7 @@ import type {} from '@deepseek-ai/dsh-system-prompt'
 import { registerListSubagentModels } from './list-models.ts'
 import {
   AllowedModelRouteSchema,
+  applyDeclaredDefaultReasoningEffort,
   assertAllowedModelRoutes,
   assertAllowedModelSelection,
   hasDelegationModelRequest,
@@ -498,6 +499,11 @@ export function apply(ctx: Context, config: Config): void {
             assertAllowedModelSelection(
               modelSelectionPolicy,
               parentOptions,
+              childAgentOptions,
+              modelRequest,
+            )
+            childAgentOptions = applyDeclaredDefaultReasoningEffort(
+              modelSelectionPolicy,
               childAgentOptions,
               modelRequest,
             )

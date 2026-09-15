@@ -19,6 +19,7 @@ import { MockAdapter, textResponse } from '../../../core/agent-loop/tests/mock-a
 import * as mock from './scripted-provider.ts'
 import * as tool from '../src/index.ts'
 import {
+  applyDeclaredDefaultReasoningEffort,
   assertAllowedModelRoutes,
   assertAllowedModelSelection,
   requestedAgentOptions,
@@ -203,6 +204,26 @@ describe('subagent model selection policy', () => {
     }).toThrow('is not allowed for this Session')
   })
 
+  it('materializes the provider-managed default effort advertised by discovery', () => {
+    const policy = { routes: [{
+      provider: 'codex-native', model: 'gpt-6-astra',
+      reasoningEfforts: ['high', 'xhigh'], defaultReasoningEffort: 'high',
+    }] }
+    const request = { provider: 'codex-native', model: 'gpt-6-astra' }
+    const selected = requestedAgentOptions(
+      { provider: 'alpha', model: 'parent', reasoningEffort: ReasoningEffortId('low') },
+      undefined,
+      request,
+      true,
+    )
+    expect(applyDeclaredDefaultReasoningEffort(policy, selected, request)).toEqual({
+      provider: 'codex-native', model: 'gpt-6-astra', reasoningEffort: 'high',
+    })
+    expect(applyDeclaredDefaultReasoningEffort(policy, selected, {
+      ...request, reasoning_effort: 'xhigh',
+    })).toBe(selected)
+  })
+
   it('exposes fields only for a new Session with a persisted policy and forwards an allowed selection', async () => {
     const { ctx, requests } = await boot()
     const handle = await createWithPolicy(ctx, 'selectable-new')
@@ -297,6 +318,19 @@ describe('subagent model selection policy', () => {
     expect(resultText(discovery)).toContain('high (default)')
     expect(resultText(discovery)).toContain('xhigh')
 
+    const selectedDefault = await callSubagent(ctx, handle.agent, {
+      description: 'native child default',
+      prompt: 'do work',
+      provider: 'codex-native',
+      model: 'gpt-6-astra',
+    })
+    expect(selectedDefault.isError).toBe(false)
+    expect(requests[0]?.agentOptions).toEqual({
+      provider: 'codex-native',
+      model: 'gpt-6-astra',
+      reasoningEffort: 'high',
+    })
+
     const selected = await callSubagent(ctx, handle.agent, {
       description: 'native child',
       prompt: 'do work',
@@ -305,7 +339,7 @@ describe('subagent model selection policy', () => {
       reasoning_effort: 'xhigh',
     })
     expect(selected.isError).toBe(false)
-    expect(requests[0]?.agentOptions).toEqual({
+    expect(requests[1]?.agentOptions).toEqual({
       provider: 'codex-native',
       model: 'gpt-6-astra',
       reasoningEffort: 'xhigh',

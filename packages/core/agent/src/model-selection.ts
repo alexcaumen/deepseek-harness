@@ -5,6 +5,14 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { LlmCallConfig, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import type {} from '@deepseek-ai/dsh-system-prompt'
+
+declare module '@deepseek-ai/dsh-system-prompt' {
+  interface AssembleContext {
+    /** Route snapshotted for this exact assembly before any waterfall ordering. */
+    modelSelection?: ModelSelection
+  }
+}
 
 /** Complete provider, model, and optional reasoning effort selected for one live Agent. */
 export interface ModelSelection {
@@ -39,6 +47,8 @@ export interface ModelSelectionRef {
 export function installModelSelection(agentCtx: Context, selection: ModelSelectionRef): () => void {
   const disposeAssembly = agentCtx.on('system-prompt/assemble', async (_assembly, _context, next) => {
     const selected = selection.current
+    if (selected === undefined) delete _context.modelSelection
+    else _context.modelSelection = selected
     const assembled = await next()
     selection.assembled = selected
     if (selected === undefined) return assembled

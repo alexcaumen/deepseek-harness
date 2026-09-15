@@ -6,8 +6,10 @@ import { open, mkdir, readFile } from 'node:fs/promises'
 import { isAbsolute, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
-import type {} from '@deepseek-ai/dsh-agent'
+import type { ModelSelection } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
+import type {} from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-user-approval'
 import z from '@deepseek-ai/schemastery'
 import {
@@ -34,6 +36,7 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/u
 const BARE_DIGEST = /^[a-f0-9]{64}$/u
 const TARGETS = ['r5300', 'prdg', 'ram-cpu'] as const
 const DISPOSITIONS = ['HIDDEN_HELD', 'VISIBLE_DISABLED', 'AVAILABLE'] as const
+const PROMPT_PROFILES = ['compact-4k'] as const
 const MANAGER_ENVIRONMENT_NAMES = [
   'SystemRoot', 'WINDIR', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
   'APPDATA', 'LOCALAPPDATA', 'ProgramData', 'TEMP', 'TMP',
@@ -67,6 +70,8 @@ export interface RouteConfig {
   readonly allowExactResidentAdoption?: boolean
   readonly supportedReasoningEfforts?: string[]
   readonly stageTimeoutsMs?: Readonly<Record<string, number>>
+  /** Explicit prompt budget for constrained local serving contexts. */
+  readonly promptProfile?: typeof PROMPT_PROFILES[number]
 }
 
 /** One fixed command runner for an admitted compute target. */
@@ -126,6 +131,7 @@ const routeSchema = z.object({
   allowExactResidentAdoption: z.boolean().default(false),
   supportedReasoningEfforts: z.array(z.string().min(1)).default(undefined as unknown as string[]),
   stageTimeoutsMs: z.dict(z.number().step(1).min(1)).default(undefined as unknown as Record<string, number>),
+  promptProfile: z.const('compact-4k').default(undefined as unknown as typeof PROMPT_PROFILES[number]),
 })
 
 const runnerSchema = z.union([
@@ -167,7 +173,63 @@ export const Config: z<Config> = z.object({
 })
 
 export const name = 'giana-cowork-model-deployment'
-export const inject = ['modelLifecycle', 'agents', 'approval']
+export const inject = ['modelLifecycle', 'agents', 'approval', 'systemPrompt', 'tools']
+
+function selectionKey(provider: string, model: string): string {
+  return `${provider}\u0000${model}`
+}
+
+const TOOL_SECTION_FAMILIES: Readonly<Record<string, RegExp>> = Object.freeze({
+  'tool:cordis': /^cordis_/u,
+  'tool:goal': /^(?:get|create|update)_goal$/u,
+  'tool:jobs': /^job_/u,
+  'tool:pty': /^terminal_/u,
+  'tool:report': /^report$/u,
+  'tool:session-query': /^session_/u,
+})
+
+/** Exact route selections whose static prompt must fit a 4K serving window. */
+export function compactPromptSelections(config: Pick<Config, 'routes'>): ReadonlySet<string> {
+  return new Set(config.routes
+    .filter(route => route.promptProfile === 'compact-4k')
+    .map(route => selectionKey(route.provider, route.model)))
+}
+
+/** Replace only static prose; tool schemas, runtime context, and variables remain authoritative. */
+export function applyPromptBudget(
+  assembly: PromptAssembly,
+  selections: ReadonlySet<string>,
+  selected: Pick<ModelSelection, 'provider' | 'model'> | undefined,
+  requestTools = assembly.tools,
+): PromptAssembly {
+  if (selected === undefined || !selections.has(selectionKey(selected.provider, selected.model))) {
+    return assembly
+  }
+  // Code Mode reaches non-wire tools through the generated SDK, so every
+  // registered tool instruction remains relevant even when only run_code is wired.
+  const codeMode = requestTools.some(tool => tool.name === 'run_code')
+    && assembly.sections.some(section => section.name === 'tools:sdk' && section.text.length > 0)
+  if (codeMode) return assembly
+  const knownTools = new Set(assembly.tools.map(tool => tool.name))
+  const visibleTools = new Set(requestTools.map(tool => tool.name))
+  const sections = assembly.sections.filter((section) => {
+    if (!section.name.startsWith('tool:')) return true
+    const family = TOOL_SECTION_FAMILIES[section.name]
+    if (family !== undefined) {
+      const familyKnown = [...knownTools].some(name => family.test(name))
+      return !familyKnown || [...visibleTools].some(name => family.test(name))
+    }
+    const exact = section.name.slice('tool:'.length)
+    // Unknown/custom naming is preserved. Only an exact registered capability
+    // may be removed after the native request projection proves it is hidden.
+    return !knownTools.has(exact) || visibleTools.has(exact)
+  })
+  if (sections.length === assembly.sections.length) return assembly
+  return {
+    ...assembly,
+    sections,
+  }
+}
 
 function validate(config: Config): void {
   for (const [label, value] of [
@@ -450,6 +512,22 @@ export function apply(ctx: Context, input: Config): void {
   const config = Config(input)
   validate(config)
   const routes = governedRoutes(config)
+  const promptSelections = compactPromptSelections(config)
+  if (promptSelections.size > 0) {
+    ctx.on('system-prompt/assemble', async (_assembly, context, next) => {
+      const assembled = await next()
+      const options = context.agent?.options
+      const selected = context.modelSelection ?? (
+        options?.provider === undefined || options.model === undefined
+          ? undefined
+          : { provider: options.provider, model: options.model }
+      )
+      const requestTools = selected === undefined || context.agent === undefined
+        ? assembled.tools
+        : ctx.tools.schemasForRequest(assembled.tools, context.agent, selected.provider)
+      return applyPromptBudget(assembled, promptSelections, selected, requestTools)
+    })
+  }
   const managerScript = config.managerScript ?? fileURLToPath(new URL('./manager.js', import.meta.url))
   const transport = new ServerManagerStdioTransport({
     executable: process.execPath,

@@ -9,6 +9,7 @@ import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import Lifecycle, { type ModelLifecycleRuntime } from '@deepseek-ai/dsh-model-lifecycle'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import * as Deployment from '../src/index.ts'
 import type { Config as DeploymentConfig } from '../src/index.ts'
 
@@ -91,6 +92,9 @@ it('boots from Loader while a held route remains inert at mount and dispatch', a
     Deployment.apply({} as Context, unboundConfig)
   }).toThrow('available route is not bound to this admission receipt')
   await writeFile(configPath, [
+    '- id: system-prompt',
+    "  name: '@deepseek-ai/dsh-system-prompt'",
+    "  config: { persona: '' }",
     '- id: sessions',
     "  name: '@deepseek-ai/dsh-session'",
     '- id: model-lifecycle',
@@ -106,10 +110,12 @@ it('boots from Loader while a held route remains inert at mount and dispatch', a
   ctx = new Context()
   ctx.provide('agents', { get: () => undefined } as never)
   ctx.provide('approval', { requestWithReceipt: () => Promise.resolve({ id: 'fixture', outcome: 'unavailable' }) } as never)
+  ctx.provide('tools', { schemasForRequest: (schemas: unknown) => schemas } as never)
   ctx.baseUrl = pathToFileURL(root).href + '/'
   await ctx.plugin(Loader)
   ctx.loader.builtins.include = Include
   const modules = new Map<string, unknown>([
+    ['@deepseek-ai/dsh-system-prompt', SystemPrompt],
     ['@deepseek-ai/dsh-session', SessionStore],
     ['@deepseek-ai/dsh-model-lifecycle', Lifecycle],
     ['@deepseek-ai/dsh-giana-cowork-model-deployment', Deployment],

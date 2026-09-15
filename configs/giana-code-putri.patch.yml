@@ -103,6 +103,7 @@
           - id: glm53-uncensored-fp8
             provider: glm-uncensored-local-r5300
             model: glm-5.3-flash-uncensored-fp8
+            promptProfile: compact-4k
             disposition: AVAILABLE
             admissionReceiptDigest: sha256:9781caed147c1a163a9893c873d53dda470ace2a5fa362db3af3c3926c369e44
             revisionDigest: sha256:f24d9ad71765ec0a2873047dfd9983555b93752c3d2e0223d2e6a5e336ceb71e
@@ -119,6 +120,7 @@
           - id: deepseek-v4-flash-vision-regular
             provider: deepseek-vision-local-r5300
             model: deepseek-v4-flash-vision-exp-unsloth-ud-q8-k-xl
+            promptProfile: compact-4k
             disposition: AVAILABLE
             admissionReceiptDigest: sha256:9781caed147c1a163a9893c873d53dda470ace2a5fa362db3af3c3926c369e44
             revisionDigest: sha256:21379bb3ba1f5dce44fda546b889960e7d2ab826ff5761c7cf37f9a6f8371d83
@@ -135,6 +137,7 @@
           - id: deepseek-v4-flash-vision-uncensored
             provider: deepseek-vision-uncensored-local-r5300
             model: deepseek-v4-flash-vision-uncensored-derived-q8-0
+            promptProfile: compact-4k
             disposition: AVAILABLE
             admissionReceiptDigest: sha256:9781caed147c1a163a9893c873d53dda470ace2a5fa362db3af3c3926c369e44
             revisionDigest: sha256:45cf2b5b4c8913a88a82680be31bfe2c70d387104b901876f7e103f049d03c8e
