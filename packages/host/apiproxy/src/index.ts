@@ -16,7 +16,6 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type { ApiProxy } from './api/index.ts'
-import type { ModelSelection } from '@deepseek-ai/dsh-agent'
 import { createApiProxy, DEFAULT_COLD_BLANK_PROBE_MAX_BYTES } from './api-proxy.ts'
 import {
   DEFAULT_SESSION_LOG_COMPRESSION_LEVEL,
@@ -99,15 +98,6 @@ export class ApiProxyService extends Service implements ApiProxy {
     const api = createApiProxy(ctx, {
       defaultModelSelection: () => ctx.agentDefaultModel.currentSelection(),
       saveDefaultModelSelection: selection => ctx.agentDefaultModel.saveSelection(selection),
-      prepareModelSelection: async (sessionId, selection, signal) => {
-        const lifecycle = ctx.get('modelLifecycle') as undefined | {
-          acquireRoute(request: { selection: ModelSelection; sessionId: string; signal: AbortSignal }):
-          Promise<{ release(): Promise<void> }>
-        }
-        if (lifecycle === undefined) return
-        const lease = await lifecycle.acquireRoute({ selection, sessionId: String(sessionId), signal })
-        await lease.release()
-      },
       cwd: process.cwd(),
       ...config.nativeOpen === undefined ? {} : { canOpenPath: () => config.nativeOpen as boolean },
       ...(config.sessionExportCompressionLevel === undefined

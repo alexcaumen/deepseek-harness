@@ -574,7 +574,7 @@ describe('Web session model selection', () => {
     await ctx.fiber.dispose()
   })
 
-  it('prepares the selected route through the mounted gateway lifecycle before returning success', async () => {
+  it('persists model selection without acquiring the mounted lifecycle outside a turn', async () => {
     const { ctx, sessionId } = await harness()
     const release = vi.fn(() => Promise.resolve())
     const acquireRoute = vi.fn((_request: {
@@ -591,12 +591,8 @@ describe('Web session model selection', () => {
     expect(expectValue(await gateway.sessions.selectModel(request({
       sessionId, provider: 'deepseek-official', model: 'deepseek-reasoner',
     }))).selected).toMatchObject({ provider: 'deepseek-official', model: 'deepseek-reasoner' })
-    expect(acquireRoute).toHaveBeenCalledTimes(1)
-    const prepared = acquireRoute.mock.calls[0]?.[0]
-    expect(prepared?.selection).toMatchObject({ provider: 'deepseek-official', model: 'deepseek-reasoner' })
-    expect(prepared?.sessionId).toBe(String(sessionId))
-    expect(prepared?.signal).toBeInstanceOf(AbortSignal)
-    expect(release).toHaveBeenCalledTimes(1)
+    expect(acquireRoute).not.toHaveBeenCalled()
+    expect(release).not.toHaveBeenCalled()
     await ctx.fiber.dispose()
   })
 })
