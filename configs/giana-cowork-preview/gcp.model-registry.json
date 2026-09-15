@@ -160,7 +160,7 @@
       "resources": {
         "gpuIndices": [1],
         "minimumFreeVramMiB": { "1": 38000 },
-        "reclaimableVramMiB": { "1": 33765 },
+        "reclaimableVramMiB": { "1": 41040 },
         "minimumFreeRamMiB": 330000,
         "reclaimableRamMiB": 311340
       }
