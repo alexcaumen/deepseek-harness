@@ -647,6 +647,30 @@ select.input {
   gap: 8px;
 }
 
+.accountSlots {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.accountSlot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  min-height: 48px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+}
+
+.accountSlotName {
+  color: var(--dsw-alias-label-primary);
+  font-size: 13px;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+}
+
 .nativeSubscriptionButton {
   display: inline-flex;
   align-items: center;
@@ -664,6 +688,11 @@ select.input {
 
 .nativeSubscriptionButton:hover {
   background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.nativeSubscriptionButton:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
 }
 
 /* Icon-button label seat: named for assistive tech and for the tests that

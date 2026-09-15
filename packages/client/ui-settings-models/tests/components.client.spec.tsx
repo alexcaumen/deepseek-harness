@@ -244,6 +244,25 @@ describe('ModelsSection', () => {
     expect(screen.getByText(en.nativeSubscriptionNote)).toBeTruthy()
   })
 
+  it('offers four independent manual account links without asserting an unconfirmed active slot', async () => {
+    const { mutate, set, unset } = await mountSection()
+    const slots = within(screen.getByRole('list', { name: en.codexAccountSlots }))
+    expect(slots.getAllByRole('listitem')).toHaveLength(4)
+    for (const slot of ['slot-01', 'slot-02', 'slot-03', 'slot-04']) {
+      const login = slots.getByRole('link', { name: `${en.slotSignIn} Codex ${slot}` })
+      const select = slots.getByRole('link', { name: `${en.slotSelect} Codex ${slot}` })
+      expect(login.getAttribute('href')).toBe(`dsh-auth://codex?slot=${slot}&action=login`)
+      expect(select.getAttribute('href')).toBe(`dsh-auth://codex?slot=${slot}&action=select`)
+      expect(login.getAttribute('target')).toBe('_blank')
+      expect(select.getAttribute('rel')).toBe('noreferrer')
+      expect(select.hasAttribute('aria-current')).toBe(false)
+    }
+    expect(screen.getByText(en.slotRestartRequired)).toBeTruthy()
+    expect(mutate).not.toHaveBeenCalled()
+    expect(set).not.toHaveBeenCalled()
+    expect(unset).not.toHaveBeenCalled()
+  })
+
   it('renders the unkeyed whole-section provider as an open setup card in the first-run posture', async () => {
     await mountFirstRun()
     // Nothing is reachable yet, and DeepSeek has no configured credential and

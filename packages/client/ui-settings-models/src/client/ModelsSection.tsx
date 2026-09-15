@@ -49,6 +49,8 @@ export type ModelsSectionProps = Partial<InjectFace<ModelsSectionInjected>>
 
 type ModelsSectionFace = InjectFace<ModelsSectionInjected>
 
+const CODEX_ACCOUNT_SLOTS = ['slot-01', 'slot-02', 'slot-03', 'slot-04'] as const
+
 /** Provider identity shared by row actions and confirmation copy. */
 export interface ProviderIdentity {
   /** Stable provider route id. */
@@ -504,6 +506,34 @@ function Loaded({ injected }: { injected: ModelsSectionFace }): ReactNode {
           {t('nativeSubscriptions')}
         </h3>
         <p className={styles['nativeSubscriptionsDescription']}>{t('nativeSubscriptionsDescription')}</p>
+        <ul className={styles['accountSlots']} aria-label={t('codexAccountSlots')}>
+          {CODEX_ACCOUNT_SLOTS.map(slot => (
+            <li key={slot} className={styles['accountSlot']}>
+              <span className={styles['accountSlotName']}>{`Codex ${slot}`}</span>
+              <div className={styles['nativeSubscriptionActions']}>
+                <a
+                  className={styles['nativeSubscriptionButton']}
+                  href={`dsh-auth://codex?slot=${slot}&action=login`}
+                  aria-label={`${t('slotSignIn')} Codex ${slot}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {t('slotSignIn')}
+                </a>
+                <a
+                  className={styles['nativeSubscriptionButton']}
+                  href={`dsh-auth://codex?slot=${slot}&action=select`}
+                  aria-label={`${t('slotSelect')} Codex ${slot}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {t('slotSelect')}
+                </a>
+              </div>
+            </li>
+          ))}
+        </ul>
+        <p className={styles['nativeSubscriptionNote']}>{t('slotRestartRequired')}</p>
         <div className={styles['nativeSubscriptionActions']}>
           <a className={styles['nativeSubscriptionButton']} href="dsh-auth://codex" target="_blank" rel="noreferrer">
             {t('openCodexSignIn')}
