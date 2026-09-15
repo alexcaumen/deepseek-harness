@@ -2,7 +2,7 @@
   "schema": "giana.cowork.preview.model-registry.v2",
   "issuerRef": "giana:issuer:sha256:8fcaed49cd538cb6494053c7f2958fe9f48091e19f4258105fb5aa2a571e392a",
   "holderRef": "giana:holder:sha256:23a5fc97f64fa90efc8fd2a913cab32474ba267195d6c6be89beb70ba809c5ee",
-  "admissionDigest": "bba72fc758c7e4729c284522c910b90feceb5148ceb07cfbaeec3dcd4232b537",
+  "admissionDigest": "9781caed147c1a163a9893c873d53dda470ace2a5fa362db3af3c3926c369e44",
   "renewAfterMs": 120000,
   "slots": [{
     "target": "r5300",
@@ -23,12 +23,12 @@
     {
       "class": "r5300",
       "identity_digest": "91eda62878736036ed54fa46478df41b8bb3dd8fb6b4103a21cc7357eaa56ffa",
-      "currentness_digest": "9dec2105ddfccfe64aa21b337a9f0669eba2d01e359d75318074afa7bcbceb37"
+      "currentness_digest": "f5528cccb65aecbfa4294550ba21864faaa492b735fddc3f855e5f3abf79b5c8"
     },
     {
       "class": "prdg",
       "identity_digest": "bf7a58918d355c553f4852af75b3875e208d140a5060fe62cb4215cfceae64c5",
-      "currentness_digest": "8f1ce22cfbf3de77e8c559180638ddcb1ad28b69981cc6a45309d2c8d9b2c942"
+      "currentness_digest": "f0be0b93921bce3b37628aad744c22f7559347ab720c0a6878c2cc48d95d7af6"
     }
   ],
   "routes": [
@@ -130,6 +130,105 @@
         "reclaimableVramMiB": { "0": 30000 },
         "minimumFreeRamMiB": 65536,
         "reclaimableRamMiB": 65536
+      }
+    },
+    {
+      "id": "glm53-uncensored-fp8",
+      "revisionDigest": "f24d9ad71765ec0a2873047dfd9983555b93752c3d2e0223d2e6a5e336ceb71e",
+      "target": "r5300",
+      "exclusiveEndpoint": true,
+      "runtime": {
+        "kind": "systemd",
+        "unit": "gcp-glm53-uncensored-fp8-preview-r3.service",
+        "launcherPath": "/var/lib/giana-cowork-preview/runtime/r3/r5300-glm53-uncensored-fp8-launcher.sh",
+        "launcherSha256": "3d047fd20ba2cc9ef7bb1755f9e240a0f471b9abb8537f655400765c656a23e7",
+        "processMarker": "glm-5.3-flash-uncensored-fp8",
+        "remotePort": 18085,
+        "localPort": 18085,
+        "upstreamLocalPort": 28085,
+        "expectedModel": "glm-5.3-flash-uncensored-fp8",
+        "drain": {
+          "kind": "sglang-load",
+          "path": "/get_load",
+          "pollIntervalMs": 2000
+        },
+        "release": {
+          "pollIntervalMs": 5000,
+          "maximumSamples": 36
+        }
+      },
+      "resources": {
+        "gpuIndices": [1],
+        "minimumFreeVramMiB": { "1": 38000 },
+        "reclaimableVramMiB": { "1": 33765 },
+        "minimumFreeRamMiB": 330000,
+        "reclaimableRamMiB": 311340
+      }
+    },
+    {
+      "id": "deepseek-v4-flash-vision-regular",
+      "revisionDigest": "21379bb3ba1f5dce44fda546b889960e7d2ab826ff5761c7cf37f9a6f8371d83",
+      "target": "r5300",
+      "exclusiveEndpoint": true,
+      "runtime": {
+        "kind": "systemd",
+        "unit": "gcp-deepseek-v4-flash-vision-regular-preview-r3.service",
+        "launcherPath": "/var/lib/giana-cowork-preview/runtime/r3/r5300-deepseek-v4-flash-vision-regular-launcher.sh",
+        "launcherSha256": "b7e9e7c6953a279c3a418d281629cde087b98dbd360788a47bca0e8c24abdaea",
+        "processMarker": "deepseek-v4-flash-vision-exp-unsloth-ud-q8-k-xl",
+        "remotePort": 18083,
+        "localPort": 18083,
+        "upstreamLocalPort": 28083,
+        "expectedModel": "deepseek-v4-flash-vision-exp-unsloth-ud-q8-k-xl",
+        "drain": {
+          "kind": "llama-metrics",
+          "path": "/metrics",
+          "pollIntervalMs": 2000
+        },
+        "release": {
+          "pollIntervalMs": 5000,
+          "maximumSamples": 36
+        }
+      },
+      "resources": {
+        "gpuIndices": [0, 1],
+        "minimumFreeVramMiB": { "0": 39000, "1": 41500 },
+        "reclaimableVramMiB": { "0": 34666, "1": 37198 },
+        "minimumFreeRamMiB": 180000,
+        "reclaimableRamMiB": 154849
+      }
+    },
+    {
+      "id": "deepseek-v4-flash-vision-uncensored",
+      "revisionDigest": "45cf2b5b4c8913a88a82680be31bfe2c70d387104b901876f7e103f049d03c8e",
+      "target": "r5300",
+      "exclusiveEndpoint": true,
+      "runtime": {
+        "kind": "systemd",
+        "unit": "gcp-deepseek-v4-flash-vision-uncensored-preview-r3.service",
+        "launcherPath": "/var/lib/giana-cowork-preview/runtime/r3/r5300-deepseek-v4-flash-vision-uncensored-launcher.sh",
+        "launcherSha256": "a0964a55414c86e7ec80a817c4296946469be8cede29e4b3c31f20fb4563f959",
+        "processMarker": "deepseek-v4-flash-vision-uncensored-derived-q8-0",
+        "remotePort": 18084,
+        "localPort": 18084,
+        "upstreamLocalPort": 28084,
+        "expectedModel": "deepseek-v4-flash-vision-uncensored-derived-q8-0",
+        "drain": {
+          "kind": "llama-metrics",
+          "path": "/metrics",
+          "pollIntervalMs": 2000
+        },
+        "release": {
+          "pollIntervalMs": 5000,
+          "maximumSamples": 36
+        }
+      },
+      "resources": {
+        "gpuIndices": [0, 1],
+        "minimumFreeVramMiB": { "0": 38000, "1": 40000 },
+        "reclaimableVramMiB": { "0": 33552, "1": 35980 },
+        "minimumFreeRamMiB": 175000,
+        "reclaimableRamMiB": 149608
       }
     }
   ]

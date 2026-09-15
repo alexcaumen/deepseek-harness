@@ -30,11 +30,62 @@ const QWEN_MODEL = 'Qwen/Qwen3.8-27B'
 const QWEN_DISPLAY = 'Qwen3.8-27B'
 const QWEN_CONTEXT_WINDOW = 32_768
 const QWEN_MAX_TOKENS = 4_096
-const HELD_PROVIDER_IDS = new Set([
-  'glm-uncensored-local-r5300',
-  'deepseek-vision-local-r5300',
-  'deepseek-vision-uncensored-local-r5300',
-])
+const ADMISSION_DIGEST = '9781caed147c1a163a9893c873d53dda470ace2a5fa362db3af3c3926c369e44'
+const REQUIRED_ROUTE_IDS = [
+  'glm53-official-fp8',
+  'qwen38-local',
+  'glm53-uncensored-fp8',
+  'deepseek-v4-flash-vision-regular',
+  'deepseek-v4-flash-vision-uncensored',
+] as const
+
+interface LocalProfile {
+  readonly provider: string
+  readonly model: string
+  readonly display: string
+  readonly baseURL?: string
+  readonly contextWindow: number
+  readonly maxTokens: number
+  readonly thinkingFormat: 'openai' | 'deepseek'
+}
+
+const LOCAL_PROFILES: readonly LocalProfile[] = [
+  {
+    provider: PROVIDER,
+    model: MODEL,
+    display: DISPLAY,
+    contextWindow: GLM_CONTEXT_WINDOW,
+    maxTokens: GLM_MAX_TOKENS,
+    thinkingFormat: 'openai',
+  },
+  {
+    provider: 'glm-uncensored-local-r5300',
+    model: 'glm-5.3-flash-uncensored-fp8',
+    display: 'GLM 5.3 Flash Uncensored FP8 (Local)',
+    baseURL: 'http://127.0.0.1:18085/v1',
+    contextWindow: 4_096,
+    maxTokens: 1_024,
+    thinkingFormat: 'openai',
+  },
+  {
+    provider: 'deepseek-vision-local-r5300',
+    model: 'deepseek-v4-flash-vision-exp-unsloth-ud-q8-k-xl',
+    display: 'DeepSeek V4 Flash Vision Experimental (Local)',
+    baseURL: 'http://127.0.0.1:18083/v1',
+    contextWindow: 4_096,
+    maxTokens: 1_024,
+    thinkingFormat: 'deepseek',
+  },
+  {
+    provider: 'deepseek-vision-uncensored-local-r5300',
+    model: 'deepseek-v4-flash-vision-uncensored-derived-q8-0',
+    display: 'DeepSeek V4 Flash Vision Uncensored (Local)',
+    baseURL: 'http://127.0.0.1:18084/v1',
+    contextWindow: 4_096,
+    maxTokens: 1_024,
+    thinkingFormat: 'deepseek',
+  },
+]
 const ORCASAQ = /(?:^|[^a-z0-9])orca[-_.\s]*saq(?:$|[^a-z0-9])/i
 type Mapping = Record<string, unknown>
 
@@ -128,9 +179,16 @@ function ready(options: MergeOptions, baseURL: string): boolean {
   const lazyDriver = section(record.lazyDriver)
   const verifiedAt = typeof record.verifiedAt === 'string' ? Date.parse(record.verifiedAt) : NaN
   const expiresAt = typeof record.expiresAt === 'string' ? Date.parse(record.expiresAt) : NaN
+  const admittedRouteIds = Array.isArray(record.admittedRouteIds)
+    ? record.admittedRouteIds.filter((value): value is string => typeof value === 'string')
+    : []
   if (record.routeReady !== true || record.verified !== true
     || lazyDriver.verified !== true || lazyDriver.loadAtFirstRequest !== true
     || record.provider !== PROVIDER || record.model !== MODEL
+    || record.admissionDigest !== ADMISSION_DIGEST
+    || admittedRouteIds.length !== REQUIRED_ROUTE_IDS.length
+    || new Set(admittedRouteIds).size !== REQUIRED_ROUTE_IDS.length
+    || REQUIRED_ROUTE_IDS.some(id => !admittedRouteIds.includes(id))
     || typeof record.baseURL !== 'string' || loopbackURL(record.baseURL) !== baseURL
     || !Number.isFinite(options.now) || !Number.isFinite(verifiedAt) || !Number.isFinite(expiresAt)
     || verifiedAt > options.now || expiresAt <= options.now || expiresAt <= verifiedAt
@@ -181,7 +239,7 @@ export function mergeLocalModelSettings(source: Mapping, options: MergeOptions):
     const retained = listed?.filter(model => !isOrcaSAQ(model.id, model.name))
     const excludedOverride = Object.entries(overrides)
       .some(([modelId, model]) => isOrcaSAQ(modelId, mapping(model).name))
-    if (HELD_PROVIDER_IDS.has(id) || isOrcaSAQ(id, profile.displayName) || excludedOverride
+    if (isOrcaSAQ(id, profile.displayName) || excludedOverride
       || (listed && retained && listed.length > 0 && retained.length === 0)) {
       // Empty catalogs can fall back to installed models; hold the entire route instead.
       heldProviders[id] = structuredClone(profile)
@@ -194,29 +252,38 @@ export function mergeLocalModelSettings(source: Mapping, options: MergeOptions):
     }
   }
 
-  const previous = section(providers[PROVIDER])
-  if (previous.modelOverrides !== undefined && Object.keys(mapping(previous.modelOverrides)).length) {
-    fail('The target provider has modelOverrides; resolve that conflict before preparing a candidate.')
-  }
-  const listed = models(previous.models) ?? []
-  const oldModel = listed.find(model => model.id === MODEL) ?? {}
-  const model = {
-    ...oldModel,
-    id: MODEL,
-    name: DISPLAY,
-    contextWindow: GLM_CONTEXT_WINDOW,
-    maxTokens: GLM_MAX_TOKENS,
-    reasoningEfforts: { high: 'high' },
-    input: ['text', 'image'],
-  }
-  providers[PROVIDER] = {
-    ...previous,
-    displayName: DISPLAY,
-    api: 'openai-completions',
-    baseURL,
-    reasoning: 'high',
-    availabilityProbe: { model: MODEL, timeoutMs: 10_000, phase: 'dispatch' },
-    models: [model],
+  for (const profile of LOCAL_PROFILES) {
+    const previous = section(providers[profile.provider])
+    if (previous.modelOverrides !== undefined && Object.keys(mapping(previous.modelOverrides)).length) {
+      fail('An admitted local provider has modelOverrides; resolve that conflict before preparing a candidate.')
+    }
+    const listed = models(previous.models) ?? []
+    const oldModel = listed.find(model => model.id === profile.model) ?? {}
+    providers[profile.provider] = {
+      ...previous,
+      displayName: profile.display,
+      api: 'openai-completions',
+      baseURL: profile.baseURL ?? baseURL,
+      reasoning: 'high',
+      compat: {
+        ...section(previous.compat),
+        maxTokensField: 'max_tokens',
+        thinkingFormat: profile.thinkingFormat,
+        supportsDeveloperRole: false,
+        supportsReasoningEffort: true,
+        supportsStore: false,
+      },
+      availabilityProbe: { model: profile.model, timeoutMs: 10_000, phase: 'dispatch' },
+      models: [{
+        ...oldModel,
+        id: profile.model,
+        name: profile.display,
+        contextWindow: profile.contextWindow,
+        maxTokens: profile.maxTokens,
+        reasoningEfforts: { high: 'high' },
+        input: ['text', 'image'],
+      }],
+    }
   }
   if (providers[QWEN_PROVIDER] !== undefined) {
     const qwen = mapping(providers[QWEN_PROVIDER])

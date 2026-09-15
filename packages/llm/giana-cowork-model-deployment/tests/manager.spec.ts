@@ -82,6 +82,7 @@ class FakeRemote {
   onStopMutation: (() => Promise<void>) | undefined
   activeRequestCounts: number[] = []
   malformedDrain = false
+  llamaMetrics = false
   hostFence = 0
   hostLease: { id: string; fence: number; expiresAt: number } | undefined
   prdgHostFence = 0
@@ -217,11 +218,13 @@ class FakeRemote {
       return { code: 0, stdout: JSON.stringify([{ num_reqs: active, num_waiting_reqs: 0 }]) }
     }
     if (command.includes('/metrics')) {
-      if (this.malformedDrain) return { code: 0, stdout: 'not-vllm-metrics\n' }
+      if (this.malformedDrain) return { code: 0, stdout: 'not-model-metrics\n' }
       const active = this.activeRequestCounts.shift() ?? 0
       return {
         code: 0,
-        stdout: `vllm:num_requests_running ${active}\nvllm:num_requests_waiting 0\n`,
+        stdout: this.llamaMetrics
+          ? `llamacpp:requests_processing ${active}\nllamacpp:requests_deferred 0\n`
+          : `vllm:num_requests_running ${active}\nvllm:num_requests_waiting 0\n`,
       }
     }
     if (command.includes("printf 'GCP_LISTENER_OWNED")) {
@@ -444,6 +447,13 @@ function systemdRuntime(): Record<string, unknown> {
     expectedModel: 'GLM-5.3-Flash-official-fp8-canary',
     drain: { kind: 'sglang-load', path: '/get_load', pollIntervalMs: 1 },
     release: { pollIntervalMs: 1, maximumSamples: 6 },
+  }
+}
+
+function llamaSystemdRuntime(): Record<string, unknown> {
+  return {
+    ...systemdRuntime(),
+    drain: { kind: 'llama-metrics', path: '/metrics', pollIntervalMs: 1 },
   }
 }
 
@@ -1270,7 +1280,7 @@ describe('Giana CoWork Preview model manager', () => {
     expect(precheckTimeouts[1]).toBeLessThan(precheckTimeouts[0]!)
     expect(precheckTimeouts[2]).toBeLessThan(precheckTimeouts[1]!)
     expect(remote.commands[remote.commands.findIndex(command => command.includes('GCP_DEVICE_RECOVERY_PRECHECKED'))])
-      .toContain('gpu_recovery_action --format=csv,noheader,nounits -i 1) || exit 78')
+      .toContain('nvidia-smi -q -i 1')
     expect(remote.commands[remote.commands.findIndex(command => command.includes('GCP_DEVICE_RECOVERY_PRECHECKED'))])
       .toContain('apps=$(nvidia-smi --query-compute-apps=pid,gpu_uuid --format=csv,noheader,nounits) || exit 78')
   })
@@ -2079,6 +2089,25 @@ describe('Giana CoWork Preview model manager', () => {
       .resolves.toMatchObject({ stage: 'drain' })
     expect(remote.commands.filter(command => command.includes('/get_load'))).toHaveLength(4)
     expect(remote.commands.some(command => command.includes('stop-glm'))).toBe(false)
+  })
+
+  it('requires processing and deferred llama.cpp gauges to reach three consecutive zero samples', async () => {
+    const remote = new FakeRemote()
+    remote.llamaMetrics = true
+    remote.residentPort = 18_081
+    remote.freeVramMiB.set(1, 4_000)
+    remote.activeRequestCounts = [1, 0, 0, 0]
+    const { adapter, manager, statePath } = await fixture(remote, registry(llamaSystemdRuntime()))
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const glm = context(grant, route('glm-official'), '9')
+    const qwen = context(grant, route('qwen-local'), '9')
+    await adapter.preflight(qwen)
+    await adapter.capturePrestate(qwen)
+    await evictionEnvelope(manager, statePath)
+
+    await expect(adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' }))
+      .resolves.toMatchObject({ stage: 'drain' })
+    expect(remote.commands.filter(command => command.includes('/metrics'))).toHaveLength(4)
   })
 
   it('rechecks drain after closing admission and before the stop mutation', async () => {

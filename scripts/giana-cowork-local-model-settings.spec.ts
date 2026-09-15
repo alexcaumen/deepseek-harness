@@ -16,6 +16,14 @@ import { removeFixtureSafely } from './test-fixture-cleanup.ts'
 const PROVIDER = 'glm-local-r5300'
 const MODEL = 'GLM-5.3-Flash-official-fp8-canary'
 const BASE_URL = 'http://127.0.0.1:49177/v1'
+const ADMISSION_DIGEST = '9781caed147c1a163a9893c873d53dda470ace2a5fa362db3af3c3926c369e44'
+const ADMITTED_ROUTE_IDS = [
+  'glm53-official-fp8',
+  'qwen38-local',
+  'glm53-uncensored-fp8',
+  'deepseek-v4-flash-vision-regular',
+  'deepseek-v4-flash-vision-uncensored',
+]
 const NOW = Date.parse('2026-09-05T10:00:00Z')
 const FAKE_SECRET = 'TEST_ONLY_NOT_A_REAL_CREDENTIAL'
 const script = fileURLToPath(new URL('./giana-cowork-local-model-settings.ts', import.meta.url))
@@ -28,6 +36,8 @@ function evidence() {
     lazyDriver: { verified: true, loadAtFirstRequest: true },
     provider: PROVIDER,
     model: MODEL,
+    admissionDigest: ADMISSION_DIGEST,
+    admittedRouteIds: ADMITTED_ROUTE_IDS,
     baseURL: BASE_URL,
     verifiedAt: '2026-09-05T09:55:00Z',
     expiresAt: '2026-09-05T10:05:00Z',
@@ -99,6 +109,10 @@ describe('local-model candidate merge', () => {
     expect(profile).toMatchObject({
       displayName: 'GLM 5.3 Flash Official FP8 (Local)',
       api: 'openai-completions', baseURL: BASE_URL, reasoning: 'high',
+      compat: {
+        maxTokensField: 'max_tokens', thinkingFormat: 'openai',
+        supportsDeveloperRole: false, supportsReasoningEffort: true, supportsStore: false,
+      },
       availabilityProbe: { model: MODEL, timeoutMs: 10_000, phase: 'dispatch' },
       models: [{
         id: MODEL, name: 'GLM 5.3 Flash Official FP8 (Local)',
@@ -111,7 +125,6 @@ describe('local-model candidate merge', () => {
     expect(resolved.reasoning).toBe('high')
     expect(resolved.piProvider.getModels()[0]).toMatchObject({ contextWindow: 65_536, maxTokens: 1024, input: ['text', 'image'] })
     expect(profile.apiKeyEnv).toBeUndefined()
-    expect(profile.compat).toBeUndefined()
     expect(profile.models?.[0]?.compat).toBeUndefined()
   })
 
@@ -149,14 +162,33 @@ describe('local-model candidate merge', () => {
     expect(prepared(result.settings).settings).toEqual(result.settings)
   })
 
-  it.each(['glm-uncensored-local-r5300', 'deepseek-vision-local-r5300', 'deepseek-vision-uncensored-local-r5300'])(
-    'removes held route %s from the active selector', (id) => {
-      const profile = { displayName: 'Held local model', models: [{ id: 'held-model' }] }
-      const result = prepared({ 'llm-pi-ai': { providers: { [id]: profile } } })
-      expect(providers(result.settings)[id]).toBeUndefined()
-      expect(result.heldProviders[id]).toEqual(profile)
-    },
-  )
+  it('publishes only the exact newly admitted local variants with their stable lifecycle endpoints', () => {
+    const result = prepared({})
+    const expected = [
+      ['glm-uncensored-local-r5300', 'glm-5.3-flash-uncensored-fp8', 'http://127.0.0.1:18085/v1', 'openai'],
+      ['deepseek-vision-local-r5300', 'deepseek-v4-flash-vision-exp-unsloth-ud-q8-k-xl', 'http://127.0.0.1:18083/v1', 'deepseek'],
+      ['deepseek-vision-uncensored-local-r5300', 'deepseek-v4-flash-vision-uncensored-derived-q8-0', 'http://127.0.0.1:18084/v1', 'deepseek'],
+    ] as const
+    for (const [provider, model, endpoint, thinkingFormat] of expected) {
+      const profile = providers(result.settings)[provider]!
+      expect(profile).toMatchObject({
+        api: 'openai-completions', baseURL: endpoint, reasoning: 'high',
+        compat: {
+          maxTokensField: 'max_tokens', thinkingFormat,
+          supportsDeveloperRole: false, supportsReasoningEffort: true, supportsStore: false,
+        },
+        availabilityProbe: { model, timeoutMs: 10_000, phase: 'dispatch' },
+        models: [{
+          id: model, contextWindow: 4_096, maxTokens: 1_024,
+          input: ['text', 'image'], reasoningEfforts: { high: 'high' },
+        }],
+      })
+      const resolved = resolveProfiles({ [provider]: profile }).get(provider)!
+      expect(resolved.configuredMaxTokens.get(model)).toBe(1_024)
+      expect(resolved.piProvider.getModels()[0]).toMatchObject({ id: model, contextWindow: 4_096, maxTokens: 1_024 })
+    }
+    expect(result.heldProviders).toEqual({})
+  })
 
   it.each(['model.glm53.flash.orcasaq.mlx.mixed456.local', 'OrcaSAQ-local', 'glm-orca-saq-mlx', 'Orca_SAQ'])('holds explicit OrcaSAQ route %s', (id) => {
     const profile = { models: [{ id: 'something' }], apiKeyEnv: 'TEST_ONLY_REF' }
@@ -234,6 +266,9 @@ describe('local-model candidate merge', () => {
   it.each([
     undefined, true, { routeReady: 'true' }, { routeReady: true },
     { ...evidence(), verified: false }, { ...evidence(), provider: 'other' },
+    { ...evidence(), admissionDigest: '0'.repeat(64) },
+    { ...evidence(), admittedRouteIds: ADMITTED_ROUTE_IDS.slice(0, -1) },
+    { ...evidence(), admittedRouteIds: [...ADMITTED_ROUTE_IDS, ADMITTED_ROUTE_IDS[0]] },
     { ...evidence(), model: 'GLM-5.3-Flash-orcasaq' },
     { ...evidence(), baseURL: 'http://127.0.0.1:49178/v1' },
     { ...evidence(), verifiedAt: '2026-09-05T10:01:00Z' },

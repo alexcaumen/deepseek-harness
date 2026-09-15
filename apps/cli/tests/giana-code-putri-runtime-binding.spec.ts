@@ -72,26 +72,77 @@ describe('Giana CoWork runtime binding', () => {
     expect(launcher).toContain('digest.hexdigest() != entry["sha256"]')
   })
 
-  it('binds the exact PRDG launcher and 32K contract across admission, registry, and runtime patch', () => {
+  it('binds the exact admitted route set across admission, registry, and runtime patch', () => {
     const launcherDigest = createHash('sha256').update(readFileSync(PRDG_QWEN_START_PATH)).digest('hex')
     const registry = JSON.parse(readFileSync(MODEL_REGISTRY_PATH, 'utf8')) as {
       admissionDigest: string
-      routes: Array<{ id: string; target: string; runtime: { startSha256?: string } }>
+      targets: Array<{ class: string; currentness_digest: string }>
+      routes: Array<{
+        id: string
+        revisionDigest: string
+        target: string
+        runtime: { startSha256?: string; launcherSha256?: string; expectedModel: string }
+      }>
     }
     const admissionBytes = readFileSync(MODEL_ADMISSION_PATH)
     const admissionDigest = createHash('sha256').update(admissionBytes).digest('hex')
     const admission = JSON.parse(admissionBytes.toString('utf8')) as {
-      routes: Array<{ id: string; targets: string[]; context_window?: number; max_output_tokens?: number }>
+      target_currentness: Array<{ target: string; digest: string }>
+      routes: Array<{
+        id: string
+        provider: string
+        model: string
+        revision_digest: string
+        targets: string[]
+        context_window?: number
+        max_output_tokens?: number
+      }>
     }
     const patch = configById(entriesFromPatch(), 'giana-cowork-model-deployment')
     const patchRoutes = patch.routes as Array<{
       id: string
+      provider: string
+      model: string
       targets?: string[]
       admissionReceiptDigest?: string
+      revisionDigest?: string
     }>
+    const expectedRouteIds = [
+      'glm53-official-fp8',
+      'qwen38-local',
+      'glm53-uncensored-fp8',
+      'deepseek-v4-flash-vision-regular',
+      'deepseek-v4-flash-vision-uncensored',
+    ]
 
     expect(launcherDigest).toBe('fea57d07515d4615b8c851230ae849a18ee17bccde8a93a70aaeb0ae16669ad0')
     expect(registry.admissionDigest).toBe(admissionDigest)
+    expect(patch.admissionDigest).toBe(admissionDigest)
+    expect(admission.routes.map(route => route.id)).toEqual(expectedRouteIds)
+    expect(patchRoutes.map(route => route.id)).toEqual(expectedRouteIds)
+    expect([...new Set(registry.routes.map(route => route.id))]).toEqual(expectedRouteIds)
+    expect((patch.targets as Array<{ class: string; currentnessDigest: string }>).map(target => ({
+      target: target.class, digest: target.currentnessDigest,
+    }))).toEqual(admission.target_currentness.map(target => ({ target: target.target, digest: target.digest })))
+    expect(registry.targets.map(target => ({ target: target.class, digest: target.currentness_digest })))
+      .toEqual(admission.target_currentness.map(target => ({ target: target.target, digest: target.digest })))
+
+    for (const route of admission.routes) {
+      expect(patchRoutes.find(candidate => candidate.id === route.id)).toMatchObject({
+        provider: route.provider,
+        model: route.model,
+        targets: route.targets,
+        admissionReceiptDigest: `sha256:${admissionDigest}`,
+        revisionDigest: `sha256:${route.revision_digest}`,
+      })
+      for (const target of route.targets) {
+        expect(registry.routes.find(candidate => candidate.id === route.id && candidate.target === target)).toMatchObject({
+          revisionDigest: route.revision_digest,
+          runtime: { expectedModel: route.model },
+        })
+      }
+    }
+
     expect(registry.routes.find(route => route.id === 'qwen38-local' && route.target === 'prdg')?.runtime.startSha256)
       .toBe(launcherDigest)
     expect(admission.routes.find(route => route.id === 'qwen38-local')).toMatchObject({
@@ -99,10 +150,17 @@ describe('Giana CoWork runtime binding', () => {
       context_window: 32_768,
       max_output_tokens: 4_096,
     })
-    expect(patchRoutes.filter(route => route.id === 'qwen38-local')).toHaveLength(1)
+    expect(registry.routes.find(route => route.id === 'glm53-uncensored-fp8')?.runtime.launcherSha256)
+      .toBe('3d047fd20ba2cc9ef7bb1755f9e240a0f471b9abb8537f655400765c656a23e7')
+    expect(registry.routes.find(route => route.id === 'deepseek-v4-flash-vision-regular')?.runtime.launcherSha256)
+      .toBe('b7e9e7c6953a279c3a418d281629cde087b98dbd360788a47bca0e8c24abdaea')
+    expect(registry.routes.find(route => route.id === 'deepseek-v4-flash-vision-uncensored')?.runtime.launcherSha256)
+      .toBe('a0964a55414c86e7ec80a817c4296946469be8cede29e4b3c31f20fb4563f959')
+    for (const id of expectedRouteIds) {
+      expect(patchRoutes.filter(route => route.id === id)).toHaveLength(1)
+    }
     expect(patchRoutes.find(route => route.id === 'qwen38-local')).toMatchObject({
-      targets: ['r5300', 'prdg'],
-      admissionReceiptDigest: `sha256:${admissionDigest}`,
+      targets: ['r5300', 'prdg'], admissionReceiptDigest: `sha256:${admissionDigest}`,
     })
   })
 
@@ -148,10 +206,11 @@ describe('Giana CoWork runtime binding', () => {
       idleUnloadMs: 0,
       preserveResidentOnShutdown: true,
     })
+    const admissionDigest = createHash('sha256').update(readFileSync(MODEL_ADMISSION_PATH)).digest('hex')
     expect(configById(entries, 'giana-cowork-model-deployment')).toMatchObject({
       principalId: 'alex',
       tenantId: 'giana-cowork-preview',
-      admissionDigest: 'bba72fc758c7e4729c284522c910b90feceb5148ceb07cfbaeec3dcd4232b537',
+      admissionDigest,
       runners: [
         { target: 'r5300', kind: 'ssh', host: 'r5300' },
         { target: 'prdg', kind: 'wsl', distribution: 'Ubuntu-22.04' },
@@ -160,12 +219,12 @@ describe('Giana CoWork runtime binding', () => {
         {
           class: 'r5300',
           identityDigest: '91eda62878736036ed54fa46478df41b8bb3dd8fb6b4103a21cc7357eaa56ffa',
-          currentnessDigest: '9dec2105ddfccfe64aa21b337a9f0669eba2d01e359d75318074afa7bcbceb37',
+          currentnessDigest: 'f5528cccb65aecbfa4294550ba21864faaa492b735fddc3f855e5f3abf79b5c8',
         },
         {
           class: 'prdg',
           identityDigest: 'bf7a58918d355c553f4852af75b3875e208d140a5060fe62cb4215cfceae64c5',
-          currentnessDigest: '8f1ce22cfbf3de77e8c559180638ddcb1ad28b69981cc6a45309d2c8d9b2c942',
+          currentnessDigest: 'f0be0b93921bce3b37628aad744c22f7559347ab720c0a6878c2cc48d95d7af6',
         },
       ],
       routes: [
@@ -180,6 +239,24 @@ describe('Giana CoWork runtime binding', () => {
           allowExactResidentAdoption: true,
           targets: ['r5300', 'prdg'],
           supportedReasoningEfforts: ['low', 'medium', 'xhigh'],
+        },
+        {
+          id: 'glm53-uncensored-fp8', provider: 'glm-uncensored-local-r5300',
+          model: 'glm-5.3-flash-uncensored-fp8', disposition: 'AVAILABLE',
+          allowExactResidentAdoption: true,
+          targets: ['r5300'],
+        },
+        {
+          id: 'deepseek-v4-flash-vision-regular', provider: 'deepseek-vision-local-r5300',
+          model: 'deepseek-v4-flash-vision-exp-unsloth-ud-q8-k-xl', disposition: 'AVAILABLE',
+          allowExactResidentAdoption: true,
+          targets: ['r5300'],
+        },
+        {
+          id: 'deepseek-v4-flash-vision-uncensored', provider: 'deepseek-vision-uncensored-local-r5300',
+          model: 'deepseek-v4-flash-vision-uncensored-derived-q8-0', disposition: 'AVAILABLE',
+          allowExactResidentAdoption: true,
+          targets: ['r5300'],
         },
       ],
     })

@@ -84,7 +84,7 @@ interface RuntimeConfig {
 }
 
 interface DrainConfig {
-  readonly kind: 'sglang-load' | 'vllm-metrics'
+  readonly kind: 'sglang-load' | 'vllm-metrics' | 'llama-metrics'
   readonly path: string
   readonly pollIntervalMs: number
 }
@@ -562,7 +562,8 @@ function parseRuntime(value: unknown): RuntimeConfig {
   if (localPort === upstreamLocalPort) throw new ManagerError('INVALID_REQUEST')
   const drainInput = record(input.drain)
   strictKeys(drainInput, ['kind', 'path', 'pollIntervalMs'])
-  if (drainInput.kind !== 'sglang-load' && drainInput.kind !== 'vllm-metrics') {
+  if (drainInput.kind !== 'sglang-load' && drainInput.kind !== 'vllm-metrics'
+    && drainInput.kind !== 'llama-metrics') {
     throw new ManagerError('INVALID_REQUEST')
   }
   const drainPath = stringField(drainInput.path, SAFE_TOKEN)
@@ -2477,10 +2478,12 @@ export class PreviewManager {
       throw new ManagerError('REMOTE_FAILURE')
     }
     const checks = consent.devices.flatMap((device) => {
-      const expected = `${device.index}, ${device.uuid}, Reset`
+      const expected = `${device.index}, ${device.uuid}`
       return [
-        `row=$(nvidia-smi --query-gpu=index,uuid,gpu_recovery_action --format=csv,noheader,nounits -i ${device.index}) || exit 78`,
+        `row=$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader,nounits -i ${device.index}) || exit 78`,
         `[ "$row" = ${shellQuote(expected)} ] || exit 76`,
+        `recovery=$(nvidia-smi -q -i ${device.index} 2>/dev/null | awk -F: '/^[[:space:]]*GPU Recovery Action[[:space:]]*:/{ value=$2; sub(/^[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value); print value; exit }') || exit 78`,
+        '[ "$recovery" = Reset ] || exit 76',
         'apps=$(nvidia-smi --query-compute-apps=pid,gpu_uuid --format=csv,noheader,nounits) || exit 78',
         `if printf '%s\\n' "$apps" | awk -F',' -v uuid=${shellQuote(device.uuid)} '{ gsub(/^[ \\t]+|[ \\t]+$/, "", $1); gsub(/^[ \\t]+|[ \\t]+$/, "", $2); if ($2 == uuid && $1 ~ /^[0-9]+$/) found=1 } END { exit found ? 0 : 1 }'; then exit 76; fi`,
       ]
@@ -2522,16 +2525,20 @@ export class PreviewManager {
         `now=$(date +%s%3N); [ ${consent.expires_at} -gt "$now" ] && [ "$current_expires" -gt "$now" ] || exit 76`,
         `target_index=${device.index}`,
         `target_uuid=${shellQuote(device.uuid)}`,
-        'row=$(nvidia-smi --query-gpu=index,uuid,gpu_recovery_action --format=csv,noheader,nounits -i "$target_index")',
-        `[ "$row" = ${shellQuote(`${device.index}, ${device.uuid}, Reset`)} ] || exit 76`,
+        'row=$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader,nounits -i "$target_index")',
+        `[ "$row" = ${shellQuote(`${device.index}, ${device.uuid}`)} ] || exit 76`,
+        'recovery=$(nvidia-smi -q -i "$target_index" 2>/dev/null | awk -F: \'/^[[:space:]]*GPU Recovery Action[[:space:]]*:/{ value=$2; sub(/^[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value); print value; exit }\')',
+        '[ "$recovery" = Reset ] || exit 76',
         'apps=$(nvidia-smi --query-compute-apps=pid,gpu_uuid --format=csv,noheader,nounits) || exit 76',
         `if printf '%s\\n' "$apps" | awk -F',' -v uuid=${shellQuote(device.uuid)} '{ gsub(/^[ \\t]+|[ \\t]+$/, "", $1); gsub(/^[ \\t]+|[ \\t]+$/, "", $2); if ($2 == uuid && $1 ~ /^[0-9]+$/) found=1 } END { exit found ? 0 : 1 }'; then exit 76; fi`,
         `other_apps_before=$(printf '%s\\n' "$apps" | awk -F',' -v uuid=${shellQuote(device.uuid)} '{ gsub(/^[ \\t]+|[ \\t]+$/, "", $1); gsub(/^[ \\t]+|[ \\t]+$/, "", $2); if ($2 != uuid && $1 ~ /^[0-9]+$/) print $1 "," $2 }' | sort)`,
         `now=$(date +%s%3N); [ ${consent.expires_at} -gt "$now" ] && [ "$current_expires" -gt "$now" ] || exit 76`,
         `printf 'GCP_DEVICE_RECOVERY_STARTED ${device.index} ${device.uuid}\\n'`,
         `sudo -n nvidia-smi --gpu-reset -i ${device.index} >/dev/null 2>&1 || exit 77`,
-        'row=$(nvidia-smi --query-gpu=index,uuid,gpu_recovery_action --format=csv,noheader,nounits -i "$target_uuid")',
-        `[ "$row" = ${shellQuote(`${device.index}, ${device.uuid}, None`)} ] || exit 76`,
+        'row=$(nvidia-smi --query-gpu=index,uuid --format=csv,noheader,nounits -i "$target_uuid")',
+        `[ "$row" = ${shellQuote(`${device.index}, ${device.uuid}`)} ] || exit 76`,
+        'recovery=$(nvidia-smi -q -i "$target_uuid" 2>/dev/null | awk -F: \'/^[[:space:]]*GPU Recovery Action[[:space:]]*:/{ value=$2; sub(/^[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value); print value; exit }\')',
+        '[ "$recovery" = None ] || exit 76',
         'apps=$(nvidia-smi --query-compute-apps=pid,gpu_uuid --format=csv,noheader,nounits) || exit 76',
         `other_apps_after=$(printf '%s\\n' "$apps" | awk -F',' -v uuid=${shellQuote(device.uuid)} '{ gsub(/^[ \\t]+|[ \\t]+$/, "", $1); gsub(/^[ \\t]+|[ \\t]+$/, "", $2); if ($2 != uuid && $1 ~ /^[0-9]+$/) print $1 "," $2 }' | sort)`,
         '[ "$other_apps_after" = "$other_apps_before" ] || exit 76',
@@ -2565,7 +2572,12 @@ export class PreviewManager {
     const telemetry = await this.remote(
       route.target,
       "awk '/MemAvailable:/{print \"MEM \" $2}' /proc/meminfo; printf 'GPUS\\n'; "
-        + "nvidia-smi --query-gpu=index,uuid,gpu_recovery_action,memory.free --format=csv,noheader,nounits; printf 'APPS\\n'; "
+        + 'gpu_rows=$(nvidia-smi --query-gpu=index,uuid,memory.free --format=csv,noheader,nounits) || exit 78; '
+        + 'while IFS=\',\' read -r index uuid free; do '
+        + 'index=$(printf \'%s\' "$index" | xargs); uuid=$(printf \'%s\' "$uuid" | xargs); free=$(printf \'%s\' "$free" | xargs); '
+        + 'recovery=$(nvidia-smi -q -i "$index" 2>/dev/null | awk -F: \'/^[[:space:]]*GPU Recovery Action[[:space:]]*:/{ value=$2; sub(/^[[:space:]]+/, "", value); sub(/[[:space:]]+$/, "", value); print value; exit }\') || exit 78; '
+        + '[ -n "$recovery" ] || exit 78; printf \'%s, %s, %s, %s\\n\' "$index" "$uuid" "$recovery" "$free"; '
+        + 'done <<< "$gpu_rows"; printf \'APPS\\n\'; '
         + 'nvidia-smi --query-compute-apps=pid,gpu_uuid,used_gpu_memory --format=csv,noheader,nounits',
       budget.remaining(),
     )
@@ -2887,6 +2899,17 @@ export class PreviewManager {
     let running: number | undefined
     let waiting: number | undefined
     let swapped = 0
+    if (route.runtime.drain.kind === 'llama-metrics') {
+      for (const line of result.stdout.split(/\r?\n/u)) {
+        const match = /^llamacpp:requests_(processing|deferred)\s+([0-9]+(?:\.[0-9]+)?)\s*$/u.exec(line)
+        if (match === null) continue
+        const value = Number(match[2])
+        if (!Number.isSafeInteger(value) || value < 0) return undefined
+        if (match[1] === 'processing') running = value
+        else waiting = value
+      }
+      return running === undefined || waiting === undefined ? undefined : running + waiting
+    }
     for (const line of result.stdout.split(/\r?\n/u)) {
       const match = /^vllm:num_requests_(running|waiting|swapped)(?:\{[^}]*\})?\s+([0-9]+(?:\.[0-9]+)?)\s*$/u.exec(line)
       if (match === null) continue
