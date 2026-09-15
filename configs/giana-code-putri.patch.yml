@@ -78,6 +78,8 @@
             supportedReasoningEfforts:
               - high
             stageTimeoutsMs:
+              stop: 360000
+              verify-stopped: 210000
               start: 1200000
               health: 180000
               probe: 180000
@@ -97,6 +99,8 @@
               - medium
               - xhigh
             stageTimeoutsMs:
+              stop: 360000
+              verify-stopped: 210000
               start: 1200000
               health: 180000
               probe: 180000
@@ -114,6 +118,8 @@
             supportedReasoningEfforts:
               - high
             stageTimeoutsMs:
+              stop: 360000
+              verify-stopped: 210000
               start: 1200000
               health: 180000
               probe: 180000
@@ -131,6 +137,8 @@
             supportedReasoningEfforts:
               - high
             stageTimeoutsMs:
+              stop: 360000
+              verify-stopped: 210000
               start: 1200000
               health: 180000
               probe: 180000
@@ -148,6 +156,8 @@
             supportedReasoningEfforts:
               - high
             stageTimeoutsMs:
+              stop: 360000
+              verify-stopped: 210000
               start: 1200000
               health: 180000
               probe: 180000

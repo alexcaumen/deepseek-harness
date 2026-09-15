@@ -1388,6 +1388,7 @@ export class ModelLifecycleRuntime extends Service {
       : [preference]
 
     const rejected: string[] = []
+    let resourceTargetUnavailable = false
     for (const target of candidates) {
       if (!registration.route.targets.includes(target)) {
         rejected.push(`${target}: not declared by the route manifest`)
@@ -1403,6 +1404,7 @@ export class ModelLifecycleRuntime extends Service {
           error,
         )
         if (preference !== 'automatic' || failure.code !== 'RESOURCE_TARGET_UNAVAILABLE') throw failure
+        resourceTargetUnavailable = true
         rejected.push(`${target}: resource lease unavailable`)
         continue
       }
@@ -1427,6 +1429,12 @@ export class ModelLifecycleRuntime extends Service {
         )
       }
       if (this.active === undefined) await this.releaseResources('SETTLED')
+    }
+    if (resourceTargetUnavailable) {
+      throw new ModelLifecycleError(
+        'RESOURCE_TARGET_UNAVAILABLE',
+        `No admitted compute target can be leased for ${registration.route.id} (${rejected.join(', ')})`,
+      )
     }
     throw new ModelLifecycleError(
       preference === 'automatic' ? 'NO_CAPACITY' : 'MANUAL_TARGET_UNAVAILABLE',

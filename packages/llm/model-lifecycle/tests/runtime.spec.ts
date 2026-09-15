@@ -1485,6 +1485,26 @@ describe('governed local-model lifecycle', () => {
     await lease.release()
   })
 
+  it('does not report lease contention as exhausted compute capacity', async () => {
+    const ctx = await lifecycle({ idleUnloadMs: 0 })
+    const admitted = route('qwen', 'qwen', ['r5300', 'prdg'])
+    const base = fixtureResources()
+    const resources: ResourceLeaseProvider = {
+      ...base,
+      acquire: vi.fn(async () => {
+        throw new ResourceLeaseError('RESOURCE_TARGET_UNAVAILABLE')
+      }),
+    }
+    ctx.modelLifecycle.register(admitted, driver([]))
+    installAuthority(ctx, () => ({
+      kind: 'GOVERNED', route: admitted, scope: executionScope(),
+    }), resources)
+
+    await expect(ctx.modelLifecycle.acquireRoute({
+      selection: admitted.selection, preference: 'automatic',
+    })).rejects.toMatchObject({ code: 'RESOURCE_TARGET_UNAVAILABLE' })
+  })
+
   it('expands resource coverage before probing another host while preserving the active route', async () => {
     const ctx = await lifecycle({ idleUnloadMs: 0 })
     const qwen = route('qwen', 'qwen', ['r5300'])
@@ -1534,7 +1554,7 @@ describe('governed local-model lifecycle', () => {
     await first.release()
 
     await expect(ctx.modelLifecycle.acquireRoute({ selection: glm.selection, preference: 'automatic' }))
-      .rejects.toMatchObject({ code: 'NO_CAPACITY' })
+      .rejects.toMatchObject({ code: 'RESOURCE_TARGET_UNAVAILABLE' })
 
     expect(expand).toHaveBeenCalledTimes(1)
     expect(release).not.toHaveBeenCalled()

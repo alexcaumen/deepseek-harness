@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-09-16-local-model-stop-deadline.md
+2026-09-16-local-model-stop-deadline.md: 3f5b0d55c28459da56445a9f2f502a8f7dbaffb0
+2026-09-16-local-model-stop-deadline.zh.md: 052f3eaae1f5573096803a456f7c4e4411cf5a5d
