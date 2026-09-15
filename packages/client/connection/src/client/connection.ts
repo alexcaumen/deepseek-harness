@@ -1,27 +1,8 @@
 import type { HostDescription, IApiClient, HostFrame, MuxFrame, RpcRequest } from './api.ts'
+import { resolveConnectionConfig, type ConnectionRecoveryConfig } from '../recovery-config.ts'
 
-/** Reconnect/backoff tunables (deployment-varying — no hardcoded tunables; these become the
- *  future `ctx.connection` plugin's Config). All fields optional; defaults below. */
-export interface ConnectionConfig {
-  /** First-retry backoff cap in ms (jittered: actual delay is cap/2..cap). */
-  backoffBaseMs?: number
-  /** Exponential growth factor per consecutive failed attempt. */
-  backoffFactor?: number
-  /** Upper bound for the backoff cap in ms. */
-  backoffMaxMs?: number
-  /** Cap on waiting for both streams' onOpen before onConnected, in ms. The strict handshake
-   *  waits for mux+host stream establishment plus describe; a carrier that never
-   *  fires onOpen (misbehaving proxy) must not wedge the connection forever — on timeout the
-   *  generation proceeds as connected and the live-gap repair path covers stragglers. */
-  streamOpenTimeoutMs?: number
-}
-
-const CONNECTION_DEFAULTS: Required<ConnectionConfig> = {
-  backoffBaseMs: 500,
-  backoffFactor: 2,
-  backoffMaxMs: 10_000,
-  streamOpenTimeoutMs: 3_000,
-}
+/** Backward-compatible name for the connection loop's recovery options. */
+export type ConnectionConfig = ConnectionRecoveryConfig
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -64,14 +45,14 @@ export class ConnectionController {
   private current: AbortController | null = null
   private running = false
   private lastState: ConnectionState | null = null
-  private readonly config: Required<ConnectionConfig>
+  private readonly config: Required<ConnectionRecoveryConfig>
 
   constructor(
     private readonly api: IApiClient,
     private readonly sinks: ConnectionSinks = {},
-    config: ConnectionConfig = {},
+    config: ConnectionRecoveryConfig = {},
   ) {
-    this.config = { ...CONNECTION_DEFAULTS, ...config }
+    this.config = resolveConnectionConfig(config)
   }
 
   /** Idempotent: begin the connect/pump/reconnect loop. */
@@ -130,17 +111,13 @@ export class ConnectionController {
       })
 
       try {
-        // Strict readiness handshake: describe proves unary reachability, onOpen
-        // proves each physical stream is established before any frame —
-        // only then may onConnected fire, so the resync it triggers cannot outrun the
-        // subscribed baseline. The timeout guards against a carrier that never fires onOpen
-        // (see ConnectionConfig.streamOpenTimeoutMs).
-        const timeout = new AbortController()
-        const [description] = await Promise.all([
-          this.api.host.describe({}),
-          Promise.race([streamsOpen, sleep(this.config.streamOpenTimeoutMs, timeout.signal)]),
-        ])
-        timeout.abort()
+        // Unary and both physical streams must become ready before the hard
+        // deadline. A timeout cancels this generation and enters the same
+        // unbounded retry loop as every other transport failure.
+        const [description] = await waitForReady(Promise.all([
+          this.api.host.describe({}, ac.signal),
+          streamsOpen,
+        ]), this.config, ac.signal)
         const descriptionResult = description.result
         if (!descriptionResult.ok) {
           throw new Error(`host.describe failed: ${descriptionResult.error.code}: ${descriptionResult.error.message}`)
@@ -199,4 +176,42 @@ export class ConnectionController {
       console.error('[web-runtime] connection sink threw:', error)
     }
   }
+}
+
+/** Warn about a slow generation and reject it at the hard readiness deadline. */
+function waitForReady<T>(
+  ready: Promise<T>,
+  config: Required<ConnectionRecoveryConfig>,
+  signal: AbortSignal,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    let settled = false
+    const warning = setTimeout(() => {
+      console.warn(`[web-runtime] connection generation is still not ready after ${String(config.generationReadyWarnMs)}ms`)
+    }, config.generationReadyWarnMs)
+    const timeout = setTimeout(() => {
+      finish(new Error(
+        `connection generation was not ready within ${String(config.generationReadyTimeoutMs)}ms`,
+      ))
+    }, config.generationReadyTimeoutMs)
+    const aborted = (): void => {
+      finish(new Error('connection generation aborted', { cause: signal.reason }))
+    }
+    const finish = (error: Error | undefined, value?: T): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(warning)
+      clearTimeout(timeout)
+      signal.removeEventListener('abort', aborted)
+      if (error !== undefined) reject(error)
+      else resolve(value as T)
+    }
+    signal.addEventListener('abort', aborted, { once: true })
+    void ready.then(
+      (value) => { finish(undefined, value) },
+      (error: unknown) => {
+        finish(error instanceof Error ? error : new Error('connection readiness failed', { cause: error }))
+      },
+    )
+  })
 }

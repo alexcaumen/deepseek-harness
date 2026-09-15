@@ -15,10 +15,22 @@ import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { join, parse, resolve, toNamespacedPath } from 'node:path'
 
 type MoveFileExW = (existing: string, replacement: string, flags: number) => number
+type CreateFileW = (
+  path: string,
+  desiredAccess: number,
+  shareMode: number,
+  security: null,
+  creationDisposition: number,
+  flagsAndAttributes: number,
+  template: number,
+) => number
+type CloseHandle = (handle: number) => number
 type GetLastError = () => number
 
 interface Win32Bindings {
   moveFileExW: MoveFileExW
+  createFileW: CreateFileW
+  closeHandle: CloseHandle
   getLastError: GetLastError
 }
 
@@ -28,10 +40,16 @@ interface Win32ErrnoException extends NodeJS.ErrnoException {
 }
 
 const MOVEFILE_WRITE_THROUGH = 0x00000008
+const GENERIC_READ_WRITE = 0xc0000000
+const FILE_SHARE_READ = 0x00000001
+const OPEN_ALWAYS = 4
+const FILE_ATTRIBUTE_NORMAL = 0x00000080
+const INVALID_HANDLE_VALUE = -1
 const ERROR_FILE_NOT_FOUND = 2
 const ERROR_PATH_NOT_FOUND = 3
 const ERROR_ACCESS_DENIED = 5
 const ERROR_NOT_SAME_DEVICE = 17
+const ERROR_SHARING_VIOLATION = 32
 const ERROR_FILE_EXISTS = 80
 const ERROR_INVALID_NAME = 123
 const ERROR_ALREADY_EXISTS = 183
@@ -45,6 +63,10 @@ async function win32(): Promise<Win32Bindings> {
   const kernel32 = koffi.load('kernel32.dll')
   bindings = {
     moveFileExW: kernel32.func('__stdcall', 'MoveFileExW', 'int', ['str16', 'str16', 'uint']) as MoveFileExW,
+    createFileW: kernel32.func('__stdcall', 'CreateFileW', 'intptr', [
+      'str16', 'uint', 'uint', 'void*', 'uint', 'uint', 'intptr',
+    ]) as CreateFileW,
+    closeHandle: kernel32.func('__stdcall', 'CloseHandle', 'int', ['intptr']) as CloseHandle,
     getLastError: kernel32.func('__stdcall', 'GetLastError', 'uint', []) as GetLastError,
   }
   return bindings
@@ -59,6 +81,8 @@ function errnoCode(win32Code: number): string {
       return 'EACCES'
     case ERROR_NOT_SAME_DEVICE:
       return 'EXDEV'
+    case ERROR_SHARING_VIOLATION:
+      return 'EBUSY'
     case ERROR_FILE_EXISTS:
     case ERROR_ALREADY_EXISTS:
       return 'EEXIST'
@@ -117,6 +141,43 @@ export async function publishNewFileWin32(existing: string, replacement: string)
   const api = await win32()
   const ok = api.moveFileExW(toNamespacedPath(existing), toNamespacedPath(replacement), MOVEFILE_WRITE_THROUGH)
   if (ok === 0) throw win32Error('MoveFileExW', api.getLastError(), existing, replacement)
+}
+
+/**
+ * Open the physical lock file with write sharing disabled. Windows resolves
+ * junctions, mapped-drive aliases, extended paths, and logon sessions to the
+ * same file object before enforcing share access, so one artifact cannot split
+ * into independent named locks. Process death closes the handle automatically.
+ * @param path - deterministic lock file beside the session log.
+ * @returns the exclusive file handle.
+ */
+export async function acquireLockHandleWin32(path: string): Promise<number> {
+  const api = await win32()
+  const handle = api.createFileW(
+    toNamespacedPath(path),
+    GENERIC_READ_WRITE,
+    FILE_SHARE_READ,
+    null,
+    OPEN_ALWAYS,
+    FILE_ATTRIBUTE_NORMAL,
+    0,
+  )
+  if (handle === INVALID_HANDLE_VALUE) {
+    throw win32Error('CreateFileW', api.getLastError(), path, path)
+  }
+  return handle
+}
+
+/**
+ * Close the exclusive file handle acquired by {@link acquireLockHandleWin32}.
+ * @param handle - acquired semaphore handle.
+ */
+export function releaseLockHandleWin32(handle: number): void {
+  const api = bindings
+  if (api === undefined) throw new Error('Win32 lock bindings were not initialized before release')
+  if (api.closeHandle(handle) === 0) {
+    throw win32Error('CloseHandle', api.getLastError(), `handle:${handle}`, `handle:${handle}`)
+  }
 }
 
 /**

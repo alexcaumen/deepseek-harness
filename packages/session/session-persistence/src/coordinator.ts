@@ -44,6 +44,15 @@ export class SessionPersistenceCorruptionError extends Error {
   }
 }
 
+/** Another process currently owns this session's durable write path. */
+export class SessionAlreadyOwnedError extends Error {
+  /** @param sessionId - the session whose write ownership is taken. */
+  constructor(readonly sessionId: SessionId) {
+    super(`session "${sessionId}" is already owned by an active writer`)
+    this.name = 'SessionAlreadyOwnedError'
+  }
+}
+
 /**
  * The stored log is intact but this runtime cannot faithfully interpret it:
  * the header carries an unsupported format version, or an event's type is
@@ -114,6 +123,12 @@ export interface StoredSuffix {
   events: SessionEvent[]
 }
 
+/** One backend-specific cross-process write lease held by the coordinator. */
+export interface PersistenceWriteLease {
+  /** Release write ownership. Idempotent. */
+  release(): Promise<void>
+}
+
 /**
  * The storage contract between {@link PersistenceCoordinator} and a concrete
  * backend: the minimal set of durable primitives the orchestration calls. A
@@ -150,6 +165,16 @@ export interface PersistenceBackend<TornMarker = unknown> {
    * @param signal - optional cancellation for backend read work.
    */
   readStoredRevision(id: SessionId, signal?: AbortSignal): Promise<SessionPersistenceRevision | undefined>
+
+  /**
+   * Optionally acquire exclusive cross-process write ownership for one session.
+   * The coordinator validates the stored revision after acquisition, retains
+   * the lease across appends, and releases it after live retirement or backend
+   * teardown. Readers do not acquire this lease.
+   * @param meta - immutable metadata identifying the backend-owned artifact.
+   * @returns the held write lease.
+   */
+  acquireWriteLease?(meta: SessionHeader): Promise<PersistenceWriteLease>
 
   /**
    * Optional seek-capable suffix read behind the service's `readFrom`: return
@@ -225,6 +250,10 @@ interface SessionState {
    * distinguish an unused id from a persisted collision.
    */
   materialized: boolean
+  /** Durable revision observed before this process acquired write ownership. */
+  revision?: SessionPersistenceRevision
+  /** Cross-process write ownership, when the backend requires it. */
+  writeLease?: PersistenceWriteLease
   /**
    * The live Session this state was bound to via `onCreated`, if any. State
    * created through the public `create()`/`load()` API has no owner; state bound
@@ -701,6 +730,7 @@ export class PersistenceCoordinator<TornMarker = unknown> {
       }
     }
 
+    await this.ensureWriteLease(state)
     await this.backend.appendBatch(state.meta, events, state.materialized)
     // The durable write is the transaction: mark materialized + advance the
     // cursor as soon as it commits (uniform across backends).
@@ -728,19 +758,25 @@ export class PersistenceCoordinator<TornMarker = unknown> {
         () => this.serialize(id, () => this.prepareCore(id)),
         source => this.serialize(id, () => this.commitPrepared(source), signal),
         signal,
+        state => this.serialize(id, () => this.releasePreparedState(id, state)),
       )
       if (reservation === undefined) continue
       if (this.ctx.sessions.get(id) !== undefined) {
         this.preparations.release(reservation, false)
+        if (reservation.state.owner === undefined) await this.releaseState(id, reservation.state)
         throw new Error(`cannot prepare session "${id}" while it is live`)
       }
       return SessionPreparation.create(reservation.source.session, {
         release: () => {
+          const reusable = reservation.state.owner === undefined
+            && reservation.source.session.events.length === reservation.source.sessionLength
           this.preparations.release(
             reservation,
-            reservation.state.owner === undefined
-              && reservation.source.session.events.length === reservation.source.sessionLength,
+            reusable,
           )
+          if (reservation.state.owner === undefined) {
+            this.queueStateRelease(id, reservation.state)
+          }
         },
       })
     }
@@ -762,14 +798,18 @@ export class PersistenceCoordinator<TornMarker = unknown> {
         id,
         () => this.serialize(id, () => this.prepareCore(id)),
         source => this.serialize(id, () => this.commitPrepared(source)),
+        undefined,
+        state => this.serialize(id, () => this.releasePreparedState(id, state)),
       )
       if (reservation === undefined) continue
       const attached = this.ctx.sessions.get(id)
       if (attached !== undefined) {
         this.preparations.discard(reservation)
+        if (reservation.state.owner === undefined) await this.releaseState(id, reservation.state)
         return this.loadLiveSnapshot(attached)
       }
       this.preparations.discard(reservation)
+      if (reservation.state.owner === undefined) await this.releaseState(id, reservation.state)
       return reservation.source.inspection
     }
   }
@@ -941,13 +981,12 @@ export class PersistenceCoordinator<TornMarker = unknown> {
       throw new Error(`session "${id}" already has a live persistence owner`)
     }
     if (!await this.isPreparedSourceCurrent(source)) return undefined
-    if (source.tornMarker !== undefined || source.closers.length > 0) {
-      await this.backend.commitRepair(source.inspection.meta, source.tornMarker, source.closers)
-      // The repair changed the durable revision. Reload the exact committed
-      // graph instead of associating the old in-memory view with a newer revision.
-      return undefined
+    let lease = existing?.writeLease
+    if (this.backend.acquireWriteLease !== undefined && lease === undefined) {
+      lease = await this.acquireValidatedWriteLease(source.inspection.meta, source.revision)
+      if (lease === undefined) return undefined
     }
-    const state = existing ?? {
+    const state: SessionState = existing ?? {
       meta: source.inspection.meta,
       cursor,
       materialized: true,
@@ -955,7 +994,28 @@ export class PersistenceCoordinator<TornMarker = unknown> {
     state.meta = source.inspection.meta
     state.cursor = cursor
     state.materialized = true
+    state.revision = source.revision
+    if (lease !== undefined) state.writeLease = lease
     this.states.set(id, state)
+    if (source.tornMarker !== undefined || source.closers.length > 0) {
+      try {
+        await this.backend.commitRepair(source.inspection.meta, source.tornMarker, source.closers)
+      } catch (error: unknown) {
+        try {
+          await this.releaseState(id, state)
+        } catch (releaseError: unknown) {
+          throw new AggregateError(
+            [error, releaseError],
+            `session "${id}" repair failed and write ownership release also failed`,
+          )
+        }
+        throw error
+      }
+      await this.releaseState(id, state)
+      // The repair changed the durable revision. Reload the exact committed
+      // graph instead of associating the old in-memory view with a newer revision.
+      return undefined
+    }
     return {
       source,
       state,
@@ -968,6 +1028,54 @@ export class PersistenceCoordinator<TornMarker = unknown> {
     signal?: AbortSignal,
   ): Promise<boolean> {
     return await this.backend.readStoredRevision(source.inspection.meta.id, signal) === source.revision
+  }
+
+  /** Acquire a backend lease and verify the source revision while it is held. */
+  private async acquireValidatedWriteLease(
+    meta: SessionHeader,
+    expectedRevision: SessionPersistenceRevision | undefined,
+  ): Promise<PersistenceWriteLease | undefined> {
+    if (this.backend.acquireWriteLease === undefined) return undefined
+    const lease = await this.backend.acquireWriteLease(meta)
+    try {
+      const currentRevision = await this.backend.readStoredRevision(meta.id)
+      if (currentRevision === expectedRevision) return lease
+    } catch (error: unknown) {
+      await lease.release()
+      throw error
+    }
+    await lease.release()
+    return undefined
+  }
+
+  /** Establish and retain write ownership before the first mutation. */
+  private async ensureWriteLease(state: SessionState): Promise<void> {
+    if (state.writeLease !== undefined || this.backend.acquireWriteLease === undefined) return
+    const lease = await this.acquireValidatedWriteLease(state.meta, state.revision)
+    if (lease === undefined) {
+      throw new Error(`session "${state.meta.id}" changed before write ownership was acquired; reload before appending`)
+    }
+    state.writeLease = lease
+  }
+
+  /** Invalidate one state's authority before releasing its backend lease. */
+  private async releaseState(id: SessionId, state: SessionState): Promise<void> {
+    const lease = state.writeLease
+    delete state.writeLease
+    if (this.states.get(id) === state) this.states.delete(id)
+    await lease?.release()
+  }
+
+  /** Release commit state abandoned before its prepared Session was published. */
+  private async releasePreparedState(id: SessionId, state: SessionState): Promise<void> {
+    if (state.owner === undefined) await this.releaseState(id, state)
+  }
+
+  /** Start a serialized release from synchronous preparation disposal. */
+  private queueStateRelease(id: SessionId, state: SessionState): void {
+    void this.serialize(id, () => this.releaseState(id, state)).catch((error: unknown) => {
+      this.ctx.logger.warn(`${this.backend.name}: write ownership release for session "${id}" failed: ${String(error)}`)
+    })
   }
 
   /** Return one durable immutable view of an already-live Session. */
@@ -1094,6 +1202,9 @@ export class PersistenceCoordinator<TornMarker = unknown> {
       try {
         const errors = await settledErrors([...this.live.keys()].map(session => this.flush(session)))
         while (this.chains.size > 0) await Promise.allSettled([...this.chains.values()])
+        errors.push(...await settledErrors(
+          [...this.states].map(([id, state]) => this.releaseState(id, state)),
+        ))
         if (errors.length > 0) {
           throw new AggregateError(errors, `${this.backend.name} dispose failed`)
         }
@@ -1152,12 +1263,30 @@ export class PersistenceCoordinator<TornMarker = unknown> {
 
   /** Drain and release state owned by one exact disposed Session lifecycle. */
   private async retireCore(session: Session): Promise<void> {
-    await this.flush(session)
+    const failures: unknown[] = []
+    try {
+      await this.flush(session)
+    } catch (error: unknown) {
+      failures.push(error)
+    }
     const id = session.header.id
-    await this.serialize(id, () => {
-      this.live.delete(session)
-      if (this.states.get(id)?.owner === session) this.states.delete(id)
-    })
+    try {
+      await this.serialize(id, async () => {
+        const state = this.states.get(id)
+        try {
+          if (state?.owner === session) await this.releaseState(id, state)
+        } finally {
+          // A failed flush keeps its retained batch for the backend teardown
+          // retry, but no longer keeps cross-process write ownership.
+          if (failures.length === 0) this.live.delete(session)
+        }
+      })
+    } catch (error: unknown) {
+      failures.push(error)
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `${this.backend.name} session "${id}" retirement failed`)
+    }
   }
 
   /** Return the one lifecycle controller for a live session, creating it if needed. */
@@ -1200,10 +1329,11 @@ export class PersistenceCoordinator<TornMarker = unknown> {
       init: Promise.resolve(),
       writes: this.createWriteBehind(session, () => live.init),
     }
-    if (suffix.length > 0) {
-      live.init = this.serialize(session.id, () => this.appendCore(session.id, suffix))
-      live.init.catch(() => { /* observed by flush/dispose through the controller */ })
-    }
+    live.init = this.serialize(session.id, async () => {
+      await this.ensureWriteLease(state)
+      if (suffix.length > 0) await this.appendCore(session.id, suffix)
+    })
+    live.init.catch(() => { /* observed by flush/dispose through the controller */ })
     return live
   }
 
@@ -1255,6 +1385,7 @@ export class PersistenceCoordinator<TornMarker = unknown> {
         if (!await this.seedMatchesPersisted(id, seed, tracked.cursor)) {
           throw new Error(`session "${id}" is already persisted with ${tracked.cursor} event(s) that do not match this live session (id collision)`)
         }
+        if (tracked.materialized) await this.ensureWriteLease(tracked)
         tracked.owner = session
         // Persist the seed SUFFIX beyond the persisted prefix. Constructor seed
         // events never emit session/event, so the buffer never sees them.
@@ -1263,8 +1394,9 @@ export class PersistenceCoordinator<TornMarker = unknown> {
         return
       }
       const owner = this.live.get(tracked.owner)
-      if (!tracked.materialized && !owner?.writes.hasWork) {
-        this.states.delete(id)
+      const published = this.ctx.sessions.get(id)
+      if (published === session && !tracked.materialized && !owner?.writes.hasWork) {
+        await this.releaseState(id, tracked)
       } else {
         throw new Error(`session "${id}" is already bound to a different live session in this backend (id collision)`)
       }
@@ -1300,7 +1432,7 @@ export class PersistenceCoordinator<TornMarker = unknown> {
    * live suffix that was ahead of the stored prefix.
    */
   private async adoptLivePrefix(session: Session, seed: readonly SessionEvent[], stored: StoredPrefix<TornMarker>): Promise<void> {
-    const { meta, events, tornMarker } = stored
+    const { meta, events, revision, tornMarker } = stored
     this.assertStoredId(session.header.id, meta)
     if (meta.cwd !== session.header.cwd) {
       throw new Error(`session "${session.header.id}" is already persisted at a different cwd (persisted: ${String(meta.cwd)}, live: ${String(session.header.cwd)}) (id collision)`)
@@ -1311,14 +1443,22 @@ export class PersistenceCoordinator<TornMarker = unknown> {
     if (!seedCoversPrefix(seed, storedEvents)) {
       throw new Error(`session "${session.header.id}" already has a persisted log on disk that does not match this live session (id collision)`)
     }
-    // Truncate-only repair (no closers): the open turn is NOT closed here.
-    if (tornMarker !== undefined) await this.backend.commitRepair(meta, tornMarker, [])
-    this.states.set(session.header.id, {
+    const state: SessionState = {
       meta: { ...meta },
       cursor: storedEvents.length,
       materialized: true,
+      revision,
       owner: session,
-    })
+    }
+    await this.ensureWriteLease(state)
+    try {
+      // Truncate-only repair (no closers): the open turn is NOT closed here.
+      if (tornMarker !== undefined) await this.backend.commitRepair(meta, tornMarker, [])
+    } catch (error: unknown) {
+      await state.writeLease?.release()
+      throw error
+    }
+    this.states.set(session.header.id, state)
     const suffix = seed.slice(storedEvents.length)
     if (suffix.length > 0) await this.appendCore(session.header.id, suffix)
   }
@@ -1343,7 +1483,7 @@ export class PersistenceCoordinator<TornMarker = unknown> {
       maxDelayMs: this.writeBatchMaxDelayMs,
       write: async (batch) => {
         await ready()
-        await this.serialize(session.header.id, () => this.appendLiveBatch(session.header.id, batch))
+        await this.serialize(session.header.id, () => this.appendLiveBatch(session, batch))
       },
       reportBackgroundFailure: (error) => {
         this.ctx.logger.warn(`${this.backend.name}: background write for session "${session.id}" failed (buffered events retained): ${String(error)}`)
@@ -1352,10 +1492,20 @@ export class PersistenceCoordinator<TornMarker = unknown> {
   }
 
   /** Append one controller-owned prefix after filtering events initialization already stored. */
-  private async appendLiveBatch(id: SessionId, batch: readonly SessionEvent[]): Promise<void> {
+  private async appendLiveBatch(session: Session, batch: readonly SessionEvent[]): Promise<void> {
+    const id = session.header.id
+    if (this.states.get(id)?.owner !== session) {
+      // Retirement always relinquishes durable ownership, even when its final
+      // flush fails. A later teardown retry rebuilds the exact state from this
+      // session's immutable history; normal collision checks prevent it from
+      // crossing into a successor that acquired the same id in the meantime.
+      await this.onCreated(session, session.events)
+    }
     const state = this.states.get(id)
-    /* v8 ignore next -- state is always set by the awaited initialization */
-    const cursor = state?.cursor ?? 0
+    if (state?.owner !== session) {
+      throw new Error(`session "${id}" write retry is not owned by its exact live session`)
+    }
+    const cursor = state.cursor
     const fresh = batch.filter(e => e.seq >= cursor)
     await this.appendCore(id, fresh)
   }

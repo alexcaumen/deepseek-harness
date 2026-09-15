@@ -5,7 +5,8 @@ import type { SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
 import {
   DEFAULT_PREPARED_SESSION_CACHE_SIZE, DEFAULT_WRITE_BATCH_MAX_DELAY_MS, MAX_WRITE_BATCH_DELAY_MS,
   SessionPersistence, SessionPersistenceRevision, PersistenceCoordinator,
-  type PersistenceBackend, type SessionPersistenceSnapshot, type StoredPrefix, type StoredSuffix,
+  type PersistenceBackend, type PersistenceWriteLease, type SessionPersistenceSnapshot,
+  type StoredPrefix, type StoredSuffix,
 } from '../src/index.ts'
 import { runPersistenceContract, meta, oneTurnLog } from './contract.ts'
 import { runCoordinatorContract, type CoordinatorFixture } from './coordinator-contract.ts'
@@ -59,6 +60,7 @@ interface CoordinatorInternals {
   }>
   chains: Map<unknown, unknown>
   retirements: Map<unknown, Promise<void>>
+  appendLiveBatch(session: Session, batch: readonly SessionEvent[]): Promise<void>
 }
 
 /**
@@ -183,9 +185,11 @@ class ControlledBackend implements PersistenceBackend<never> {
   lastAppendedBatch: readonly SessionEvent[] | undefined
   appendAttempts = 0
   loadAttempts = 0
+  revisionReadAttempts = 0
   repairAttempts = 0
   beforeAppend?: (attempt: number) => Promise<void>
   beforeLoadStored?: (attempt: number, signal?: AbortSignal) => Promise<void>
+  beforeReadStoredRevision?: (attempt: number, signal?: AbortSignal) => Promise<void>
   /** When set, the declared seek hook delegates here so readFrom exercises it; unset throws (tests set it first). */
   seekHook?: (id: SessionId, fromSeq: number, signal?: AbortSignal) => Promise<StoredSuffix | undefined>
 
@@ -207,6 +211,8 @@ class ControlledBackend implements PersistenceBackend<never> {
   }
 
   async readStoredRevision(id: SessionId, signal?: AbortSignal): Promise<SessionPersistenceRevision | undefined> {
+    const attempt = ++this.revisionReadAttempts
+    await this.beforeReadStoredRevision?.(attempt, signal)
     signal?.throwIfAborted()
     const entry = this.store.get(id)
     return entry === undefined ? undefined : memoryRevision(entry)
@@ -236,6 +242,33 @@ class ControlledBackend implements PersistenceBackend<never> {
 
   async close(): Promise<void> {
     this.lifecycle.push('close')
+  }
+}
+
+/** Controllable kernel-lease analogue for ownership lifecycle tests. */
+class LeasedControlledBackend extends ControlledBackend {
+  leaseAcquireAttempts = 0
+  leaseReleaseAttempts = 0
+  leaseHeld = false
+  failNextRelease = false
+
+  async acquireWriteLease(_meta: SessionHeader): Promise<PersistenceWriteLease> {
+    this.leaseAcquireAttempts += 1
+    if (this.leaseHeld) throw new Error('test write lease already held')
+    this.leaseHeld = true
+    let released = false
+    return {
+      release: async () => {
+        if (released) return
+        released = true
+        this.leaseReleaseAttempts += 1
+        this.leaseHeld = false
+        if (this.failNextRelease) {
+          this.failNextRelease = false
+          throw new Error('test release failed after relinquishing ownership')
+        }
+      },
+    }
   }
 }
 
@@ -1404,9 +1437,193 @@ describe('PersistenceCoordinator observation cancellation', () => {
       await ctx.fiber.dispose()
     }
   })
+
+  it('holds write ownership before returning a clean preparation and releases it on cancellation', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const backend = new LeasedControlledBackend()
+    const id = SessionId('clean-preparation-lease')
+    backend.store.set(id, { meta: meta(id), events: oneTurnLog() })
+    let coordinator!: PersistenceCoordinator<never>
+    const fiber = await ctx.plugin(Object.assign((inner: Context) => {
+      coordinator = new PersistenceCoordinator(inner, backend)
+    }, { inject: ['sessions'] }))
+    const internals = coordinator as unknown as CoordinatorInternals
+
+    try {
+      const first = await coordinator.prepare(id)
+      expect(backend.leaseAcquireAttempts).toBe(1)
+      expect(backend.leaseHeld).toBe(true)
+      expect(ctx.sessions.get(id)).toBeUndefined()
+
+      first[Symbol.dispose]()
+      await vi.waitFor(() => {
+        expect(backend.leaseReleaseAttempts).toBe(1)
+        expect(backend.leaseHeld).toBe(false)
+        expect(internals.states.has(id)).toBe(false)
+      })
+
+      const second = await coordinator.prepare(id)
+      expect(backend.leaseAcquireAttempts).toBe(2)
+      expect(backend.leaseHeld).toBe(true)
+      second[Symbol.dispose]()
+      await vi.waitFor(() => { expect(backend.leaseHeld).toBe(false) })
+    } finally {
+      await fiber.dispose()
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('invalidates coordinator authority even when lease release reports an error', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const backend = new LeasedControlledBackend()
+    const id = SessionId('preparation-release-error')
+    backend.store.set(id, { meta: meta(id), events: oneTurnLog() })
+    let coordinator!: PersistenceCoordinator<never>
+    const fiber = await ctx.plugin(Object.assign((inner: Context) => {
+      coordinator = new PersistenceCoordinator(inner, backend)
+    }, { inject: ['sessions'] }))
+    const internals = coordinator as unknown as CoordinatorInternals
+
+    try {
+      const first = await coordinator.prepare(id)
+      backend.failNextRelease = true
+      first[Symbol.dispose]()
+      await vi.waitFor(() => {
+        expect(backend.leaseReleaseAttempts).toBe(1)
+        expect(backend.leaseHeld).toBe(false)
+        expect(internals.states.has(id)).toBe(false)
+      })
+
+      const second = await coordinator.prepare(id)
+      expect(backend.leaseAcquireAttempts).toBe(2)
+      expect(backend.leaseHeld).toBe(true)
+      second[Symbol.dispose]()
+      await vi.waitFor(() => { expect(backend.leaseHeld).toBe(false) })
+    } finally {
+      await fiber.dispose()
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('releases a clean commit when cancellation arrives during post-lease revision validation', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const backend = new LeasedControlledBackend()
+    const id = SessionId('mid-commit-cancellation')
+    backend.store.set(id, { meta: meta(id), events: oneTurnLog() })
+    const revisionGate = Promise.withResolvers<boolean>()
+    backend.beforeReadStoredRevision = async (attempt) => {
+      if (attempt === 2) await revisionGate.promise
+    }
+    let coordinator!: PersistenceCoordinator<never>
+    const fiber = await ctx.plugin(Object.assign((inner: Context) => {
+      coordinator = new PersistenceCoordinator(inner, backend)
+    }, { inject: ['sessions'] }))
+    const internals = coordinator as unknown as CoordinatorInternals
+    const controller = new AbortController()
+    const reason = new Error('cancel after lease acquisition')
+
+    try {
+      const pending = coordinator.prepare(id, controller.signal)
+      await vi.waitFor(() => { expect(backend.leaseHeld).toBe(true) })
+      controller.abort(reason)
+      revisionGate.resolve(true)
+      await expect(pending).rejects.toBe(reason)
+      expect(backend.leaseReleaseAttempts).toBe(1)
+      expect(backend.leaseHeld).toBe(false)
+      expect(internals.states.has(id)).toBe(false)
+
+      const retry = await coordinator.prepare(id)
+      expect(backend.leaseAcquireAttempts).toBe(2)
+      retry[Symbol.dispose]()
+      await vi.waitFor(() => { expect(backend.leaseHeld).toBe(false) })
+    } finally {
+      revisionGate.resolve(true)
+      await fiber.dispose()
+      await ctx.fiber.dispose()
+    }
+  })
 })
 
 describe('PersistenceCoordinator retirement', () => {
+  it('refuses a retired retry while an empty successor is still published', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const backend = new ControlledBackend()
+    let coordinator!: PersistenceCoordinator<never>
+    const backendFiber = await ctx.plugin(Object.assign((inner: Context) => {
+      coordinator = new PersistenceCoordinator(inner, backend)
+    }, { inject: ['sessions'] }))
+    const internals = coordinator as unknown as CoordinatorInternals
+    const id = SessionId('retired-retry-empty-successor')
+    let successor!: Session
+    const successorFiber = await ctx.plugin(Object.assign((inner: Context) => {
+      successor = inner.sessions.create(id)
+    }, { inject: ['sessions'] }))
+    const retired = Session.create(id, [
+      { type: 'turn/start', seq: 0, time: 1, data: { turn: 1 } },
+      { type: 'turn/end', seq: 1, time: 2, data: { turn: 1, reason: { kind: 'completed' } } },
+    ], meta(id))
+
+    try {
+      await ctx.sessions.flush(successor)
+      expect(internals.states.get(id)).toMatchObject({
+        materialized: false,
+        owner: successor,
+      })
+
+      await expect(internals.appendLiveBatch(retired, retired.events))
+        .rejects.toThrow(/different live session/)
+      expect(backend.store.has(id)).toBe(false)
+
+      successor.append('turn/start', { turn: 1 })
+      successor.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+      await expect(ctx.sessions.flush(successor)).resolves.toBe(true)
+      expect(backend.store.get(id)?.events.map(event => event.seq)).toEqual([0, 1])
+    } finally {
+      await successorFiber.dispose()
+      await backendFiber.dispose()
+      await ctx.fiber.dispose()
+    }
+  })
+
+  it('refuses a retired retry when a successor owns the same session id', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    const backend = new ControlledBackend()
+    const id = SessionId('retired-retry-successor')
+    const stored = oneTurnLog()
+    backend.store.set(id, { meta: meta(id), events: structuredClone(stored) })
+    let coordinator!: PersistenceCoordinator<never>
+    const fiber = await ctx.plugin(Object.assign((inner: Context) => {
+      coordinator = new PersistenceCoordinator(inner, backend)
+    }, { inject: ['sessions'] }))
+    const internals = coordinator as unknown as CoordinatorInternals
+    const successor = Session.create(id, stored, meta(id))
+    const retired = Session.create(id, [
+      ...stored,
+      { type: 'turn/start', seq: stored.length, time: 3, data: { turn: 2 } },
+      { type: 'turn/end', seq: stored.length + 1, time: 4, data: { turn: 2, reason: { kind: 'completed' } } },
+    ], meta(id))
+    internals.states.set(id, {
+      meta: meta(id),
+      cursor: stored.length,
+      materialized: true,
+      owner: successor,
+    })
+
+    try {
+      await expect(internals.appendLiveBatch(retired, retired.events.slice(stored.length)))
+        .rejects.toThrow(/different live session/)
+      expect(backend.store.get(id)?.events).toEqual(stored)
+    } finally {
+      await fiber.dispose()
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('a retiring unmaterialized owner without buffered events releases its id', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)
@@ -1648,7 +1865,7 @@ describe('PersistenceCoordinator retirement', () => {
   it('backend teardown retries a failed session retirement before close', async () => {
     const ctx = new Context()
     await ctx.plugin(SessionStore)
-    const backend = new ControlledBackend()
+    const backend = new LeasedControlledBackend()
     let coordinator!: PersistenceCoordinator<never>
     const backendFiber = await ctx.plugin(Object.assign((inner: Context) => {
       coordinator = new PersistenceCoordinator(inner, backend)
@@ -1678,6 +1895,9 @@ describe('PersistenceCoordinator retirement', () => {
           expect.objectContaining({ seq: 0 }),
           expect.objectContaining({ seq: 1 }),
         ]))
+        expect(backend.leaseReleaseAttempts).toBeGreaterThanOrEqual(1)
+        expect(backend.leaseHeld).toBe(false)
+        expect(internals.states.has(SessionId('retry-retirement'))).toBe(false)
       })
 
       retryEnabled = true

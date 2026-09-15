@@ -102,6 +102,11 @@ export interface ConnectionHandle {
   start(sinks: ConnectionSinks, config?: ConnectionConfig): { stop(): void }
 }
 
+interface ConnectionOwner {
+  readonly token: object
+  readonly controller: ConnectionController
+}
+
 /**
  * Client plugin body: pick the api by page mode and provide ctx.connection.
  * @param ctx - client cordis context.
@@ -113,7 +118,7 @@ export function apply(ctx: Context): void {
   const transport = (globalThis as ClientTransportGlobal).__DSH_TRANSPORT__
   const api: IApiClient = fixtureClient ?? transport?.createApiClient() ?? new WebApiClient()
   const rpc = fixtureClient?.rpc ?? createWebConnectionRpc(transport?.fetch)
-  let started = false
+  let owner: ConnectionOwner | undefined
   let description: HostDescription | undefined
   const descriptionListeners = new Set<() => void>()
   const publishDescription = (next: HostDescription | undefined): void => {
@@ -127,6 +132,12 @@ export function apply(ctx: Context): void {
       }
     }
   }
+  const releaseOwner = (current: ConnectionOwner): void => {
+    if (owner !== current) return
+    owner = undefined
+    current.controller.stop()
+    publishDescription(undefined)
+  }
   const handle: ConnectionHandle = {
     api,
     isLoopback: pageLocation === undefined || isLoopbackHostname(pageLocation.hostname),
@@ -139,30 +150,41 @@ export function apply(ctx: Context): void {
     },
     rpc,
     start(sinks, config) {
-      if (started) throw new Error('connection: the stream loop is already owned by another consumer')
-      started = true
+      if (owner !== undefined) throw new Error('connection: the stream loop is already owned by another consumer')
+      const token = {}
+      const ownsConnection = (): boolean => owner?.token === token
       const controller = new ConnectionController(api, {
         ...sinks,
+        onMuxEnvelope: (envelope) => {
+          if (!ownsConnection()) return
+          sinks.onMuxEnvelope?.(envelope)
+        },
+        onHostEnvelope: (envelope) => {
+          if (!ownsConnection()) return
+          sinks.onHostEnvelope?.(envelope)
+        },
         onConnected: (next) => {
+          if (!ownsConnection()) return
           publishDescription(next)
           // A description subscriber may synchronously stop the loop. In that
           // case publishDescription(undefined) has already retracted this
           // generation, so do not leak its stale connected notification to
           // the consumer sink afterward.
-          if (!Object.is(description, next)) return
+          if (!ownsConnection() || !Object.is(description, next)) return
           sinks.onConnected?.(next)
         },
         onStateChange: (state) => {
+          if (!ownsConnection()) return
           if (state === 'reconnecting') publishDescription(undefined)
+          if (!ownsConnection()) return
           sinks.onStateChange?.(state)
         },
       }, config ?? {})
+      const current = { token, controller }
+      owner = current
       controller.start()
       return {
-        stop: () => {
-          controller.stop()
-          publishDescription(undefined)
-        },
+        stop: () => { releaseOwner(current) },
       }
     },
   }

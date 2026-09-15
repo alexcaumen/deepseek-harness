@@ -70,7 +70,7 @@ export class FakeApiClient implements IApiClient {
     () => Promise.resolve(ok({ attachment: { attachmentId: 'a' as never, mediaType: 'image/png', bytes: 1, width: 1, height: 1 }, data: 'AA==' }))
   onUpdateQueue: (payload: unknown) => Promise<RpcResponse<{ accepted: true }>> = () => Promise.resolve(ok({ accepted: true as const }))
   onCancel: (payload: unknown) => Promise<RpcResponse<{ accepted: true }>> = () => Promise.resolve(ok({ accepted: true as const }))
-  onDescribe: (payload: unknown) => Promise<RpcResponse<{
+  onDescribe: (payload: unknown, signal?: AbortSignal) => Promise<RpcResponse<{
     version: string
     cwd: string
     attachedSessions: number
@@ -99,6 +99,7 @@ export class FakeApiClient implements IApiClient {
 
   private readonly muxConns: StreamConn<MuxFrame>[] = []
   private readonly hostConns: StreamConn<HostFrame>[] = []
+  readonly describeSignals: AbortSignal[] = []
   lastSearchSignal: AbortSignal | undefined
 
   // Parameter annotations below are local structural types on purpose: the CI
@@ -142,7 +143,10 @@ export class FakeApiClient implements IApiClient {
   }
 
   readonly host: IApiClient['host'] = {
-    describe: payload => this.record('host.describe', payload, this.onDescribe(payload)),
+    describe: (payload, signal) => {
+      if (signal !== undefined) this.describeSignals.push(signal)
+      return this.record('host.describe', payload, this.onDescribe(payload, signal))
+    },
     pickDirectory: payload => this.record('host.pickDirectory', payload, this.onPickDirectory(payload)),
     listDirectory: payload => this.record('host.listDirectory', payload, this.onListDirectory(payload)),
     createDirectory: payload => this.record('host.createDirectory', payload, this.onCreateDirectory(payload)),
@@ -230,6 +234,8 @@ export class FakeApiClient implements IApiClient {
 
   /** When true, streams never fire onOpen (misbehaving-carrier material for the handshake timeout guard). */
   suppressStreamOpen = false
+  /** Number of upcoming stream opens that omit onOpen. Two suppress exactly one generation. */
+  suppressStreamOpenCount = 0
 
   /** When true, onOpen callbacks are parked instead of fired; releaseStreamOpens() fires them.
    *  Lets a case hold the readiness handshake open (describe done, streams not yet "established"). */
@@ -295,7 +301,8 @@ export class FakeApiClient implements IApiClient {
     }
     registry.push(conn)
     if (this.holdStreamOpen && onOpen !== undefined) this.heldOpens.push(onOpen)
-    else if (!this.suppressStreamOpen) onOpen?.()
+    else if (!this.suppressStreamOpen && this.suppressStreamOpenCount === 0) onOpen?.()
+    else if (this.suppressStreamOpenCount > 0) this.suppressStreamOpenCount -= 1
     try {
       while (!signal.aborted) {
         while (inbox.length > 0) {

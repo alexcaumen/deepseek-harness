@@ -1514,8 +1514,9 @@ describe('JsonlSessionPersistence: edge cases', () => {
     await ctx.sessionPersistence.create(m)
     await ctx.sessionPersistence.append(m.id, oneTurnLog())
     await writeFile(rawLogPath(root, '/d', m.id), '\n{"partial crash', { flag: 'a' })
+    await ctx.fiber.dispose()
 
-    // A FRESH backend with no in-memory state: append directly (no prior load)
+    // A FRESH backend after the first writer closes: append directly (no prior load)
     // → append must adopt from disk, and the adopt's load schedules a repair
     // that the same append then performs before writing.
     const ctx2 = new Context()

@@ -5,10 +5,11 @@
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apply, type ConnectionHandle } from '../src/client/index.ts'
-import type { RpcMessage } from '../src/client/api.ts'
+import type { RpcMessage, SessionId } from '../src/client/api.ts'
 import { RpcId } from '../src/client/api.ts'
 import { FixtureApiClient } from '../src/client/fixture.ts'
 import { WebApiClient } from '../src/client/web-api-client.ts'
+import { FakeApiClient } from './fake-api.client.ts'
 
 type Win = { location?: { hostname: string; search: string; origin?: string } }
 type WebSocketGlobal = { WebSocket?: typeof WebSocket }
@@ -49,6 +50,7 @@ class FakeWebSocket extends EventTarget {
 
 afterEach(() => {
   delete (globalThis as Win).location
+  delete (globalThis as Record<string, unknown>).__DSH_TRANSPORT__
   sockets.length = 0
   if (originalWebSocket === undefined) delete (globalThis as WebSocketGlobal).WebSocket
   else globalThis.WebSocket = originalWebSocket
@@ -134,6 +136,105 @@ describe('connection client apply', () => {
     }
   })
 
+  it('releases ownership on stop and ignores a stale owner stop after replacement', async () => {
+    ;(globalThis as Win).location = { hostname: 'localhost', search: '?fixture' }
+    const handle = await mount()
+    const first = handle.start({})
+    await vi.waitFor(() => { expect(handle.hostDescription.getSnapshot()).toBeDefined() })
+    first.stop()
+
+    let replacementConnected = 0
+    const replacement = handle.start({ onConnected: () => { replacementConnected += 1 } })
+    await vi.waitFor(() => { expect(replacementConnected).toBe(1) })
+    first.stop()
+    expect(handle.hostDescription.getSnapshot()).toBeDefined()
+    expect(() => handle.start({})).toThrow(/already owned by another consumer/)
+    replacement.stop()
+    expect(handle.hostDescription.getSnapshot()).toBeUndefined()
+  })
+
+  it('drops buffered frames from a stopped owner after its replacement starts', async () => {
+    ;(globalThis as Win).location = { hostname: 'localhost', search: '' }
+    const api = new FakeApiClient()
+    ;(globalThis as Record<string, unknown>).__DSH_TRANSPORT__ = {
+      createApiClient: () => api,
+      fetch: () => Promise.resolve(new Response('{}')),
+    }
+    const handle = await mount()
+    const firstFrames: string[] = []
+    const replacementFrames: string[] = []
+    let replacement: ReturnType<ConnectionHandle['start']> | undefined
+    const first = handle.start({
+      onMuxEnvelope: (envelope) => {
+        firstFrames.push(envelope.payload.type)
+        if (firstFrames.length !== 1) return
+        first.stop()
+        replacement = handle.start({
+          onMuxEnvelope: (next) => { replacementFrames.push(next.payload.type) },
+        })
+      },
+    })
+    try {
+      await vi.waitFor(() => { expect(handle.hostDescription.getSnapshot()).toBeDefined() })
+      const frame = (lastSeq: number) => ({
+        type: 'session/subscribed' as const,
+        sessionId: 'stale-owner' as SessionId,
+        lastSeq,
+      })
+      api.pushMux(frame(1))
+      api.pushMux(frame(2))
+      await vi.waitFor(() => { expect(replacement).toBeDefined() })
+      await vi.waitFor(() => { expect(handle.hostDescription.getSnapshot()).toBeDefined() })
+      expect(firstFrames).toEqual(['session/subscribed'])
+      api.pushMux(frame(3))
+      await vi.waitFor(() => { expect(replacementFrames).toEqual(['session/subscribed']) })
+    } finally {
+      first.stop()
+      replacement?.stop()
+    }
+  })
+
+  it('does not deliver reconnect state from an owner replaced by a description subscriber', async () => {
+    ;(globalThis as Win).location = { hostname: 'localhost', search: '?fixture' }
+    const handle = await mount()
+    const firstStates: string[] = []
+    let replacement: ReturnType<ConnectionHandle['start']> | undefined
+    let sawConnected = false
+    const unsubscribe = handle.hostDescription.subscribe(() => {
+      if (handle.hostDescription.getSnapshot() !== undefined) {
+        sawConnected = true
+        return
+      }
+      if (!sawConnected || replacement !== undefined) return
+      first.stop()
+      replacement = handle.start({})
+    })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const first = handle.start({ onStateChange: (state) => { firstStates.push(state) } }, {
+      backoffBaseMs: 10,
+      backoffFactor: 1,
+      backoffMaxMs: 10,
+      generationReadyWarnMs: 250,
+      generationReadyTimeoutMs: 500,
+    })
+    try {
+      await vi.waitFor(() => { expect(sawConnected).toBe(true) })
+      const timing = (globalThis as Record<string, unknown>).__fxTiming as
+        | { breakStreams(): void }
+        | undefined
+      if (timing === undefined) throw new Error('fixture timing hooks missing')
+      timing.breakStreams()
+      await vi.waitFor(() => { expect(replacement).toBeDefined() })
+      await vi.waitFor(() => { expect(handle.hostDescription.getSnapshot()).toBeDefined() })
+      expect(firstStates).toEqual(['connected'])
+    } finally {
+      unsubscribe()
+      first.stop()
+      replacement?.stop()
+      warnSpy.mockRestore()
+    }
+  })
+
   it('retracts the host description while reconnecting and republishes the next generation', async () => {
     ;(globalThis as Win).location = { hostname: 'localhost', search: '?fixture' }
     const handle = await mount()
@@ -149,7 +250,13 @@ describe('connection client apply', () => {
           reconnectSnapshots.push(handle.hostDescription.getSnapshot()?.canOpenPath)
         }
       },
-    }, { backoffBaseMs: 10, backoffFactor: 1, backoffMaxMs: 10, streamOpenTimeoutMs: 500 })
+    }, {
+      backoffBaseMs: 10,
+      backoffFactor: 1,
+      backoffMaxMs: 10,
+      generationReadyWarnMs: 250,
+      generationReadyTimeoutMs: 500,
+    })
     try {
       await vi.waitFor(() => {
         expect(handle.hostDescription.getSnapshot()?.canOpenPath).toBe(true)

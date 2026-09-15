@@ -38,6 +38,7 @@
     "@deepseek-ai/cordis": "workspace:^"
   },
   "dependencies": {
+    "fs-ext": "2.1.1",
     "koffi": "^3.1.0",
     "@deepseek-ai/schemastery": "workspace:^"
   },
@@ -45,6 +46,7 @@
     "@deepseek-ai/dsh-invariants": "workspace:^",
     "@deepseek-ai/dsh-session": "workspace:^",
     "@deepseek-ai/dsh-session-persistence": "workspace:^",
-    "@deepseek-ai/cordis": "workspace:^"
+    "@deepseek-ai/cordis": "workspace:^",
+    "@types/fs-ext": "2.0.3"
   }
 }

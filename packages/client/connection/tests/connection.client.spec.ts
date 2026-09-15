@@ -13,7 +13,13 @@ import { ConnectionController } from '../src/client/connection.ts'
 import { FakeApiClient, deferred, ok } from './fake-api.client.ts'
 
 const SID = 'fk-c1' as SessionId
-const FAST = { backoffBaseMs: 10, backoffFactor: 1, backoffMaxMs: 10, streamOpenTimeoutMs: 500 }
+const FAST = {
+  backoffBaseMs: 10,
+  backoffFactor: 1,
+  backoffMaxMs: 10,
+  generationReadyWarnMs: 250,
+  generationReadyTimeoutMs: 500,
+}
 
 function subscribedFrame(lastSeq = 0) {
   return { type: 'session/subscribed', sessionId: SID, lastSeq } as const
@@ -54,6 +60,7 @@ describe('connection lifecycle', () => {
       await vi.waitFor(() => { expect(connected).toBe(1) })
       api.failStreams(new Error('stream torn'))
       await vi.waitFor(() => { expect(connected).toBe(2) }) // new generation after backoff
+      expect(api.describeSignals[0]?.aborted).toBe(true)
       expect(api.openMuxCount).toBe(1) // the dead generation's stream is gone, exactly one live
     } finally {
       controller.stop()
@@ -110,9 +117,11 @@ describe('connection lifecycle', () => {
     controller.start()
     try {
       await vi.waitFor(() => { expect(describeCalls).toBe(2) })
+      expect(api.describeSignals[0]?.aborted).toBe(true)
       await vi.waitFor(() => { expect(connected).toBe(1) })
     } finally {
       controller.stop()
+      expect(api.describeSignals.at(-1)?.aborted).toBe(true)
       warnSpy.mockRestore()
     }
   })
@@ -212,16 +221,52 @@ describe('connection lifecycle', () => {
     }
   })
 
-  it('proceeds as connected via the timeout guard when a carrier never fires onOpen', async () => {
+  it('cancels a never-ready stream generation at the hard deadline and keeps retrying', async () => {
     const api = new FakeApiClient()
-    api.suppressStreamOpen = true // misbehaving carrier: streams open but onOpen never fires
+    api.suppressStreamOpenCount = 2
     let connected = 0
-    const controller = new ConnectionController(api, { onConnected: () => { connected++ } }, { ...FAST, streamOpenTimeoutMs: 20 })
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const controller = new ConnectionController(api, { onConnected: () => { connected++ } }, {
+      ...FAST,
+      generationReadyWarnMs: 10,
+      generationReadyTimeoutMs: 20,
+    })
     controller.start()
     try {
-      await vi.waitFor(() => { expect(connected).toBe(1) }) // handshake resolved by the guard, not wedged
+      await vi.waitFor(() => { expect(api.callsOf('host.describe')).toHaveLength(2) })
+      await vi.waitFor(() => { expect(connected).toBe(1) })
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('still not ready'))
     } finally {
       controller.stop()
+      warnSpy.mockRestore()
+    }
+  })
+
+  it('cancels a hung describe call at the hard deadline without publishing connected', async () => {
+    const api = new FakeApiClient()
+    const never = deferred<Awaited<ReturnType<FakeApiClient['onDescribe']>>>()
+    let describeCalls = 0
+    api.onDescribe = () => {
+      describeCalls += 1
+      return describeCalls === 1
+        ? never.promise
+        : Promise.resolve(ok({ version: '0', cwd: '/f', attachedSessions: 0, home: '/h', canOpenPath: true }))
+    }
+    let connected = 0
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const controller = new ConnectionController(api, { onConnected: () => { connected++ } }, {
+      ...FAST,
+      generationReadyWarnMs: 10,
+      generationReadyTimeoutMs: 20,
+    })
+    controller.start()
+    try {
+      await vi.waitFor(() => { expect(describeCalls).toBe(2) })
+      await vi.waitFor(() => { expect(connected).toBe(1) })
+      expect(api.openMuxCount).toBe(1)
+    } finally {
+      controller.stop()
+      warnSpy.mockRestore()
     }
   })
 

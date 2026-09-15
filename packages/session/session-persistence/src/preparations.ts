@@ -70,6 +70,8 @@ export class SessionPreparations<Source extends PreparedSource, CommitState> {
    * @param load - cold loader used when no entry exists.
    * @param commit - durable repair and cursor-state commit.
    * @param signal - optional cancellation signal while waiting.
+   * @param abandon - release commit state when publication is cancelled or the
+   *   entry disappears after commit.
    * @returns the exclusive reservation, or undefined if its entry was invalidated.
    */
   async reserve(
@@ -77,6 +79,7 @@ export class SessionPreparations<Source extends PreparedSource, CommitState> {
     load: () => Promise<Source>,
     commit: (source: Source) => Promise<{ source: Source; state: CommitState } | undefined>,
     signal?: AbortSignal,
+    abandon?: (state: CommitState) => Promise<void>,
   ): Promise<SessionPreparationReservation<Source, CommitState> | undefined> {
     const entry = this.entryFor(id, load)
     await (signal === undefined ? entry.result : observeQueuedAbort(entry.result, signal))
@@ -108,10 +111,22 @@ export class SessionPreparations<Source extends PreparedSource, CommitState> {
     try {
       signal?.throwIfAborted()
     } catch (error: unknown) {
+      try {
+        await abandon?.(committed.state)
+      } catch (abandonError: unknown) {
+        this.makeReady(entry)
+        throw new AggregateError(
+          [error, abandonError],
+          `session "${id}" preparation was cancelled and commit-state release also failed`,
+        )
+      }
       this.makeReady(entry)
       throw error
     }
-    if (this.entries.get(id) !== entry) return undefined
+    if (this.entries.get(id) !== entry) {
+      await abandon?.(committed.state)
+      return undefined
+    }
     const reservation: SessionPreparationReservation<Source, CommitState> = {
       entry,
       source: committed.source,

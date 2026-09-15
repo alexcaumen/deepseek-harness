@@ -30,6 +30,7 @@ import {
 import {
   compressZstdFrame, createZstdFrameDecoder, decompressZstdFrame, decompressZstdPrefix, scanZstdFrames,
 } from './zstd.ts'
+import { SessionWriteLease } from './lease.ts'
 import { ensureDurableDirectoryWin32, publishNewFileWin32 } from './win32.ts'
 
 export type { JsonlCompression } from './format.ts'
@@ -234,6 +235,12 @@ export class JsonlSessionPersistence extends SessionPersistence implements Persi
       if (isENOENT(error)) return undefined
       throw error
     }
+  }
+
+  /** Acquire this session artifact's kernel-backed cross-process write lease. */
+  async acquireWriteLease(meta: SessionHeader): Promise<SessionWriteLease> {
+    await this.ensureRootEncoding()
+    return SessionWriteLease.acquire(sessionDir(this.root, meta.cwd, meta.id), meta.id)
   }
 
   /**
