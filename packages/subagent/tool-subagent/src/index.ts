@@ -581,6 +581,8 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   const selectForAgent = (agent: NonNullable<Context['agent']>): ModelSelectionPolicy | undefined => {
+    const freshSession = agent.session.firstLiveSeq === 0
+      && agent.session.events[0]?.type !== 'session/end-seed'
     let allowedModels = subagentModelSelectionPolicy(agent.session)
     if (allowedModels === undefined) {
       const parentId = agent.session.header.origin === 'subagent'
@@ -589,7 +591,7 @@ export function apply(ctx: Context, config: Config): void {
       if (parentId !== undefined) {
         const parent = ctx.get('agents')?.get(parentId)
         allowedModels = parent === undefined ? undefined : subagentModelSelectionPolicy(parent.session)
-      } else if (agent.session.firstLiveSeq === 0) {
+      } else if (freshSession) {
         allowedModels = configuredPolicy.routes.map(route => ({ ...route }))
       }
     }
@@ -660,7 +662,8 @@ export function apply(ctx: Context, config: Config): void {
     })
     scopedAgents.clear()
     const outcomes = await Promise.allSettled(pending)
-    const failures = outcomes.flatMap(outcome => outcome.status === 'rejected' ? [outcome.reason] : [])
+    const failures = outcomes.flatMap<unknown>(outcome =>
+      outcome.status === 'rejected' ? [outcome.reason as unknown] : [])
     if (failures.length > 0) {
       throw new AggregateError(failures, 'tool-subagent: failed to remove scoped Agent definitions')
     }

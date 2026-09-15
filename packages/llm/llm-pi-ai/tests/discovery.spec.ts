@@ -146,7 +146,7 @@ describe('draft-provider model discovery', () => {
     expect(server.headers[0]?.authorization).toBeUndefined()
   })
 
-  it('authenticates a configured route the draft cannot supply a key for', async () => {
+  it('authenticates configured routes the draft cannot supply a key for', async () => {
     // What the Models page actually sends after a key is saved: the form holds
     // the redacted descriptor, so the draft names the route and the endpoint
     // and no credential at all. Interrogating unauthenticated would answer 401
@@ -162,20 +162,63 @@ describe('draft-provider model discovery', () => {
           apiKeyEnv: 'ACME_GATEWAY_KEY',
           api: 'openai-completions',
           baseURL: server.url,
+          headers: { 'X-Company-Code': 'private-tenant', Authorization: 'deployment-auth' },
           models: [{ id: 'acme-large' }],
+        },
+        'plain-gateway': {
+          apiKeyEnv: 'ACME_GATEWAY_KEY',
+          api: 'openai-completions',
+          baseURL: server.url,
+          models: [{ id: 'plain-large' }],
         },
       },
     })
 
     await ctx.llm.discoverModels('llm-pi-ai', { provider: 'acme-gateway', baseURL: server.url })
     // A key typed into the form is the one being tested — possibly the
-    // replacement for the stored one — so it wins.
+    // replacement for the stored one - so it wins without resolving the
+    // missing stored credential, while the route's headers still apply.
+    Reflect.deleteProperty(process.env, 'ACME_GATEWAY_KEY')
     await ctx.llm.discoverModels('llm-pi-ai', { provider: 'acme-gateway', baseURL: server.url, apiKey: 'typed' })
     // A route no profile declares yet is the create case: nothing is stored.
     await ctx.llm.discoverModels('llm-pi-ai', { provider: 'not-declared-yet', baseURL: server.url })
+    await ctx.llm.discoverModels('llm-pi-ai', { provider: 'plain-gateway', baseURL: server.url, apiKey: 'plain-typed' })
 
     expect(server.headers.map(headers => headers.authorization))
-      .toEqual(['Bearer stored-key', 'Bearer typed', undefined])
+      .toEqual(['Bearer stored-key', 'Bearer typed', undefined, 'Bearer plain-typed'])
+    expect(server.headers.map(headers => headers['x-company-code']))
+      .toEqual(['private-tenant', 'private-tenant', undefined, undefined])
+  })
+
+  it('preserves deployment authorization when neither a typed nor stored key exists', async () => {
+    const server = await listingServer({ body: JSON.stringify({ data: [{ id: 'm' }] }) })
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'header-gateway': {
+          api: 'openai-completions',
+          baseURL: server.url,
+          headers: { Authorization: 'deployment-auth' },
+          models: [{ id: 'm' }],
+        },
+      },
+    })
+
+    await ctx.llm.discoverModels('llm-pi-ai', { provider: 'header-gateway', baseURL: server.url })
+
+    expect(server.headers[0]?.authorization).toBe('deployment-auth')
+  })
+
+  it('does not read the stored profile for catalog, missing-endpoint, or unsupported-protocol replies', async () => {
+    const storedProfile = vi.fn(() => { throw new Error('profile must remain unread') })
+
+    await expect(discoverModels({ provider: 'deepseek' }, storedProfile)).resolves.not.toHaveLength(0)
+    await expect(discoverModels({ provider: 'acme-gateway' }, storedProfile))
+      .rejects.toMatchObject({ code: 'DISCOVERY_FAILED' })
+    await expect(discoverModels({ baseURL: 'https://acme.test', api: 'anthropic-messages' }, storedProfile))
+      .rejects.toMatchObject({ code: 'DISCOVERY_UNSUPPORTED' })
+    expect(storedProfile).not.toHaveBeenCalled()
   })
 
   it('leaves a catalog route\'s credential unresolved, having never reached the network', async () => {

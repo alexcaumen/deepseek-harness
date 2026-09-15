@@ -594,6 +594,23 @@ describe('subagent model selection policy', () => {
     await ctx.fiber.dispose()
   })
 
+  it('keeps a raw empty restored Session without policy or selectable fields', async () => {
+    const { ctx } = await boot()
+    const handle = await createWithPolicy(ctx, 'empty-restore', { seed: [] })
+    try {
+      expect(handle.agent.session.firstLiveSeq).toBe(0)
+      expect(handle.agent.session.events[0]?.type).toBe('session/end-seed')
+      expect(subagentModelSelectionPolicy(handle.agent.session)).toBeUndefined()
+      const properties = (ctx.tools.schemas(handle.agent).find(candidate => candidate.name === 'subagent')!
+        .parameters as { properties?: Record<string, unknown> }).properties ?? {}
+      expect(Object.keys(properties).sort()).toEqual(['description', 'prompt', 'run_in_background'])
+      expect(ctx.tools.get('list_subagent_models', handle.agent)).toBeUndefined()
+    } finally {
+      await handle.dispose()
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('inherits the live parent policy instead of recapturing child configuration', async () => {
     const { ctx } = await boot()
     const parent = await createWithPolicy(ctx, 'selection-parent')
@@ -764,7 +781,7 @@ describe('subagent model selection policy', () => {
 
     await vi.waitFor(() => {
       expect(childAgent).toBeDefined()
-      expect(ctx.tools.get('subagent', childAgent!)).toBeDefined()
+      expect(ctx.tools.get('subagent', childAgent)).toBeDefined()
     })
     controller.abort()
     await running

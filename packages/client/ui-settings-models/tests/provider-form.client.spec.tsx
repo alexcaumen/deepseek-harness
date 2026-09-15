@@ -11,7 +11,7 @@ import { CustomProviderCard } from '../src/client/CustomProviderCard.tsx'
 import { formatCapacity, parseCapacity } from '../src/client/DeepSeekModelsEditor.tsx'
 import { SettingsDescribeMirror } from '@deepseek-ai/dsh-client-ui-settings/src/client/settings-mirror.ts'
 import { ModelsSettingsStore, deriveKeyRef, protocolChoices } from '../src/client/store.ts'
-import { en } from '../src/client/locales.ts'
+import { en, zh } from '../src/client/locales.ts'
 import { settingsSchema } from './settings-schema.client.ts'
 
 afterEach(cleanup)
@@ -1000,6 +1000,106 @@ describe('hand-declared providers', () => {
 
     fireEvent.change(routeField, { target: { value: 'openai' } })
     expect(screen.getByText(en.customRouteTaken).className).toMatch(/error/)
+  })
+
+  it.each(['not-a-url', 'localhost:11434', 'ftp://gateway.acme.example/v1', 'https://', '   '])(
+    'rejects the non-HTTP base URL %j before discovery or creation', (baseURL) => {
+      const { discover, mutate, set } = mountCard()
+      fireEvent.change(screen.getByLabelText(en.customRoute), { target: { value: 'acme' } })
+      fireEvent.click(screen.getByRole('button', { name: en.addModel }))
+      fireEvent.change(screen.getByLabelText(`${en.modelId} 1`), { target: { value: 'm' } })
+      fireEvent.change(screen.getByLabelText(en.baseUrl), { target: { value: baseURL } })
+
+      const error = `${en.customNeedsBaseUrl} (HTTP/HTTPS)`
+      expect(screen.getByText(error)).toBeTruthy()
+      expect(screen.getByLabelText(en.baseUrl).getAttribute('aria-invalid')).toBe('true')
+      expect(screen.queryByText(en.customNeedsModels)).toBeNull()
+      expect(buttonNamed(en.fetchModels).disabled).toBe(true)
+      expect(buttonNamed(en.fetchModels).title).toBe(error)
+      expect(buttonNamed(en.create).disabled).toBe(true)
+      fireEvent.click(buttonNamed(en.fetchModels))
+      fireEvent.click(buttonNamed(en.create))
+      expect(discover).not.toHaveBeenCalled()
+      expect(mutate).not.toHaveBeenCalled()
+      expect(set).not.toHaveBeenCalled()
+    },
+  )
+
+  it.each([
+    'http://localhost:11434/v1',
+    'http://127.0.0.1:8080/v1',
+    'http://[::1]:8080/v1',
+    'https://gateway.acme.example:8443/v1',
+  ])('preserves the HTTP base URL %j during discovery and creation', async (baseURL) => {
+    const { discover, mutate, onClose } = mountCard()
+    fireEvent.change(screen.getByLabelText(en.customRoute), { target: { value: 'acme' } })
+    fireEvent.click(screen.getByRole('button', { name: en.addModel }))
+    fireEvent.change(screen.getByLabelText(`${en.modelId} 1`), { target: { value: 'm' } })
+    fireEvent.change(screen.getByLabelText(en.baseUrl), { target: { value: baseURL } })
+
+    expect(screen.queryByText(`${en.customNeedsBaseUrl} (HTTP/HTTPS)`)).toBeNull()
+    expect(screen.getByLabelText(en.baseUrl).getAttribute('aria-invalid')).toBe('false')
+    expect(buttonNamed(en.fetchModels).disabled).toBe(false)
+    expect(buttonNamed(en.create).disabled).toBe(false)
+    fireEvent.click(screen.getByText(en.fetchModels))
+    expect(firstProbe(discover)).toMatchObject({ baseURL })
+    await screen.findByText(en.fetchEmpty)
+    fireEvent.click(screen.getByText(en.create))
+    await waitFor(() => { expect(onClose).toHaveBeenCalledWith(true) })
+    expect(firstMutate(mutate).ops[0]?.value).toMatchObject({ baseURL })
+  })
+
+  it('normalizes surrounding whitespace before interrogating and storing a base URL', async () => {
+    const discover = vi.fn(() => Promise.resolve(ok({ models: [{ id: 'm' }] })))
+    const { mutate, onClose } = mountCard({}, { discover })
+    fireEvent.change(screen.getByLabelText(en.customRoute), { target: { value: 'acme' } })
+    fireEvent.change(screen.getByLabelText(en.baseUrl), {
+      target: { value: '  https://gateway.acme.example/v1  ' },
+    })
+
+    expect(screen.queryByText(`${en.customNeedsBaseUrl} (HTTP/HTTPS)`)).toBeNull()
+    fireEvent.click(screen.getByText(en.fetchModels))
+    await waitFor(() => { expect(discover).toHaveBeenCalledTimes(1) })
+    expect(firstProbe(discover)).toMatchObject({ baseURL: 'https://gateway.acme.example/v1' })
+
+    fireEvent.click(await screen.findByText(en.fetchAdopt))
+    await waitFor(() => { expect(buttonNamed(en.create).disabled).toBe(false) })
+    fireEvent.click(screen.getByText(en.create))
+    await waitFor(() => { expect(onClose).toHaveBeenCalledWith(true) })
+    expect(firstMutate(mutate).ops[0]?.value).toMatchObject({ baseURL: 'https://gateway.acme.example/v1' })
+  })
+
+  it.each([['en', en], ['zh', zh]] as const)(
+    'localizes the URL error and fetch tooltip in %s and clears them after correction', (_locale, copy) => {
+      mountCard({ t: key => copy[key] })
+      fireEvent.change(screen.getByLabelText(copy.customRoute), { target: { value: 'acme' } })
+      fireEvent.click(screen.getByRole('button', { name: copy.addModel }))
+      fireEvent.change(screen.getByLabelText(`${copy.modelId} 1`), { target: { value: 'm' } })
+      const input = screen.getByLabelText(copy.baseUrl)
+      expect(input.getAttribute('aria-invalid')).toBe('false')
+      fireEvent.change(input, { target: { value: 'ftp://gateway.acme.example/v1' } })
+      const error = `${copy.customNeedsBaseUrl} (HTTP/HTTPS)`
+      expect(screen.getByText(error)).toBeTruthy()
+      expect(buttonNamed(copy.fetchModels).title).toBe(error)
+      expect(screen.queryByText(copy.customNeedsModels)).toBeNull()
+
+      fireEvent.change(input, { target: { value: 'http://localhost:11434/v1' } })
+      expect(screen.queryByText(error)).toBeNull()
+      expect(input.getAttribute('aria-invalid')).toBe('false')
+      expect(buttonNamed(copy.fetchModels).title).toBe('')
+      expect(buttonNamed(copy.fetchModels).disabled).toBe(false)
+      expect(buttonNamed(copy.create).disabled).toBe(false)
+    },
+  )
+
+  it('keeps a network failure distinct from base URL syntax', async () => {
+    const discover = vi.fn(() => Promise.resolve(fail('connection refused', 'gateway/internal')))
+    mountCard({}, { discover })
+    fireEvent.change(screen.getByLabelText(en.baseUrl), { target: { value: 'http://localhost:11434/v1' } })
+    fireEvent.click(screen.getByText(en.fetchModels))
+
+    await screen.findByText('connection refused')
+    expect(screen.queryByText(`${en.customNeedsBaseUrl} (HTTP/HTTPS)`)).toBeNull()
   })
 
   it('derives a reference the credential seam accepts for every id it admits', () => {
