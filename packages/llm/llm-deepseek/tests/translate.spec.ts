@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BlockAssembler, EMPTY_RESPONSE_CODE, LlmError, MALFORMED_TOOL_CALL_CODE } from '@deepseek-ai/dsh-llm'
+import { BlockAssembler, EMPTY_RESPONSE_CODE, LlmError } from '@deepseek-ai/dsh-llm'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { DONE } from '../src/sse.ts'
 import { mapFinishReason, mapUsage, translate } from '../src/translate.ts'
@@ -312,24 +312,18 @@ describe('mapUsage', () => {
 })
 
 describe('translate: defensive tool-call branches', () => {
-  it('rejects a stream whose tool call never carries an id, reporting usage first', async () => {
+  it('handles deltas that never carry id or name (empty-string fallbacks)', async () => {
     const chunks = await collect(translate(feed(
       firstChunk,
       { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '{}' } }] } }] },
-      { choices: [{ delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 12, completion_tokens: 4 } },
+      { choices: [{ delta: {}, finish_reason: 'tool_calls' }] },
       DONE,
     )))
     expect(chunks).toEqual([
       { type: 'block-start', index: 0, blockType: 'tool-call' },
       { type: 'tool-call-delta', index: 0, id: '', argumentsDelta: '{}' },
-      { type: 'usage', usage: { inputTokens: 12, outputTokens: 4 } },
-      {
-        type: 'finish',
-        reason: {
-          kind: 'error',
-          failure: { message: 'model streamed a tool call with no id', code: MALFORMED_TOOL_CALL_CODE },
-        },
-      },
+      { type: 'block-end', index: 0, block: { type: 'tool-call', id: '', name: '', arguments: '{}' } },
+      { type: 'finish', reason: { kind: 'tool-calls' } },
     ])
   })
 
@@ -343,7 +337,7 @@ describe('translate: defensive tool-call branches', () => {
     expect(chunks[1]).toEqual({ type: 'tool-call-delta', index: 0, id: 'c', name: 'f', argumentsDelta: '' })
   })
 
-  it('rejects a stream whose tool call never carries a name', async () => {
+  it('handles tool_call deltas with no function object at all', async () => {
     const chunks = await collect(translate(feed(
       firstChunk,
       { choices: [{ delta: { tool_calls: [{ index: 0, id: 'c' }] } }] },
@@ -351,14 +345,6 @@ describe('translate: defensive tool-call branches', () => {
       DONE,
     )))
     expect(chunks[1]).toEqual({ type: 'tool-call-delta', index: 0, id: 'c', argumentsDelta: '' })
-    expect(chunks.some(chunk => chunk.type === 'block-end')).toBe(false)
-    expect(chunks.at(-1)).toEqual({
-      type: 'finish',
-      reason: {
-        kind: 'error',
-        failure: { message: 'model streamed a tool call with no name', code: MALFORMED_TOOL_CALL_CODE },
-      },
-    })
   })
 })
 

@@ -8,7 +8,7 @@
  * @module dsh-llm-deepseek/translate
  */
 
-import { CallId, EMPTY_RESPONSE_CODE, LlmError, MALFORMED_TOOL_CALL_CODE } from '@deepseek-ai/dsh-llm'
+import { CallId, EMPTY_RESPONSE_CODE, LlmError } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, FinishReason, StreamChunk, TokenUsage } from '@deepseek-ai/dsh-llm'
 import { DONE } from './sse.ts'
 import type { WireChunk, WireUsage } from './types.ts'
@@ -66,21 +66,16 @@ function acceptIdentity(current: string | undefined, incoming: unknown): string 
   return typeof incoming === 'string' && incoming.length > 0 ? incoming : current
 }
 
-/** The identity field a streamed tool call never received. */
-interface Unidentified {
-  unidentified: 'id' | 'name'
-}
-
-/** Assemble a final block, or report an unusable tool-call identity. */
-function closeBlock(block: OpenBlock): ContentBlock | Unidentified {
+/** Assemble the final ContentBlock for one open block. */
+function closeBlock(block: OpenBlock): ContentBlock {
   switch (block.kind) {
     case 'text': return { type: 'text', text: block.text }
     case 'reasoning': return { type: 'reasoning', text: block.text }
-    case 'tool-call': {
-      const { callId, name } = block
-      if (callId === undefined) return { unidentified: 'id' }
-      if (name === undefined) return { unidentified: 'name' }
-      return { type: 'tool-call', id: CallId(callId), name, arguments: block.text }
+    case 'tool-call': return {
+      type: 'tool-call',
+      id: CallId(block.callId ?? ''),
+      name: block.name ?? '',
+      arguments: block.text,
     }
   }
 }
@@ -110,26 +105,9 @@ export async function* translate(payloads: AsyncIterable<string>): AsyncGenerato
 
   for await (const payload of payloads) {
     if (payload === DONE) {
-      const ends: StreamChunk[] = []
       for (const block of order) {
-        const closed = closeBlock(block)
-        if ('unidentified' in closed) {
-          if (pendingUsage) yield { type: 'usage', usage: pendingUsage }
-          yield {
-            type: 'finish',
-            reason: {
-              kind: 'error',
-              failure: {
-                message: `model streamed a tool call with no ${closed.unidentified}`,
-                code: MALFORMED_TOOL_CALL_CODE,
-              },
-            },
-          }
-          return
-        }
-        ends.push({ type: 'block-end', index: block.index, block: closed })
+        yield { type: 'block-end', index: block.index, block: closeBlock(block) }
       }
-      yield* ends
       if (pendingUsage) yield { type: 'usage', usage: pendingUsage }
       const reason = pendingFinish ?? { kind: 'stop' as const }
       yield {

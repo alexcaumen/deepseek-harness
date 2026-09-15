@@ -39,13 +39,6 @@ export const QUOTA_EXCEEDED_CODE = 'QUOTA'
 export const EMPTY_RESPONSE_CODE = 'EMPTY_RESPONSE'
 
 /**
- * Canonical provider-neutral code for a streamed tool call that never supplied
- * a usable id or name. The attempt produced no durable assistant message, so
- * retry policy may safely repeat it.
- */
-export const MALFORMED_TOOL_CALL_CODE = 'MALFORMED_TOOL_CALL'
-
-/**
  * Canonical provider-neutral code for a credential that was supplied but
  * cannot be used — malformed rather than absent. Distinct from
  * `MISSING_CREDENTIAL` because the fix differs: correct the stored value
