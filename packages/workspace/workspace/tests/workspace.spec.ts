@@ -877,6 +877,7 @@ describe('registry-global session archive', () => {
     const dir = await makeDir('archive-home')
     const result = await harness({ sessions: [header('kept', dir, 100), header('gone', dir, 200)] })
     const workspace = result.registry.list()[0]!
+    const accountingBefore = [...workspace.sessionIds]
     expect(result.registry.archivedSessionIds).toEqual([])
 
     await result.registry.archiveSession(SessionId('gone'))
@@ -893,6 +894,16 @@ describe('registry-global session archive', () => {
 
     await result.registry.archiveSession(SessionId('kept'))
     expect(result.registry.archivedSessionIds).toEqual(['gone', 'kept'])
+
+    await result.registry.unarchiveSession(SessionId('gone'))
+    expect(result.registry.archivedSessionIds).toEqual(['kept'])
+    expect(workspace.sessionIds).toEqual(accountingBefore)
+    expect(storedState(result.pool).archivedSessionIds).toEqual(['kept'])
+    const changesAfterUnarchive = result.changes.filter(change => change.table === '').length
+
+    await result.registry.unarchiveSession(SessionId('gone'))
+    expect(result.registry.archivedSessionIds).toEqual(['kept'])
+    expect(result.changes.filter(change => change.table === '').length).toBe(changesAfterUnarchive)
   })
 
   it('accepts unaccounted and live sessions but rejects unknown ids without writing', async () => {
@@ -921,6 +932,16 @@ describe('registry-global session archive', () => {
     expect(storedState(result.pool).archivedSessionIds).toEqual([])
   })
 
+  it('fails closed when unarchiving an unknown session or when persistence lookup fails', async () => {
+    const result = await harness({ sessions: [] })
+    await expect(result.registry.unarchiveSession(SessionId('ghost')))
+      .rejects.toThrow(/cannot unarchive session 'ghost'/)
+    result.list.mockRejectedValueOnce(new Error('persistence backend down'))
+    await expect(result.registry.unarchiveSession(SessionId('unlisted')))
+      .rejects.toThrow(/persistence backend down/)
+    expect(storedState(result.pool).archivedSessionIds).toEqual([])
+  })
+
   it('restores the archive set across restarts and defaults it for pre-field media', async () => {
     const dir = await makeDir('archive-restart')
     const pool = new MemoryMediaPool()
@@ -930,7 +951,13 @@ describe('registry-global session archive', () => {
 
     const second = await harness({ pool, sessions: [header('s1', dir, 100)] })
     expect(second.registry.archivedSessionIds).toEqual(['s1'])
+    await second.registry.unarchiveSession(SessionId('s1'))
     await second.fiber.dispose()
+
+    const third = await harness({ pool, sessions: [header('s1', dir, 100)] })
+    expect(third.registry.archivedSessionIds).toEqual([])
+    expect(third.registry.list()[0]?.sessionIds).toEqual(['s1'])
+    await third.fiber.dispose()
 
     // A medium written before the field existed parses through the schema default.
     const legacyId = WorkspaceId('00000000-0000-4000-8000-00000000000a')

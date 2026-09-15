@@ -243,6 +243,12 @@ type SessionTreeProps = Pick<
   onSessionRename: (sessionId: SessionNode['id'], currentTitle: string) => void
   /** Archive a session (row menu action; the row disappears on the state echo). */
   onSessionArchive: (sessionId: SessionNode['id']) => void
+  /** Unarchive an archived session through the browser-owned retry flow. */
+  onSessionUnarchive: (sessionId: SessionNode['id']) => void
+  /** Current unarchive error, retained until retry or success. */
+  unarchiveFailure: { sessionId: SessionNode['id']; message: string } | null
+  /** Session with an unarchive request currently in flight. */
+  unarchivingSessionId: SessionNode['id'] | null
   /** Session order behavior: fixed after edits, or additionally promoted by user activity. */
   orderBy: SessionOrderBy
 }
@@ -251,6 +257,7 @@ type SessionTreeProps = Pick<
 function SessionTree({
   useSessions, startSession, open, forkSession, workspaces, archivedSessionIds,
   onRenameRequest, onDeleteRequest, onSessionRename, onSessionArchive,
+  onSessionUnarchive, unarchiveFailure, unarchivingSessionId,
   insertWorkspaceBefore, insertSessionBefore, orderBy,
   groupExpansion, setGroupExpanded,
   sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, home, t,
@@ -539,6 +546,15 @@ function SessionTree({
             </div>
           )
         })}
+        <ArchivedSessions
+          list={list}
+          archivedSessionIds={archivedSessionIds}
+          onUnarchive={onSessionUnarchive}
+          failure={unarchiveFailure}
+          pendingSessionId={unarchivingSessionId}
+          open={open}
+          t={t}
+        />
       </div>
       <span className={css.fade} />
     </div>
@@ -548,6 +564,7 @@ function SessionTree({
 /** The flat "In one list" body: every session is one draggable top-level row. */
 function FlatList({
   useSessions, open, forkSession, onSessionRename, onSessionArchive, archivedSessionIds,
+  onSessionUnarchive, unarchiveFailure, unarchivingSessionId,
   orderBy, sessionOrderByAccount, sessionUpdatedAtByAccount, syncSessionOrderAccount, setSessionOrder, t,
 }: Pick<
   SessionTreeProps,
@@ -556,6 +573,9 @@ function FlatList({
   | 'forkSession'
   | 'onSessionRename'
   | 'onSessionArchive'
+  | 'onSessionUnarchive'
+  | 'unarchiveFailure'
+  | 'unarchivingSessionId'
   | 'archivedSessionIds'
   | 'orderBy'
   | 'sessionOrderByAccount'
@@ -659,6 +679,15 @@ function FlatList({
             />
           )
         })}
+        <ArchivedSessions
+          list={list}
+          archivedSessionIds={archivedSessionIds}
+          onUnarchive={onSessionUnarchive}
+          failure={unarchiveFailure}
+          pendingSessionId={unarchivingSessionId}
+          open={open}
+          t={t}
+        />
       </div>
       <span className={css.fade} />
     </div>
@@ -670,6 +699,55 @@ interface RemoteSearchState {
   status: 'idle' | 'loading' | 'ready' | 'error'
   items: readonly SessionSearchResultItem[]
   hasMore: boolean
+}
+
+/** Archived rows retain Host archive order and never join active drag/order accounts. */
+function ArchivedSessions({
+  list, archivedSessionIds, onUnarchive, failure, pendingSessionId, open, t,
+}: {
+  list: SessionListState
+  archivedSessionIds: readonly SessionNode['id'][]
+  onUnarchive: (sessionId: SessionNode['id']) => void
+  failure: { sessionId: SessionNode['id']; message: string } | null
+  pendingSessionId: SessionNode['id'] | null
+  open: (sessionId: SessionNode['id']) => void
+  t: WorkspaceBrowserProps['t']
+}) {
+  const byId = new Map(deriveFlat(list, []).map(node => [node.id, node]))
+  const rows = archivedSessionIds.flatMap((id) => {
+    const node = byId.get(id)
+    return node === undefined ? [] : [node]
+  })
+  if (rows.length === 0) return null
+  return (
+    <div className={css.archivedSection} role="group" aria-label={t('section.archivedSessions')}>
+      <div className={css.archivedHeading}>{t('section.archivedSessions')}</div>
+      {failure !== null && (
+        <div className={css.unarchiveError} role="alert">
+          <span>{t('unarchive.failed', { message: failure.message })}</span>
+          <button type="button" onClick={() => { onUnarchive(failure.sessionId) }}>
+            {t('unarchive.retry')}
+          </button>
+        </div>
+      )}
+      {rows.map(node => (
+        <SessionNodeItem
+          key={node.id}
+          node={node}
+          currentId={undefined}
+          now={Date.now()}
+          onOpen={open}
+          onUnarchive={onUnarchive}
+          archived
+          flat
+          t={t}
+        />
+      ))}
+      {pendingSessionId !== null && (
+        <div className={css.unarchivePending} role="status">{t('unarchive.pending')}</div>
+      )}
+    </div>
+  )
 }
 
 /** Flat search body: local metadata matches plus the current Host result page. */
@@ -756,6 +834,7 @@ export function WorkspaceBrowser({
   deleteWorkspace,
   insertWorkspaceBefore,
   archiveSession,
+  unarchiveSession,
   insertSessionBefore,
   createWorkspace,
   searchSessions,
@@ -971,6 +1050,19 @@ export function WorkspaceBrowser({
       console.warn('session archive rejected:', reason)
     })
   }
+  const [unarchivingSessionId, setUnarchivingSessionId] = useState<SessionNode['id'] | null>(null)
+  const [unarchiveFailure, setUnarchiveFailure] = useState<{ sessionId: SessionNode['id']; message: string } | null>(null)
+  const onSessionUnarchive = (sessionId: SessionNode['id']) => {
+    if (unarchivingSessionId !== null) return
+    setUnarchivingSessionId(sessionId)
+    setUnarchiveFailure(null)
+    unarchiveSession(sessionId).then(() => {
+      setUnarchivingSessionId(null)
+    }).catch((reason: unknown) => {
+      setUnarchivingSessionId(null)
+      setUnarchiveFailure({ sessionId, message: reason instanceof Error ? reason.message : String(reason) })
+    })
+  }
 
   // Delete dialog is separate from the row so a successful removal can
   // unmount that row without tearing down the in-flight confirmation state.
@@ -1159,6 +1251,9 @@ export function WorkspaceBrowser({
               <FlatList
                 useSessions={useSessions} open={open} forkSession={forkSession}
                 onSessionRename={onSessionRename} onSessionArchive={onSessionArchive}
+                onSessionUnarchive={onSessionUnarchive}
+                unarchiveFailure={unarchiveFailure}
+                unarchivingSessionId={unarchivingSessionId}
                 archivedSessionIds={archivedSessionIds}
                 orderBy={orderBy}
                 sessionOrderByAccount={sessionOrderByAccount}
@@ -1173,6 +1268,9 @@ export function WorkspaceBrowser({
                 useSessions={useSessions}
                 onSessionRename={onSessionRename}
                 onSessionArchive={onSessionArchive}
+                onSessionUnarchive={onSessionUnarchive}
+                unarchiveFailure={unarchiveFailure}
+                unarchivingSessionId={unarchivingSessionId}
                 forkSession={forkSession}
                 workspaces={workspaces}
                 groupExpansion={groupExpansion}

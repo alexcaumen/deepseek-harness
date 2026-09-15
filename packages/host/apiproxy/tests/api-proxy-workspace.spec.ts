@@ -560,9 +560,30 @@ describe('Host Workspace increments', () => {
     const otherSession = SessionId('session-after-archive')
     expectOk(await api.sessions.create(request({ workspaceId: workspace.workspaceId, sessionId: otherSession })))
     expect((await after).payload.type).not.toBe('host/archived-sessions-changed')
+    const accountingBeforeUnarchive = expectOk(await api.workspace.list(request({}))).items[0]?.sessionIds
+
+    const unarchived = (async () => {
+      for (;;) {
+        const frame = await nextHostFrame(stream)
+        if (frame.payload.type === 'host/archived-sessions-changed') return frame
+      }
+    })()
+    expect(expectOk(await api.workspace.unarchiveSession(request({ sessionId }))).archivedSessionIds)
+      .toEqual([])
+    expect(await unarchived).toMatchObject({
+      payload: { type: 'host/archived-sessions-changed', archivedSessionIds: [] },
+    })
+    expect(expectOk(await api.workspace.unarchiveSession(request({ sessionId }))).archivedSessionIds)
+      .toEqual([])
+    expect(expectOk(await api.workspace.list(request({}))).items[0]?.sessionIds).toEqual(accountingBeforeUnarchive)
 
     const missing = await api.workspace.archiveSession(request({ sessionId: SessionId('session-ghost') }))
     expect(missing.result).toMatchObject({
+      ok: false,
+      error: { code: 'session-not-found', details: { sessionId: 'session-ghost' } },
+    })
+    const missingUnarchive = await api.workspace.unarchiveSession(request({ sessionId: SessionId('session-ghost') }))
+    expect(missingUnarchive.result).toMatchObject({
       ok: false,
       error: { code: 'session-not-found', details: { sessionId: 'session-ghost' } },
     })

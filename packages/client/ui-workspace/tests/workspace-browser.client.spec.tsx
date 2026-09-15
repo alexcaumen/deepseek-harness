@@ -76,6 +76,7 @@ function mount(overrides: Partial<WorkspaceBrowserProps> = {}) {
     renameWorkspace: vi.fn(async () => {}),
     deleteWorkspace: vi.fn(async () => {}),
     archiveSession: vi.fn(async () => {}),
+    unarchiveSession: vi.fn(async () => {}),
     insertWorkspaceBefore: vi.fn(async () => {}),
     insertSessionBefore: vi.fn(async () => {}),
     createWorkspace: vi.fn(async () => workspace('created', [])),
@@ -336,25 +337,61 @@ describe('WorkspaceBrowser', () => {
     expect(screen.getAllByRole('treeitem').slice(1)[0]?.textContent).toContain('two')
   })
 
-  it('archives a session from the row menu and hides archived rows in both modes', async () => {
+  it('archives a session from the active row and exposes an unarchive-only archived row in both modes', async () => {
     const archiveSession = vi.fn(async () => {})
+    const unarchiveSession = vi.fn(async () => {})
     const b = mount({
       useSessions: hook(sessionState([summary('kept-s', 2), summary('gone-s', 1)])),
       useWorkspaces: hook(workspaceState([workspace('alpha', ['kept-s', 'gone-s'])])),
       archiveSession,
+      unarchiveSession,
     })
     fireEvent.click(screen.getByText('alpha'))
     fireEvent.click(screen.getByRole('button', { name: '会话“gone-s”的操作' }))
     fireEvent.click(screen.getByRole('menuitem', { name: '归档会话' }))
     expect(archiveSession).toHaveBeenCalledWith(sid('gone-s'))
 
-    // The archive-set echo hides the row in grouped and flat modes.
+    // The archive-set echo moves the row out of active grouping and into the
+    // dedicated restore section without changing its workspace account.
     rerender(b, { useWorkspaces: hook(workspaceState([workspace('alpha', ['kept-s', 'gone-s'])], [sid('gone-s')])) })
-    expect(screen.queryByText('gone-s')).toBeNull()
+    const archived = screen.getByRole('group', { name: '已归档会话' })
+    expect(archived.textContent).toContain('gone-s')
+    expect(archived.querySelector('[draggable="true"]')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '会话“gone-s”的操作' }))
+    expect(screen.queryByRole('menuitem', { name: '重命名' })).toBeNull()
+    fireEvent.click(screen.getByRole('menuitem', { name: '取消归档会话' }))
+    expect(unarchiveSession).toHaveBeenCalledWith(sid('gone-s'))
     fireEvent.click(screen.getByRole('button', { name: '视图选项' }))
     fireEvent.click(screen.getByRole('menuitem', { name: '单列表' }))
     expect(screen.getByText('kept-s')).toBeTruthy()
-    expect(screen.queryByText('gone-s')).toBeNull()
+    expect(screen.getByRole('group', { name: '已归档会话' }).textContent).toContain('gone-s')
+  })
+
+  it('keeps a failed unarchive visible and retries the same archived session', async () => {
+    const rejection = new Error('storage unavailable')
+    const unarchiveSession = vi.fn()
+      .mockRejectedValueOnce(rejection)
+      .mockResolvedValueOnce(undefined)
+    const b = mount({
+      useSessions: hook(sessionState([summary('gone-s', 1)])),
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['gone-s'])], [sid('gone-s')])),
+      unarchiveSession,
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: '会话“gone-s”的操作' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '取消归档会话' }))
+    expect((await screen.findByRole('alert')).textContent).toContain('storage unavailable')
+    expect(screen.getByText('gone-s')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '重试' }))
+    await waitFor(() => { expect(unarchiveSession).toHaveBeenCalledTimes(2) })
+    expect(unarchiveSession).toHaveBeenNthCalledWith(2, sid('gone-s'))
+    await waitFor(() => { expect(screen.queryByRole('alert')).toBeNull() })
+
+    rerender(b, {
+      useWorkspaces: hook(workspaceState([workspace('alpha', ['gone-s'])], [])),
+    })
+    expect(screen.queryByRole('group', { name: '已归档会话' })).toBeNull()
   })
 
   it('logs and keeps the tree when the archive call rejects', async () => {

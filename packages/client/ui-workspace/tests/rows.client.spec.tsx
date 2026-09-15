@@ -431,6 +431,27 @@ describe('workspace browser rows', () => {
     expect(screen.queryByRole('menu')).toBeNull()
   })
 
+  it('gives an archived row only an accessible unarchive action and does not open it', () => {
+    const onOpen = vi.fn()
+    const onUnarchive = vi.fn()
+    const node: SessionNode = {
+      id: sid('archived'), title: 'Archived', blank: false, running: false,
+      runningSubagentCount: 0, completed: true, updatedAt: 0,
+    }
+    render(<SessionNodeItem node={node} currentId={node.id} now={0} onOpen={onOpen}
+      onUnarchive={onUnarchive} archived t={t} />)
+
+    const row = screen.getByRole('treeitem')
+    expect(row.getAttribute('aria-selected')).toBe('false')
+    expect(row.getAttribute('draggable')).toBe('false')
+    fireEvent.click(screen.getByText('Archived'))
+    expect(onOpen).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '会话“Archived”的操作' }))
+    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual(['取消归档会话'])
+    fireEvent.click(screen.getByRole('menuitem', { name: '取消归档会话' }))
+    expect(onUnarchive).toHaveBeenCalledWith(node.id)
+  })
+
 
   it('shows the hover card after the dwell and suppresses it while the row menu is open', () => {
     vi.useFakeTimers()
