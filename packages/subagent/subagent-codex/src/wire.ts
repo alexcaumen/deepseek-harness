@@ -245,6 +245,7 @@ export class CodexAppServerWire {
     private readonly input: Readable,
     output: Writable,
     private readonly permissionMode: CodexPermissionMode,
+    private readonly model?: string,
   ) {
     this.transport = new JsonRpcLineTransport(input, output)
     // Fatal protocol state can arrive after the current guarded operation has
@@ -309,6 +310,7 @@ export class CodexAppServerWire {
     const response = object(await this.guarded(this.transport.request('thread/start', {
       cwd,
       ephemeral: true,
+      ...this.model === undefined ? {} : { model: this.model },
       ...THREAD_PERMISSION_PARAMS[this.permissionMode],
     }, signal), signal), 'thread/start response')
     const thread = object(response.thread, 'thread/start thread')

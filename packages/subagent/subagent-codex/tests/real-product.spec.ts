@@ -141,6 +141,7 @@ async function realRuntime(): Promise<RealRuntime> {
 async function realHarness(
   script: ResponsesScript,
   permissionMode?: CodexPermissionMode,
+  model?: string,
 ): Promise<{
   readonly harness: RealHarness
   readonly fixture: ResponsesFixture
@@ -150,6 +151,7 @@ async function realHarness(
   await ctx.plugin(codex, {
     env: instance.env,
     ...permissionMode === undefined ? {} : { permissionMode },
+    ...model === undefined ? {} : { model },
     disposeGraceMs: 2_000,
   })
   const parent = {
@@ -216,12 +218,12 @@ function responseInputTexts(body: Record<string, unknown>): string[] {
 }
 
 describe('real @openai/codex 0.147.0 product', () => {
-  it('starts approve-for-me through the real app-server and returns exact text', async () => {
+  it.each([undefined, 'fixture-model-override'])('starts approve-for-me through the real app-server with model %s and returns exact text', async (model) => {
     const sentinel = 'REAL_CODEX_SENTINEL_0_147_0'
     const task = 'Return the fixture sentinel exactly.'
     const { harness, fixture } = await realHarness([
       { kind: 'complete', text: sentinel },
-    ], 'approve-for-me')
+    ], 'approve-for-me', model)
     expect(codexPackage.version).toBe('0.147.0')
     const version = await execFileAsync(process.execPath, [codexEntry, '--version'], {
       env: { ...process.env, ...harness.env },
@@ -301,6 +303,7 @@ describe('real @openai/codex 0.147.0 product', () => {
     expect(recorded.method).toBe('POST')
     expect(recorded.path).toBe('/v1/responses')
     expect(recorded.headers.authorization).toBe('Bearer dsh-fake-openai-key')
+    expect(recorded.body.model).toBe(model ?? 'fixture-model')
     expect(responseInputTexts(recorded.body)).toContain(task)
     await expectQuiescent(harness.handles)
   }, 60_000)

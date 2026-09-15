@@ -584,6 +584,81 @@ describe('task admission and package contracts', () => {
     }
   })
 
+  it('accepts an omitted or non-empty native model and rejects an empty model', () => {
+    expect(codex.Config({}).model).toBeUndefined()
+    expect(codex.Config({ model: 'native/model-alias' }).model).toBe('native/model-alias')
+    expect(() => codex.Config({ model: '' })).toThrow()
+  })
+
+  it.each([
+    ['never', { approvalPolicy: 'never' }],
+    ['approve-for-me', {
+      approvalPolicy: 'on-request',
+      approvalsReviewer: 'auto_review',
+      sandbox: 'workspace-write',
+    }],
+    ['dangerously-bypass-approvals-and-sandbox', {
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
+    }],
+  ] as const)('preserves requests with no model and sends a configured model once in %s', async (permissionMode, expected) => {
+    for (const model of [undefined, 'native/model-alias']) {
+      const ctx = new Context()
+      await ctx.plugin(SubagentRuntime)
+      await ctx.plugin(LocalSubprocessRuntime)
+      const child = fakeChild()
+      const chunks: string[] = []
+      child.toChild.on('data', (chunk: Buffer) => { chunks.push(chunk.toString()) })
+      const spawn = vi.spyOn(ctx.subprocess, 'spawn').mockReturnValue(child.handle)
+      await ctx.plugin(codex, {
+        ...model === undefined ? {} : { model },
+        permissionMode,
+      })
+
+      const starting = ctx.subagents.start('codex', request())
+      const initialize = await child.peer.nextMethod('initialize')
+      child.peer.respond(initialize, { userAgent: 'codex-cli 0.147.0' })
+      await child.peer.nextMethod('initialized')
+      const threadStart = await child.peer.nextMethod('thread/start')
+      expect(threadStart.params).toEqual({
+        cwd: process.cwd(),
+        ephemeral: true,
+        ...model === undefined ? {} : { model },
+        ...expected,
+      })
+      child.peer.respond(threadStart, { thread: { id: 'thread-1', ephemeral: true } })
+      const run = await starting
+      const turnStart = await child.peer.nextMethod('turn/start')
+      expect(turnStart.params).toEqual({
+        threadId: 'thread-1',
+        input: [{ type: 'text', text: 'do the task', text_elements: [] }],
+      })
+      child.peer.send(
+        { id: turnStart.id, result: { turn: { id: 'turn-1' } } },
+        agentMessage('model binding answer', 'final_answer'),
+        turnCompleted('completed'),
+      )
+      await expect(run.result).resolves.toEqual({
+        output: [{ type: 'text', text: 'model binding answer' }],
+        stopReason: 'completed',
+      })
+      await run.dispose()
+      await ctx.fiber.dispose()
+
+      const frames = chunks.join('').trim().split('\n')
+        .map(line => JSON.parse(line) as JsonObject)
+      expect(frames.filter(frame => frame.method === 'thread/start')).toEqual([threadStart])
+      expect(frames.filter(frame => Object.hasOwn(
+        (frame.params ?? {}) as JsonObject, 'model',
+      ))).toEqual(model === undefined ? [] : [threadStart])
+      expect(spawn).toHaveBeenCalledOnce()
+      expect(spawn.mock.calls[0]![0]).toMatchObject({
+        argv: codexAppServerArgv(),
+        env: {},
+      })
+    }
+  })
+
   it('resolves the safe permission default when apply is called directly', async () => {
     const ctx = new Context()
     await ctx.plugin(SubagentRuntime)
