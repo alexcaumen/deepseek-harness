@@ -484,6 +484,74 @@ describe('tool execution', () => {
     expect(result.value).toEqual({ content: blocks })
   })
 
+  it('projects the legacy Windows screenshot JSON as a durable model image', async () => {
+    const rich = await mountRichRegistry()
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC'
+    const blocks = [{
+      type: 'text',
+      text: JSON.stringify({
+        status: 'success',
+        message: 'Screenshot captured successfully.',
+        data: { image_b64: png },
+      }),
+    }] satisfies JsonValue[]
+    const client = createMockClient(
+      [{ name: 'cua_computer_use_screenshot', inputSchema: { type: 'object' } }],
+      { content: blocks },
+    )
+
+    const windowsOpts = { ...defaultOpts, serverName: 'windows_desktop' }
+    await syncTools(client as never, rich.ctx, windowsOpts, new Map())
+    const result = await rich.ctx.tools.execute({
+      signal: testToolSignal,
+      callId: CallId('legacy-screenshot'),
+      name: 'mcp__windows_desktop__cua_computer_use_screenshot',
+      arguments: {},
+      agent: agentOn() as never,
+    })
+
+    expect(result.content.map(block => block.type)).toEqual(['text', 'image'])
+    expect(result.content[0]).toEqual({ type: 'text', text: 'Screenshot captured successfully.' })
+    const image = result.content[1]
+    if (image?.type !== 'image') throw new Error('expected projected screenshot image')
+    expect(image.attachment.mediaType).toBe('image/png')
+    expect(rich.attachments.saved).toHaveLength(1)
+    expect(JSON.stringify(result.content)).not.toContain(png)
+    if (result.isError) throw new Error('expected legacy screenshot success')
+    expect(result.value).toEqual({ content: blocks })
+  })
+
+  it('does not reinterpret unrelated or malformed legacy screenshot JSON', async () => {
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC'
+    const cases = [
+      { serverName: 'windows_desktop', name: 'other', text: JSON.stringify({ status: 'success', message: 'Screenshot captured successfully.', data: { image_b64: png } }) },
+      { serverName: 'other_server', name: 'cua_computer_use_screenshot', text: JSON.stringify({ status: 'success', message: 'Screenshot captured successfully.', data: { image_b64: png } }) },
+      { serverName: 'windows_desktop', name: 'cua_computer_use_screenshot', text: JSON.stringify({ status: 'success', message: 'different', data: { image_b64: png } }) },
+      { serverName: 'windows_desktop', name: 'cua_computer_use_screenshot', text: JSON.stringify({ status: 'success', message: 'Screenshot captured successfully.', data: { image_b64: 'AQ==' } }) },
+      { serverName: 'windows_desktop', name: 'cua_computer_use_screenshot', text: '{not-json' },
+      { serverName: 'windows_desktop', name: 'cua_computer_use_screenshot', text: JSON.stringify({ status: 'success', message: 'Screenshot captured successfully.', data: { image_b64: Buffer.concat([Buffer.from('89504e470d0a1a0a', 'hex'), Buffer.alloc(1025)]).toString('base64') } }) },
+    ]
+
+    for (const [index, item] of cases.entries()) {
+      const rich = await mountRichRegistry()
+      const client = createMockClient(
+        [{ name: item.name, inputSchema: { type: 'object' } }],
+        { content: [{ type: 'text', text: item.text }] },
+      )
+      const opts = { ...defaultOpts, serverName: item.serverName }
+      await syncTools(client as never, rich.ctx, opts, new Map())
+      const result = await rich.ctx.tools.execute({
+        signal: testToolSignal,
+        callId: CallId(`legacy-refusal-${index}`),
+        name: `mcp__${item.serverName}__${item.name}`,
+        arguments: {},
+        agent: agentOn() as never,
+      })
+      expect(result.content).toEqual([{ type: 'text', text: item.text }])
+      expect(rich.attachments.saved).toEqual([])
+    }
+  })
+
   it('keeps a valid raw image result while explicitly refusing it without a durable route', async () => {
     const blocks = [{ type: 'image', mimeType: 'image/png', data: 'AQ==' }] satisfies JsonValue[]
     const client = createMockClient(

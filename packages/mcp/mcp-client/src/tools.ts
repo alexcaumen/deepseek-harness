@@ -68,6 +68,12 @@ const IMAGE_MEDIA_TYPES: readonly ImageMediaType[] = [
 /** Canonical RFC 4648 base64, excluding whitespace and URL-safe aliases. */
 const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
 
+/** Known legacy Windows computer-use tool whose JSON text embeds one PNG. */
+const LEGACY_SCREENSHOT_TOOL = 'cua_computer_use_screenshot'
+
+/** PNG signature used to keep the legacy compatibility path fail-closed. */
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+
 /** List without mutating the SDK's per-page output-validator cache. */
 function listToolsUncached(client: Client, cursor?: string) {
   return client.request(
@@ -351,13 +357,64 @@ function createExecutor(
         ? { structuredContent: result.structuredContent as JsonValue }
         : {},
     }
-    if (containsImage(content)) {
+    const modelContent = projectLegacyScreenshot(ctx, opts.serverName, rawName, content)
+    if (containsImage(modelContent)) {
       const fallback: ContentBlock[] = [{ type: 'text', text: extractText(content, rawName) }]
-      const projected = await prepareImageProjection(ctx, exec, content, rawName)
+      const projected = await prepareImageProjection(ctx, exec, modelContent, rawName)
       projections.set(exec, { value, fallback, content: projected })
     }
     return value
   }
+}
+
+/**
+ * Upgrade the legacy Windows screenshot server's JSON-text payload for model
+ * vision while preserving the original MCP value for programmatic callers.
+ * Every shape and byte check is exact so unrelated JSON results remain text.
+ */
+function projectLegacyScreenshot(
+  ctx: Context,
+  serverName: string,
+  rawName: string,
+  content: JsonValue[],
+): JsonValue[] {
+  if (serverName !== 'windows_desktop' || rawName !== LEGACY_SCREENSHOT_TOOL || content.length !== 1) return content
+  const block = content[0]
+  if (block === undefined) return content
+  if (!isRecord(block) || block.type !== 'text' || typeof block.text !== 'string') return content
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(block.text)
+  } catch {
+    return content
+  }
+  if (!isRecordJson(parsed)
+    || Object.keys(parsed).sort().join(',') !== 'data,message,status'
+    || parsed['status'] !== 'success'
+    || parsed['message'] !== 'Screenshot captured successfully.') return content
+  const data = parsed['data']
+  if (!isRecordJson(data)
+    || Object.keys(data).join(',') !== 'image_b64'
+    || typeof data['image_b64'] !== 'string') return content
+  const encoded = data['image_b64']
+  if (!CANONICAL_BASE64.test(encoded)) return content
+  const attachments = ctx.get('attachments')
+  if (attachments === undefined) return content
+  const maxEncodedLength = Math.ceil(attachments.imageLimits.maxImageBytes / 3) * 4
+  if (encoded.length > maxEncodedLength) return content
+  const signature = Buffer.from(encoded.slice(0, 12), 'base64')
+  if (!signature.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+    return content
+  }
+  return [
+    { type: 'text', text: 'Screenshot captured successfully.' },
+    { type: 'image', mimeType: 'image/png', data: encoded },
+  ]
+}
+
+/** Narrow an unknown parsed JSON value without weakening the JsonValue boundary helper. */
+function isRecordJson(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /** Whether an untrusted MCP content array contains a declared image block. */
