@@ -108,7 +108,7 @@ describe('local-model candidate merge', () => {
     const profile = providers(prepared({}).settings)[PROVIDER]!
     expect(profile).toMatchObject({
       displayName: 'GLM 5.3 Flash Official FP8 (Local)',
-      api: 'openai-completions', baseURL: BASE_URL, reasoning: 'high',
+      apiKeyEnv: 'GLM_CANARY_API_KEY', api: 'openai-completions', baseURL: BASE_URL, reasoning: 'high',
       compat: {
         maxTokensField: 'max_tokens', thinkingFormat: 'openai',
         supportsDeveloperRole: false, supportsReasoningEffort: true, supportsStore: false,
@@ -124,7 +124,7 @@ describe('local-model candidate merge', () => {
     expect(resolved.configuredMaxTokens.get(MODEL)).toBe(1024)
     expect(resolved.reasoning).toBe('high')
     expect(resolved.piProvider.getModels()[0]).toMatchObject({ contextWindow: 65_536, maxTokens: 1024, input: ['text', 'image'] })
-    expect(profile.apiKeyEnv).toBeUndefined()
+    expect(profile.apiKeyEnv).toBe('GLM_CANARY_API_KEY')
     expect(profile.models?.[0]?.compat).toBeUndefined()
   })
 
@@ -172,7 +172,7 @@ describe('local-model candidate merge', () => {
     for (const [provider, model, endpoint, thinkingFormat] of expected) {
       const profile = providers(result.settings)[provider]!
       expect(profile).toMatchObject({
-        api: 'openai-completions', baseURL: endpoint, reasoning: 'high',
+        apiKeyEnv: 'GLM_CANARY_API_KEY', api: 'openai-completions', baseURL: endpoint, reasoning: 'high',
         compat: {
           maxTokensField: 'max_tokens', thinkingFormat,
           supportsDeveloperRole: false, supportsReasoningEffort: true, supportsStore: false,

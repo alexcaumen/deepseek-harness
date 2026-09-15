@@ -86,9 +86,11 @@
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'
   config:
-    catalogDescriptionMaxLength: 96
-    catalogMaxEntries: 96
-    searchResultLimit: 30
+    # Keep the first request viable on admitted 4K local routes. The complete
+    # scoped catalog remains reachable through skill_search.
+    catalogDescriptionMaxLength: 48
+    catalogMaxEntries: 12
+    searchResultLimit: 8
     catalogPinnedNames:
       - computer-use
       - frontend-app-builder

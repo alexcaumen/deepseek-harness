@@ -23,6 +23,7 @@ const yaml = require('yaml') as {
 const PROVIDER = 'glm-local-r5300'
 const MODEL = 'GLM-5.3-Flash-official-fp8-canary'
 const DISPLAY = 'GLM 5.3 Flash Official FP8 (Local)'
+const LOCAL_API_KEY_ENV = 'GLM_CANARY_API_KEY'
 const GLM_CONTEXT_WINDOW = 65_536
 const GLM_MAX_TOKENS = 1_024
 const QWEN_PROVIDER = 'qwen-local-r5300'
@@ -44,6 +45,7 @@ interface LocalProfile {
   readonly model: string
   readonly display: string
   readonly baseURL?: string
+  readonly apiKeyEnv: string
   readonly contextWindow: number
   readonly maxTokens: number
   readonly thinkingFormat: 'openai' | 'deepseek'
@@ -54,6 +56,7 @@ const LOCAL_PROFILES: readonly LocalProfile[] = [
     provider: PROVIDER,
     model: MODEL,
     display: DISPLAY,
+    apiKeyEnv: LOCAL_API_KEY_ENV,
     contextWindow: GLM_CONTEXT_WINDOW,
     maxTokens: GLM_MAX_TOKENS,
     thinkingFormat: 'openai',
@@ -63,6 +66,7 @@ const LOCAL_PROFILES: readonly LocalProfile[] = [
     model: 'glm-5.3-flash-uncensored-fp8',
     display: 'GLM 5.3 Flash Uncensored FP8 (Local)',
     baseURL: 'http://127.0.0.1:18085/v1',
+    apiKeyEnv: LOCAL_API_KEY_ENV,
     contextWindow: 4_096,
     maxTokens: 1_024,
     thinkingFormat: 'openai',
@@ -72,6 +76,7 @@ const LOCAL_PROFILES: readonly LocalProfile[] = [
     model: 'deepseek-v4-flash-vision-exp-unsloth-ud-q8-k-xl',
     display: 'DeepSeek V4 Flash Vision Experimental (Local)',
     baseURL: 'http://127.0.0.1:18083/v1',
+    apiKeyEnv: LOCAL_API_KEY_ENV,
     contextWindow: 4_096,
     maxTokens: 1_024,
     thinkingFormat: 'deepseek',
@@ -81,6 +86,7 @@ const LOCAL_PROFILES: readonly LocalProfile[] = [
     model: 'deepseek-v4-flash-vision-uncensored-derived-q8-0',
     display: 'DeepSeek V4 Flash Vision Uncensored (Local)',
     baseURL: 'http://127.0.0.1:18084/v1',
+    apiKeyEnv: LOCAL_API_KEY_ENV,
     contextWindow: 4_096,
     maxTokens: 1_024,
     thinkingFormat: 'deepseek',
@@ -262,6 +268,7 @@ export function mergeLocalModelSettings(source: Mapping, options: MergeOptions):
     providers[profile.provider] = {
       ...previous,
       displayName: profile.display,
+      apiKeyEnv: previous.apiKeyEnv ?? profile.apiKeyEnv,
       api: 'openai-completions',
       baseURL: profile.baseURL ?? baseURL,
       reasoning: 'high',
