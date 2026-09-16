@@ -47,14 +47,14 @@
         tenantId: giana-cowork-preview
         issuerRef: giana:issuer:sha256:8fcaed49cd538cb6494053c7f2958fe9f48091e19f4258105fb5aa2a571e392a
         holderRef: giana:holder:sha256:23a5fc97f64fa90efc8fd2a913cab32474ba267195d6c6be89beb70ba809c5ee
-        admissionDigest: 9781caed147c1a163a9893c873d53dda470ace2a5fa362db3af3c3926c369e44
+        admissionDigest: 6977833ed909454c56d55d59db04cd1f5b23e65d9460c16d7badcc2c336c3839
         leaseTtlMs: 1800000
         operationTimeoutMs: 1500000
         maxClockSkewMs: 10000
         targets:
           - class: r5300
             identityDigest: 91eda62878736036ed54fa46478df41b8bb3dd8fb6b4103a21cc7357eaa56ffa
-            currentnessDigest: f5528cccb65aecbfa4294550ba21864faaa492b735fddc3f855e5f3abf79b5c8
+            currentnessDigest: cf5c91f8f72e30a54f9f56a6afb5ae061e004c0b385f0c47bd9cba5c95df2fd3
           - class: prdg
             identityDigest: bf7a58918d355c553f4852af75b3875e208d140a5060fe62cb4215cfceae64c5
             currentnessDigest: f0be0b93921bce3b37628aad744c22f7559347ab720c0a6878c2cc48d95d7af6
@@ -69,7 +69,7 @@
             provider: glm-local-r5300
             model: GLM-5.3-Flash-official-fp8-canary
             disposition: AVAILABLE
-            admissionReceiptDigest: sha256:9781caed147c1a163a9893c873d53dda470ace2a5fa362db3af3c3926c369e44
+            admissionReceiptDigest: sha256:6977833ed909454c56d55d59db04cd1f5b23e65d9460c16d7badcc2c336c3839
             revisionDigest: sha256:af139ab51af2a3ad155f9b012e1351ec074b7b3672262db7a9ebb6c845742aa4
             targets:
               - r5300
@@ -87,7 +87,7 @@
             provider: qwen-local-r5300
             model: Qwen/Qwen3.8-27B
             disposition: AVAILABLE
-            admissionReceiptDigest: sha256:9781caed147c1a163a9893c873d53dda470ace2a5fa362db3af3c3926c369e44
+            admissionReceiptDigest: sha256:6977833ed909454c56d55d59db04cd1f5b23e65d9460c16d7badcc2c336c3839
             revisionDigest: sha256:5da5832e0b3c0351bfb24486451b28649e629a6d14ef17c215358d8721b8b7d2
             targets:
               - r5300
@@ -109,7 +109,7 @@
             model: glm-5.3-flash-uncensored-fp8
             promptProfile: compact-4k
             disposition: AVAILABLE
-            admissionReceiptDigest: sha256:9781caed147c1a163a9893c873d53dda470ace2a5fa362db3af3c3926c369e44
+            admissionReceiptDigest: sha256:6977833ed909454c56d55d59db04cd1f5b23e65d9460c16d7badcc2c336c3839
             revisionDigest: sha256:f24d9ad71765ec0a2873047dfd9983555b93752c3d2e0223d2e6a5e336ceb71e
             targets:
               - r5300
@@ -128,8 +128,8 @@
             model: deepseek-v4-flash-vision-exp-unsloth-ud-q8-k-xl
             promptProfile: compact-4k
             disposition: AVAILABLE
-            admissionReceiptDigest: sha256:9781caed147c1a163a9893c873d53dda470ace2a5fa362db3af3c3926c369e44
-            revisionDigest: sha256:21379bb3ba1f5dce44fda546b889960e7d2ab826ff5761c7cf37f9a6f8371d83
+            admissionReceiptDigest: sha256:6977833ed909454c56d55d59db04cd1f5b23e65d9460c16d7badcc2c336c3839
+            revisionDigest: sha256:08b7a782da087848da0985771417e8e87ab8d581e4413a6af2c32a7fe183880f
             targets:
               - r5300
             allowRamCpuOffload: true
@@ -147,8 +147,8 @@
             model: deepseek-v4-flash-vision-uncensored-derived-q8-0
             promptProfile: compact-4k
             disposition: AVAILABLE
-            admissionReceiptDigest: sha256:9781caed147c1a163a9893c873d53dda470ace2a5fa362db3af3c3926c369e44
-            revisionDigest: sha256:45cf2b5b4c8913a88a82680be31bfe2c70d387104b901876f7e103f049d03c8e
+            admissionReceiptDigest: sha256:6977833ed909454c56d55d59db04cd1f5b23e65d9460c16d7badcc2c336c3839
+            revisionDigest: sha256:38fb3056d5c8bfdc350a6dce1989f36fc796c2f8ebab2cf370a59f1f43839124
             targets:
               - r5300
             allowRamCpuOffload: true

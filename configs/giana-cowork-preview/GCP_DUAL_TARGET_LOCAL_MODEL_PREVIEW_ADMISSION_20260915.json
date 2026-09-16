@@ -1,6 +1,6 @@
 {
   "schema": "giana.cowork.preview.local-model-admission.v2",
-  "issued_at": "2026-09-15T23:06:22+08:00",
+  "issued_at": "2026-09-16T07:54:31+08:00",
   "issuer_ref": "giana:issuer:sha256:8fcaed49cd538cb6494053c7f2958fe9f48091e19f4258105fb5aa2a571e392a",
   "holder_ref": "giana:holder:sha256:23a5fc97f64fa90efc8fd2a913cab32474ba267195d6c6be89beb70ba809c5ee",
   "authorization_basis": "Alex authorized isolated Giana CoWork Preview integration, automatic R5300-first routing, PRDG fallback, and direct HEQA of governed local models in this Codex task.",
@@ -37,9 +37,9 @@
   "target_currentness": [
     {
       "target": "r5300",
-      "observed_at": "2026-09-15T23:06:22+08:00",
-      "basis": "r5300|boot:6c05097f-17a6-484a-aada-853a1e609789|kernel:7.0.2-6-pve|official-launcher:0b8045fb2c3f3334714c4e2eff00153fa1f091cd25d8ed1ee9c27f89a16ce684|glm-uncensored-launcher:3d047fd20ba2cc9ef7bb1755f9e240a0f471b9abb8537f655400765c656a23e7|deepseek-regular-launcher:b7e9e7c6953a279c3a418d281629cde087b98dbd360788a47bca0e8c24abdaea|deepseek-uncensored-launcher:a0964a55414c86e7ec80a817c4296946469be8cede29e4b3c31f20fb4563f959|qwen-image:sha256:716e50e11551b69fce41b67e73aa4f4549e3079f9fd13af7773f8dfa9c014890|dots-binding:046da0351f5fa05cebb8996ef802c6319ec71db3f9307470b8fbc5c201d3031b",
-      "digest": "f5528cccb65aecbfa4294550ba21864faaa492b735fddc3f855e5f3abf79b5c8"
+      "observed_at": "2026-09-16T07:54:31+08:00",
+      "basis": "r5300|boot:6c05097f-17a6-484a-aada-853a1e609789|kernel:7.0.2-6-pve|official-launcher:0b8045fb2c3f3334714c4e2eff00153fa1f091cd25d8ed1ee9c27f89a16ce684|glm-uncensored-launcher:3d047fd20ba2cc9ef7bb1755f9e240a0f471b9abb8537f655400765c656a23e7|deepseek-regular-launcher:94ba03cf12bbbd57a46585d7d246657af6061d25c375806efdb9f804af4655e7|deepseek-uncensored-launcher:34ade4cc187a5a176e5c691a70945df06065d986c012a258163d8031702d23f7|qwen-image:sha256:716e50e11551b69fce41b67e73aa4f4549e3079f9fd13af7773f8dfa9c014890|dots-binding:046da0351f5fa05cebb8996ef802c6319ec71db3f9307470b8fbc5c201d3031b",
+      "digest": "cf5c91f8f72e30a54f9f56a6afb5ae061e004c0b385f0c47bd9cba5c95df2fd3"
     },
     {
       "target": "prdg",
@@ -94,11 +94,11 @@
       "disposition": "AVAILABLE",
       "provider": "deepseek-vision-local-r5300",
       "model": "deepseek-v4-flash-vision-exp-unsloth-ud-q8-k-xl",
-      "revision_digest": "21379bb3ba1f5dce44fda546b889960e7d2ab826ff5761c7cf37f9a6f8371d83",
+      "revision_digest": "08b7a782da087848da0985771417e8e87ab8d581e4413a6af2c32a7fe183880f",
       "repository": "unsloth/DeepSeek-V4-Flash-Vision-Exp-GGUF",
       "repository_revision": "b977d3c0ea2da58dbc12ddae8fb8951a7b3854d0",
       "artifact_manifest_sha256": "8c9db76f01c0401e708ff64541327bab296e791961d67d4d39eb6f7ca27ce752",
-      "launcher_sha256": "b7e9e7c6953a279c3a418d281629cde087b98dbd360788a47bca0e8c24abdaea",
+      "launcher_sha256": "94ba03cf12bbbd57a46585d7d246657af6061d25c375806efdb9f804af4655e7",
       "targets": ["r5300"],
       "stable_local_port": 18083,
       "context_window": 4096,
@@ -110,12 +110,12 @@
       "disposition": "AVAILABLE",
       "provider": "deepseek-vision-uncensored-local-r5300",
       "model": "deepseek-v4-flash-vision-uncensored-derived-q8-0",
-      "revision_digest": "45cf2b5b4c8913a88a82680be31bfe2c70d387104b901876f7e103f049d03c8e",
+      "revision_digest": "38fb3056d5c8bfdc350a6dce1989f36fc796c2f8ebab2cf370a59f1f43839124",
       "repository": "orcarouter/DeepSeek-V4-Flash-Vision-Uncensored",
       "repository_revision": "2ef3d5c2bb7d9ccba6ab66314ed9e63bd52ac2a6",
       "artifact_manifest_sha256": "14637601f9a8631cf470103a9753c9a1e8c252cf575eb5b3c78c33b7cdf88f6b",
       "derived_preflight_sha256": "3d989e2580b5ef96c60f45dba34c73d1d9bb3d16e39e60556e2e99c70d41cf40",
-      "launcher_sha256": "a0964a55414c86e7ec80a817c4296946469be8cede29e4b3c31f20fb4563f959",
+      "launcher_sha256": "34ade4cc187a5a176e5c691a70945df06065d986c012a258163d8031702d23f7",
       "targets": ["r5300"],
       "stable_local_port": 18084,
       "context_window": 4096,

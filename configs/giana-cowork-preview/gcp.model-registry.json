@@ -2,7 +2,7 @@
   "schema": "giana.cowork.preview.model-registry.v2",
   "issuerRef": "giana:issuer:sha256:8fcaed49cd538cb6494053c7f2958fe9f48091e19f4258105fb5aa2a571e392a",
   "holderRef": "giana:holder:sha256:23a5fc97f64fa90efc8fd2a913cab32474ba267195d6c6be89beb70ba809c5ee",
-  "admissionDigest": "9781caed147c1a163a9893c873d53dda470ace2a5fa362db3af3c3926c369e44",
+  "admissionDigest": "6977833ed909454c56d55d59db04cd1f5b23e65d9460c16d7badcc2c336c3839",
   "renewAfterMs": 120000,
   "slots": [{
     "target": "r5300",
@@ -23,7 +23,7 @@
     {
       "class": "r5300",
       "identity_digest": "91eda62878736036ed54fa46478df41b8bb3dd8fb6b4103a21cc7357eaa56ffa",
-      "currentness_digest": "f5528cccb65aecbfa4294550ba21864faaa492b735fddc3f855e5f3abf79b5c8"
+      "currentness_digest": "cf5c91f8f72e30a54f9f56a6afb5ae061e004c0b385f0c47bd9cba5c95df2fd3"
     },
     {
       "class": "prdg",
@@ -167,14 +167,14 @@
     },
     {
       "id": "deepseek-v4-flash-vision-regular",
-      "revisionDigest": "21379bb3ba1f5dce44fda546b889960e7d2ab826ff5761c7cf37f9a6f8371d83",
+      "revisionDigest": "08b7a782da087848da0985771417e8e87ab8d581e4413a6af2c32a7fe183880f",
       "target": "r5300",
       "exclusiveEndpoint": true,
       "runtime": {
         "kind": "systemd",
         "unit": "gcp-deepseek-v4-flash-vision-regular-preview-r3.service",
         "launcherPath": "/var/lib/giana-cowork-preview/runtime/r3/r5300-deepseek-v4-flash-vision-regular-launcher.sh",
-        "launcherSha256": "b7e9e7c6953a279c3a418d281629cde087b98dbd360788a47bca0e8c24abdaea",
+        "launcherSha256": "94ba03cf12bbbd57a46585d7d246657af6061d25c375806efdb9f804af4655e7",
         "processMarker": "deepseek-v4-flash-vision-exp-unsloth-ud-q8-k-xl",
         "remotePort": 18083,
         "localPort": 18083,
@@ -200,14 +200,14 @@
     },
     {
       "id": "deepseek-v4-flash-vision-uncensored",
-      "revisionDigest": "45cf2b5b4c8913a88a82680be31bfe2c70d387104b901876f7e103f049d03c8e",
+      "revisionDigest": "38fb3056d5c8bfdc350a6dce1989f36fc796c2f8ebab2cf370a59f1f43839124",
       "target": "r5300",
       "exclusiveEndpoint": true,
       "runtime": {
         "kind": "systemd",
         "unit": "gcp-deepseek-v4-flash-vision-uncensored-preview-r3.service",
         "launcherPath": "/var/lib/giana-cowork-preview/runtime/r3/r5300-deepseek-v4-flash-vision-uncensored-launcher.sh",
-        "launcherSha256": "a0964a55414c86e7ec80a817c4296946469be8cede29e4b3c31f20fb4563f959",
+        "launcherSha256": "34ade4cc187a5a176e5c691a70945df06065d986c012a258163d8031702d23f7",
         "processMarker": "deepseek-v4-flash-vision-uncensored-derived-q8-0",
         "remotePort": 18084,
         "localPort": 18084,

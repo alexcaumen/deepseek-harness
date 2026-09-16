@@ -28,7 +28,7 @@ exec "$server" \
   --gpu-layers 20 \
   --split-mode layer \
   --tensor-split 0.85,1.15 \
-  --ctx-size 4096 \
+  --ctx-size 8192 \
   --parallel 2 \
   --flash-attn on \
   --offline \

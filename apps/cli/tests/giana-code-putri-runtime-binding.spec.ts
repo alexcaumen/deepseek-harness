@@ -27,6 +27,12 @@ const MODEL_REGISTRY_PATH = join(
 const MODEL_ADMISSION_PATH = join(
   REPO_ROOT, 'configs', 'giana-cowork-preview', 'GCP_DUAL_TARGET_LOCAL_MODEL_PREVIEW_ADMISSION_20260915.json',
 )
+const DEEPSEEK_REGULAR_LAUNCHER_PATH = join(
+  REPO_ROOT, 'configs', 'giana-cowork-preview', 'runtime', 'r5300-deepseek-v4-flash-vision-regular-launcher.sh',
+)
+const DEEPSEEK_UNCENSORED_LAUNCHER_PATH = join(
+  REPO_ROOT, 'configs', 'giana-cowork-preview', 'runtime', 'r5300-deepseek-v4-flash-vision-uncensored-launcher.sh',
+)
 const GCP_PRESET_PATHS = ['standard', 'code', 'cordis'].map(name => ({
   name,
   path: join(REPO_ROOT, 'apps', 'cli', 'config', 'agent-presets', name, 'agent.cordis.yml'),
@@ -208,9 +214,14 @@ describe('Giana CoWork runtime binding', () => {
     expect(registry.routes.find(route => route.id === 'glm53-uncensored-fp8')?.runtime.launcherSha256)
       .toBe('3d047fd20ba2cc9ef7bb1755f9e240a0f471b9abb8537f655400765c656a23e7')
     expect(registry.routes.find(route => route.id === 'deepseek-v4-flash-vision-regular')?.runtime.launcherSha256)
-      .toBe('b7e9e7c6953a279c3a418d281629cde087b98dbd360788a47bca0e8c24abdaea')
+      .toBe(createHash('sha256').update(readFileSync(DEEPSEEK_REGULAR_LAUNCHER_PATH)).digest('hex'))
     expect(registry.routes.find(route => route.id === 'deepseek-v4-flash-vision-uncensored')?.runtime.launcherSha256)
-      .toBe('a0964a55414c86e7ec80a817c4296946469be8cede29e4b3c31f20fb4563f959')
+      .toBe(createHash('sha256').update(readFileSync(DEEPSEEK_UNCENSORED_LAUNCHER_PATH)).digest('hex'))
+    for (const launcher of [DEEPSEEK_REGULAR_LAUNCHER_PATH, DEEPSEEK_UNCENSORED_LAUNCHER_PATH]) {
+      const script = readFileSync(launcher, 'utf8')
+      expect(script).toContain('--ctx-size 8192')
+      expect(script).toContain('--parallel 2')
+    }
     for (const id of expectedRouteIds) {
       expect(patchRoutes.filter(route => route.id === id)).toHaveLength(1)
     }
@@ -279,7 +290,7 @@ describe('Giana CoWork runtime binding', () => {
         {
           class: 'r5300',
           identityDigest: '91eda62878736036ed54fa46478df41b8bb3dd8fb6b4103a21cc7357eaa56ffa',
-          currentnessDigest: 'f5528cccb65aecbfa4294550ba21864faaa492b735fddc3f855e5f3abf79b5c8',
+          currentnessDigest: 'cf5c91f8f72e30a54f9f56a6afb5ae061e004c0b385f0c47bd9cba5c95df2fd3',
         },
         {
           class: 'prdg',
