@@ -1711,6 +1711,34 @@ describe('continuable settlement delivery', () => {
     )
   })
 
+  it('keeps reasoning and other non-text blocks out of the parent settlement notice', async () => {
+    const answer: StreamChunk[] = [
+      { type: 'block-start', index: 0, blockType: 'reasoning' },
+      { type: 'reasoning-delta', index: 0, text: 'private reasoning' },
+      { type: 'block-end', index: 0, block: { type: 'reasoning', text: 'private reasoning' } },
+      { type: 'block-start', index: 1, blockType: 'text' },
+      { type: 'text-delta', index: 1, text: 'public answer' },
+      { type: 'block-end', index: 1, block: { type: 'text', text: 'public answer' } },
+      { type: 'usage', usage: { inputTokens: 10, outputTokens: 4 } },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ]
+    const { ctx, parent } = await setup([answer, textResponse('parent ack')])
+    const started = await ctx.subagents.startContinuable(startSpec(parent))
+    await waitNoActivation(ctx, started.childId)
+
+    const notice = await vi.waitFor(() => {
+      const found = parent.session.events.flatMap(event => event.type === 'user/message'
+        && event.data.source.kind === 'subagent-settled' ? [event.data] : [])[0]
+      expect(found).toBeDefined()
+      return found!
+    })
+    expect(notice.content).toEqual([
+      { type: 'text', text: `Background subagent ${started.childId} finished and will do no further work unless you send it more.` },
+      { type: 'text', text: 'Its closing message:' },
+      { type: 'text', text: 'public answer' },
+    ])
+  })
+
   it('delivers even when the child already reported for itself', async () => {
     const { ctx, parent } = await setup([textResponse('the answer'), textResponse('parent ack')])
     const started = await ctx.subagents.startContinuable(startSpec(parent))
