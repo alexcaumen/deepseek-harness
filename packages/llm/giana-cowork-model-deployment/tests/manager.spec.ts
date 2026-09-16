@@ -78,7 +78,7 @@ async function availableLoopbackPort(): Promise<number> {
   })
 }
 
-function lingeringEndpointProcess(model: string, signals: Array<string | number | undefined>): ChildProcess {
+function lingeringEndpointProcess(model: string, signals: Array<string | number | undefined>, gracefulCloseMs?: number): ChildProcess {
   const input = new PassThrough()
   const output = new PassThrough()
   let request = ''
@@ -91,6 +91,15 @@ function lingeringEndpointProcess(model: string, signals: Array<string | number 
     output.write(`HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: keep-alive\r\n\r\n${body}`)
   })
   const emitter = new EventEmitter()
+  let closed = false
+  const close = (signal: NodeJS.Signals | null): void => {
+    if (closed) return
+    closed = true
+    if (signal !== null) child.signalCode = signal
+    input.destroy()
+    output.end()
+    queueMicrotask(() => { emitter.emit('close', signal === null ? 0 : null, signal) })
+  }
   const child = Object.assign(emitter, {
     stdin: input,
     stdout: output,
@@ -99,11 +108,8 @@ function lingeringEndpointProcess(model: string, signals: Array<string | number 
     signalCode: null as NodeJS.Signals | null,
     kill(signal?: NodeJS.Signals | number): boolean {
       signals.push(signal)
-      if (signal !== 'SIGKILL') return true
-      this.signalCode = 'SIGKILL'
-      input.destroy()
-      output.end()
-      queueMicrotask(() => { emitter.emit('close', null, 'SIGKILL') })
+      if (signal === 'SIGKILL') close('SIGKILL')
+      else if (gracefulCloseMs !== undefined) setTimeout(() => { close(null) }, gracefulCloseMs)
       return true
     },
   })
@@ -125,8 +131,29 @@ describe('loopback endpoint quiescence', () => {
     }
 
     await expect(controller.ensure(route, 1_000)).resolves.toBe(true)
-    await expect(controller.quiesce(route, 100)).resolves.toBe(true)
+    const startedAt = Date.now()
+    await expect(controller.quiesce(route, 500)).resolves.toBe(true)
+    expect(Date.now() - startedAt).toBeLessThan(650)
     expect(signals).toContain('SIGKILL')
+    await expect(controller.released(route, 100)).resolves.toBe(true)
+  })
+
+  it('allows an owned tunnel to finish during the grace interval', async () => {
+    const localPort = await availableLoopbackPort()
+    const signals: Array<string | number | undefined> = []
+    const model = 'test-model'
+    const controller = new LoopbackEndpointController({
+      registryPath: 'registry.json', statePath: 'state.json',
+      runners: [{ target: 'r5300', kind: 'ssh', executable: 'ssh.exe', configPath: 'ssh-config', host: 'r5300' }],
+    }, () => lingeringEndpointProcess(model, signals, 10))
+    const route = {
+      id: 'test-route', target: 'r5300' as const,
+      runtime: { localPort, upstreamLocalPort: 28_083, remotePort: 18_083, expectedModel: model },
+    }
+
+    await expect(controller.ensure(route, 1_000)).resolves.toBe(true)
+    await expect(controller.quiesce(route, 200)).resolves.toBe(true)
+    expect(signals).not.toContain('SIGKILL')
     await expect(controller.released(route, 100)).resolves.toBe(true)
   })
 })

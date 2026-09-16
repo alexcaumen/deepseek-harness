@@ -16,6 +16,8 @@ Status: implemented
 
 Loopback quiescence 现在先关闭新请求入口，为既有自有 transport 提供有界 grace interval，之后只回收仍属于该 controller 的 transport。停止模型进程前仍必须通过远端 drain 验证。延长的 shutdown deadline 只用于隔离 HEQA；普通产品继续使用既有的有界关闭行为。外层 HEQA deadline 必须长于 lifecycle 清理预算，避免验证器杀死仍在正常进行的清理。
 
+所有 endpoint 关闭阶段现在共享一个绝对 deadline，并为强制回收自有 channel 与最终端口证明保留明确预算。便携 live HEQA 依据 live 模式本身选择更长的外层 deadline，包括默认 provider 路径；不再依赖是否提供显式 provider override。
+
 ## Alternatives considered
 
 **把 GCP 提示缩减到 2048 token 以下。** 这会掩盖启动器的上下文核算缺陷，给回复留下的空间过小，并丢弃有用的系统或工具上下文。

@@ -1519,32 +1519,37 @@ export class LoopbackEndpointController implements PreviewEndpointController {
     if (state.closing !== undefined) return state.closing
     state.unhealthy = true
     state.closing = (async () => {
+      const budgetMs = Math.max(1, timeoutMs)
+      const deadline = Date.now() + budgetMs
+      const forceReserveMs = Math.min(1_000, Math.max(1, Math.floor(budgetMs / 4)))
+      const portReserveMs = Math.min(1_000, Math.max(1, Math.floor(budgetMs / 4)))
+      const gracefulDeadline = Math.max(Date.now(), deadline - forceReserveMs - portReserveMs)
+      const forceDeadline = Math.max(gracefulDeadline, deadline - portReserveMs)
+      const waitForChannelsUntil = async (until: number): Promise<void> => {
+        while (state.channels.size > 0) {
+          const remaining = until - Date.now()
+          if (remaining <= 0) return
+          await new Promise(resolve => setTimeout(resolve, Math.min(25, remaining)))
+        }
+      }
       const serverClose = this.beginServerClose(state)
       for (const socket of state.sockets) socket.destroy()
       for (const channel of state.channels) channel.kill()
-      const closed = await new Promise<boolean>((resolve) => {
-        const timer = setTimeout(() => { resolve(false) }, Math.max(1, timeoutMs))
-        serverClose.then((result) => {
-          clearTimeout(timer)
-          resolve(result)
-        }, () => {
-          clearTimeout(timer)
-          resolve(false)
-        })
-      })
-      const channelDeadline = Date.now() + Math.min(Math.max(1, timeoutMs), 5_000)
-      while (state.channels.size > 0 && Date.now() < channelDeadline) {
-        await new Promise(resolve => setTimeout(resolve, 25))
-      }
+      const gracefulBudgetMs = gracefulDeadline - Date.now()
+      let closed = gracefulBudgetMs > 0 && await settleWithin(serverClose, gracefulBudgetMs)
+      await waitForChannelsUntil(gracefulDeadline)
       if (state.channels.size > 0) {
         for (const channel of state.channels) channel.kill('SIGKILL')
-        const killDeadline = Date.now() + Math.min(Math.max(1, timeoutMs), 1_000)
-        while (state.channels.size > 0 && Date.now() < killDeadline) {
-          await new Promise(resolve => setTimeout(resolve, 25))
-        }
+        await waitForChannelsUntil(forceDeadline)
       }
+      if (!closed) {
+        const closeBudgetMs = forceDeadline - Date.now()
+        closed = closeBudgetMs > 0 && await settleWithin(serverClose, closeBudgetMs)
+      }
+      const portBudgetMs = deadline - Date.now()
       const released = closed && state.channels.size === 0
-        && !await portOpen(state.localPort, Math.min(timeoutMs, 1_000))
+        && portBudgetMs > 0
+        && !await portOpen(state.localPort, Math.min(portBudgetMs, 1_000))
       if (released && this.states.get(state.localPort) === state) this.states.delete(state.localPort)
       return released
     })()

@@ -16,6 +16,8 @@ Both admitted DeepSeek launchers use a total context of 8192 with two parallel s
 
 Loopback quiescence now closes admission first, grants existing owned transports a bounded grace interval, and then reclaims only transports still owned by that controller. Remote drain verification remains mandatory before a model process can stop. The extended shutdown deadline applies only to isolated HEQA; the ordinary product retains its existing bounded shutdown behavior. Outer HEQA deadlines exceed the lifecycle cleanup budget so the validator does not kill a valid cleanup in progress.
 
+All endpoint-close phases share one absolute deadline, with explicit reserves for forced owned-channel cleanup and final port proof. Live packaged HEQA selects its longer outer deadline from live mode itself, including the default provider path; it no longer depends on whether an explicit provider override was supplied.
+
 ## Alternatives considered
 
 **Reduce the GCP prompt below 2048 tokens.** This would hide a launcher/accounting defect, leave too little room for a response, and discard useful system or tool context.
