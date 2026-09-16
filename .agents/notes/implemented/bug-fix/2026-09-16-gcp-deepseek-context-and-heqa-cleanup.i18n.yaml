@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-09-16-gcp-deepseek-context-and-heqa-cleanup.md
-2026-09-16-gcp-deepseek-context-and-heqa-cleanup.md: ccccb57c42cd53f986371b0920aa4f0c0217633c
-2026-09-16-gcp-deepseek-context-and-heqa-cleanup.zh.md: a732fc19494375389721ac884ed5deb7595da9ff
+2026-09-16-gcp-deepseek-context-and-heqa-cleanup.md: 7d5537acddd72136ce3c61010503274ed515537e
+2026-09-16-gcp-deepseek-context-and-heqa-cleanup.zh.md: f918e3b73d7584061384a070f5b63688d875e129

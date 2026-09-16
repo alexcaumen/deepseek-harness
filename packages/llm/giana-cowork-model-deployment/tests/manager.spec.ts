@@ -1,7 +1,11 @@
 import { createHash, createHmac } from 'node:crypto'
+import type { ChildProcess } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
@@ -26,6 +30,7 @@ import {
 } from '@deepseek-ai/dsh-model-lifecycle-server-manager/src/index.ts'
 import {
   canonicalJson,
+  LoopbackEndpointController,
   parsePreviewManagerRegistry,
   PreviewManager,
   PreviewManagerStateStore,
@@ -54,6 +59,75 @@ describe('state-file replacement', () => {
       throw Object.assign(new Error('disk full'), { code: 'ENOSPC' })
     })).rejects.toMatchObject({ code: 'ENOSPC' })
     expect(attempts).toBe(1)
+  })
+})
+
+async function availableLoopbackPort(): Promise<number> {
+  const server = createServer()
+  return await new Promise<number>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      if (address === null || typeof address === 'string') {
+        server.close()
+        reject(new Error('loopback test did not receive a TCP port'))
+        return
+      }
+      server.close((error) => { if (error) reject(error); else resolve(address.port) })
+    })
+  })
+}
+
+function lingeringEndpointProcess(model: string, signals: Array<string | number | undefined>): ChildProcess {
+  const input = new PassThrough()
+  const output = new PassThrough()
+  let request = ''
+  let replied = false
+  input.on('data', (chunk: Buffer) => {
+    request += chunk.toString('latin1')
+    if (replied || !request.includes('\r\n\r\n')) return
+    replied = true
+    const body = JSON.stringify({ data: [{ id: model }] })
+    output.write(`HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: keep-alive\r\n\r\n${body}`)
+  })
+  const emitter = new EventEmitter()
+  const child = Object.assign(emitter, {
+    stdin: input,
+    stdout: output,
+    stderr: null,
+    exitCode: null as number | null,
+    signalCode: null as NodeJS.Signals | null,
+    kill(signal?: NodeJS.Signals | number): boolean {
+      signals.push(signal)
+      if (signal !== 'SIGKILL') return true
+      this.signalCode = 'SIGKILL'
+      input.destroy()
+      output.end()
+      queueMicrotask(() => { emitter.emit('close', null, 'SIGKILL') })
+      return true
+    },
+  })
+  return child as unknown as ChildProcess
+}
+
+describe('loopback endpoint quiescence', () => {
+  it('force-closes a lingering owned tunnel before reporting quiesced', async () => {
+    const localPort = await availableLoopbackPort()
+    const signals: Array<string | number | undefined> = []
+    const model = 'test-model'
+    const controller = new LoopbackEndpointController({
+      registryPath: 'registry.json', statePath: 'state.json',
+      runners: [{ target: 'r5300', kind: 'ssh', executable: 'ssh.exe', configPath: 'ssh-config', host: 'r5300' }],
+    }, () => lingeringEndpointProcess(model, signals))
+    const route = {
+      id: 'test-route', target: 'r5300' as const,
+      runtime: { localPort, upstreamLocalPort: 28_083, remotePort: 18_083, expectedModel: model },
+    }
+
+    await expect(controller.ensure(route, 1_000)).resolves.toBe(true)
+    await expect(controller.quiesce(route, 100)).resolves.toBe(true)
+    expect(signals).toContain('SIGKILL')
+    await expect(controller.released(route, 100)).resolves.toBe(true)
   })
 })
 const evictionKey = Buffer.alloc(32, 0x5a)

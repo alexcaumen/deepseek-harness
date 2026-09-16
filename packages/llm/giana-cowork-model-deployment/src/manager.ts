@@ -1458,11 +1458,20 @@ export class LoopbackEndpointController implements PreviewEndpointController {
     if (state === undefined) return !await portOpen(route.runtime.localPort, Math.min(timeoutMs, 1_000))
     if (state.key !== endpointKey(route, runner)) return false
     const deadline = Date.now() + timeoutMs
-    if (!await settleWithin(this.beginServerClose(state), timeoutMs)) return false
-    while ((state.sockets.size > 0 || state.channels.size > 0) && Date.now() < deadline) {
+    const forceReserveMs = Math.min(1_000, Math.max(1, Math.floor(timeoutMs / 4)))
+    const gracefulDeadline = deadline - forceReserveMs
+    const serverClose = this.beginServerClose(state)
+    while ((state.sockets.size > 0 || state.channels.size > 0) && Date.now() < gracefulDeadline) {
       await new Promise(resolve => setTimeout(resolve, 25))
     }
-    return !state.server.listening && state.sockets.size === 0 && state.channels.size === 0
+    if (state.sockets.size > 0 || state.channels.size > 0) {
+      // Admission is already closed and the grace window has elapsed. Reclaim
+      // only this controller's transports; the following remote drain proof
+      // still prevents the model process from stopping mid-request.
+      return this.closeState(state, Math.max(1, deadline - Date.now()))
+    }
+    const closed = await settleWithin(serverClose, Math.max(1, deadline - Date.now()))
+    return closed && !state.server.listening
   }
 
   async resume(route: PreviewEndpointRoute, timeoutMs: number): Promise<boolean> {
