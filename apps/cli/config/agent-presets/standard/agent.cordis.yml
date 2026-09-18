@@ -205,11 +205,6 @@
         modelSelectionPolicy:
           discoveryToolName: list_subagent_models
           allowedModels:
-            - { provider: glm-local-r5300, model: GLM-5.3-Flash-official-fp8-canary }
-            - { provider: qwen-local-r5300, model: Qwen/Qwen3.8-27B }
-            - { provider: glm-uncensored-local-r5300, model: glm-5.3-flash-uncensored-fp8 }
-            - { provider: deepseek-vision-local-r5300, model: deepseek-v4-flash-vision-exp-unsloth-ud-q8-k-xl }
-            - { provider: deepseek-vision-uncensored-local-r5300, model: deepseek-v4-flash-vision-uncensored-derived-q8-0 }
             - { provider: gianaos, model: putri }
             - { provider: princess-os, model: lara }
 
@@ -222,11 +217,6 @@
         modelSelectionPolicy:
           discoveryToolName: list_subagent_fork_models
           allowedModels:
-            - { provider: glm-local-r5300, model: GLM-5.3-Flash-official-fp8-canary }
-            - { provider: qwen-local-r5300, model: Qwen/Qwen3.8-27B }
-            - { provider: glm-uncensored-local-r5300, model: glm-5.3-flash-uncensored-fp8 }
-            - { provider: deepseek-vision-local-r5300, model: deepseek-v4-flash-vision-exp-unsloth-ud-q8-k-xl }
-            - { provider: deepseek-vision-uncensored-local-r5300, model: deepseek-v4-flash-vision-uncensored-derived-q8-0 }
             - { provider: gianaos, model: putri }
             - { provider: princess-os, model: lara }
 
