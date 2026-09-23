@@ -14,7 +14,7 @@ import { createScope } from '@deepseek-ai/dsh-client-runtime/client'
 import type { SessionId } from '@deepseek-ai/dsh-client-runtime/client'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import { TestRemote } from '@deepseek-ai/dsh-client-test-runtime'
-import type { ModelSelection } from '@deepseek-ai/dsh-api-remotes/client'
+import type { ModelProviderGroup, ModelSelection } from '@deepseek-ai/dsh-api-remotes/client'
 import type { CommandContribution, SelectOption } from '@deepseek-ai/dsh-client-ui-commands/client'
 import type { ModelSelectInjected } from '../src/client/slots.ts'
 import { apply, inject } from '../src/client/index.ts'
@@ -54,7 +54,7 @@ const GROUPS = [{
 }]
 
 /** Boot the plugin over fake faces + a stateful fake host (current moves on selectModel). */
-async function bench() {
+async function bench(groups: ModelProviderGroup[] = GROUPS) {
   const ctx = new Context()
   let current: ModelSelection = { provider: 'deepseek-official', model: 'deepseek-v4-flash' }
   const calls = { models: 0, select: 0 }
@@ -62,7 +62,7 @@ async function bench() {
     models: () => {
       calls.models += 1
       return Promise.resolve({
-        result: { ok: true as const, value: { current, routable, groups: GROUPS, failures: [] } },
+        result: { ok: true as const, value: { current, routable, groups, failures: [] } },
       })
     },
     selectModel: (payload: { provider: string; model: string; reasoningEffort?: string }) => {
@@ -197,6 +197,18 @@ describe('ui-model-selection dual entry', () => {
       model: 'deepseek-v4-pro',
       reasoningEffort: 'high',
     })
+  })
+
+  it('keeps provider/model row identities distinct when either id contains a slash', async () => {
+    const b = await bench([
+      { id: 'a/b', name: 'First', models: [{ id: 'c', name: 'First model' }] },
+      { id: 'a', name: 'Second', models: [{ id: 'b/c', name: 'Second model' }] },
+    ])
+    b.mint('s1')
+    const options = await b.contribution().ui.options(projection('s1'), new AbortController().signal)
+    expect(options[0]?.id).not.toBe(options[1]?.id)
+    await b.contribution().ui.onSelect(options[1]!, projection('s1'))
+    expect(b.hostCurrent()).toEqual({ provider: 'a', model: 'b/c' })
   })
 
   it('both entries share one directory instance per session, isolated across sessions', async () => {

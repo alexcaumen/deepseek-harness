@@ -39,9 +39,9 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-/** One selectable row's id: an opaque row key (resolved by lookup, never parsed). */
+/** One selectable row's id: an unambiguous opaque key for the provider/model pair. */
 function rowId(providerId: string, modelId: string): string {
-  return `${providerId}/${modelId}`
+  return JSON.stringify([providerId, modelId])
 }
 
 /** Flatten the directory into popup rows; failure rows are listed for visibility but never selectable. */

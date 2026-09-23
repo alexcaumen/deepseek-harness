@@ -42,6 +42,8 @@ export class ModelDirectory {
 
   /** Latest operation wins; an older response never overwrites a newer one. */
   private generation = 0
+  private connectionEpoch = 0
+  private selectionSettled: Promise<void> | null = null
   private disposed = false
 
   /**
@@ -62,6 +64,15 @@ export class ModelDirectory {
    */
   async load(): Promise<SessionModels> {
     this.assertAvailable()
+    const pending = this.selectionSettled
+    if (pending !== null) {
+      const epoch = this.connectionEpoch
+      await pending
+      if (this.disposed || epoch !== this.connectionEpoch) {
+        throw new Error('model directory changed while waiting to refresh')
+      }
+      return this.load()
+    }
     const generation = ++this.generation
     this.store.update((s) => { s.status = 'loading'; s.error = null })
     const { result } = await this.sessions.models({ sessionId: this.sessionId })
@@ -93,6 +104,27 @@ export class ModelDirectory {
  */
   async select(selection: ModelSelection): Promise<void> {
     this.assertAvailable()
+    let release!: () => void
+    const settled = new Promise<void>((resolve) => { release = resolve })
+    const previous = this.selectionSettled
+    const epoch = this.connectionEpoch
+    this.selectionSettled = settled
+    const operation = (async () => {
+      if (previous !== null) await previous
+      if (this.disposed || epoch !== this.connectionEpoch) {
+        throw new Error('model directory changed before selection')
+      }
+      await this.selectNow(selection)
+    })()
+    const finish = (): void => {
+      release()
+      if (this.selectionSettled === settled) this.selectionSettled = null
+    }
+    void operation.then(finish, finish)
+    return operation
+  }
+
+  private async selectNow(selection: ModelSelection): Promise<void> {
     const generation = ++this.generation
     this.store.update((s) => { s.status = 'selecting'; s.error = null })
     const { result } = await this.sessions.selectModel({
@@ -129,6 +161,8 @@ export class ModelDirectory {
   resetConnected(): void {
     if (this.disposed) return
     ++this.generation
+    ++this.connectionEpoch
+    this.selectionSettled = null
     this.store.update((s) => {
       s.current = null
       s.routable = null
@@ -144,6 +178,8 @@ export class ModelDirectory {
   /** Scope teardown: late settlements lose write access to the store. */
   dispose(): void {
     this.disposed = true
+    ++this.connectionEpoch
+    this.selectionSettled = null
   }
 
   private assertAvailable(): void {
