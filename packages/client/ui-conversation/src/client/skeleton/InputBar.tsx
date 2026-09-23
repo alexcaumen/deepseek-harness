@@ -65,8 +65,8 @@ function analyserWaveformAmplitude(analyser: AnalyserNode, values: Uint8Array<Ar
   }
   const rms = Math.sqrt(energy / values.length)
   // Expand quiet speech visually without amplifying the recorded audio or silence.
-  if (rms < 0.012) return DICTATION_WAVEFORM_FLOOR
-  return Math.max(DICTATION_WAVEFORM_FLOOR, Math.min(1, Math.sqrt(rms * 3.5)))
+  if (rms < 0.004) return DICTATION_WAVEFORM_FLOOR
+  return Math.max(DICTATION_WAVEFORM_FLOOR, Math.min(1, Math.sqrt(rms * 7.5)))
 }
 
 function paintWaveform(element: HTMLSpanElement | null, samples: readonly number[]): void {
