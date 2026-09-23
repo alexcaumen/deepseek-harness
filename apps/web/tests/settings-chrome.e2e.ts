@@ -269,7 +269,7 @@ describe('web e2e: settings modal and General preferences', () => {
     )), { timeout: 5_000 }).toBe(true)
     for (const result of systemMutate.mock.results) {
       if (result.type === 'return') {
-        const response = await Promise.resolve(result.value as Awaited<ReturnType<typeof systemMutate>>)
+        const response = await result.value
         expect(response.result.ok).toBe(true)
       }
     }
@@ -336,7 +336,7 @@ describe('web e2e: settings modal and General preferences', () => {
     )), { timeout: 5_000 }).toBe(true)
     for (const result of darkMutate.mock.results) {
       if (result.type === 'return') {
-        const response = await Promise.resolve(result.value as Awaited<ReturnType<typeof darkMutate>>)
+        const response = await result.value
         expect({ ok: response.result.ok, code: response.result.ok ? undefined : response.result.error.code })
           .toEqual({ ok: true, code: undefined })
       }
