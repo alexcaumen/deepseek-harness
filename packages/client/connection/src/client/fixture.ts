@@ -1442,6 +1442,8 @@ interface ReasoningChunkStormState {
 export interface FixtureOptions {
   /** Start with no real Workspace or Session. */
   empty?: boolean
+  /** Annotation HEQA starts from completed history without resident interactions. */
+  annotationQa?: boolean
   /** Reject every prompt before appending its user event. */
   rejectPrompt?: boolean
   /** Publish the Session but fail its Workspace account write. */
@@ -1527,7 +1529,7 @@ export function createFixtureFaces(options: FixtureOptions = {}): FixtureWorld {
 function createFixtureWorld(options: FixtureOptions): FixtureWorld {
   // The resident fixture sessions all carry history, so none of them is blank.
   const sessions: SessionSummary[] = options.empty ? [] : [
-    { sessionId: sid('fx-alpha'), updatedAt: Date.now(), running: true, blank: false, cwd: '/tmp/fixture' },
+    { sessionId: sid('fx-alpha'), updatedAt: Date.now(), running: !options.annotationQa, blank: false, cwd: '/tmp/fixture' },
     { sessionId: sid('fx-beta'), updatedAt: Date.now() - 60_000, running: false, blank: false, parentSessionId: sid('fx-alpha'), cwd: '/tmp/fixture' },
     { sessionId: sid('fx-gamma'), updatedAt: Date.now() - 120_000, running: false, blank: false, cwd: '/tmp/fixture' },
   ]
@@ -1620,9 +1622,9 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
   const pendingApprovalRpcId = mint()
   const pendingApprovalId = 'fx-approval-1' as Extract<MuxFrame, { type: 'approval/requested' }>['approvalId']
   /** Cleared once answered through respond; replay stops and approval/resolved is broadcast. */
-  let approvalPending = true
+  let approvalPending = !options.annotationQa
   const pendingQuestionRpcId = mint()
-  let questionPending = true
+  let questionPending = !options.annotationQa
   const fixtureQuestions: Extract<MuxFrame, { type: 'question/requested' }>['questions'] = [
     {
       id: 'harness-profile',
@@ -3303,6 +3305,7 @@ function fixtureOptionsFromLocation(): FixtureOptions {
   const welcomeNoticeVersion = query.get('fixtureWelcomeNoticeVersion')
   return {
     empty: query.get('fixture') === 'empty',
+    annotationQa: query.get('fixture') === 'annotation-heqa',
     rejectPrompt: query.get('fixturePrompt') === 'reject',
     failWorkspaceAttach: query.get('fixtureAttach') === 'fail',
     dropSessionCreateResponse: query.get('fixtureSessionCreate') === 'drop-response',

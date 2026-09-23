@@ -52,6 +52,31 @@ async function collect<F>(stream: AsyncIterable<RpcRequest<F>>, abort: AbortCont
 }
 
 describe('createFixtureApi', () => {
+  it('starts annotation HEQA idle without losing completed history or reasoning', async () => {
+    const api = createFixtureApi({ annotationQa: true })
+    const sessions = await api.sessions.list(req({}))
+    if (!sessions.result.ok) throw new Error('list failed')
+    expect(sessions.result.value.items.find(item => item.sessionId === sid('fx-alpha'))?.running).toBe(false)
+
+    const history = await api.sessions.history(req({ sessionId: sid('fx-alpha'), maxMessages: 200 }))
+    if (!history.result.ok) throw new Error('history failed')
+    const events = history.result.value.events.map(entry => entry.event)
+    expect(events.some(event => event.type === 'assistant/message'
+      && event.data.message.content.some(block => block.type === 'reasoning'))).toBe(true)
+    expect(events.at(-1)?.type).toBe('turn/end')
+
+    const abort = new AbortController()
+    const frames: MuxFrame[] = []
+    const timer = setTimeout(() => abort.abort(), 20)
+    try {
+      for await (const envelope of api.events.mux(req({}), abort.signal)) frames.push(envelope.payload)
+    } finally {
+      clearTimeout(timer)
+    }
+    expect(frames.some(frame => frame.type === 'approval/requested' || frame.type === 'question/requested')).toBe(false)
+    expect(frames.some(frame => frame.type === 'session/subscribed' && frame.sessionId === sid('fx-alpha'))).toBe(false)
+  })
+
   it('serves the session list sorted by updatedAt desc and echoes rpcIds on every unary', async () => {
     const api = createFixtureApi()
     const request = req({})
