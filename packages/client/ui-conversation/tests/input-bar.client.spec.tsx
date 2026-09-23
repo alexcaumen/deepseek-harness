@@ -750,7 +750,7 @@ describe('automatic-language dictation', () => {
     expect(bars).toHaveLength(72)
     expect(bars[0]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.080')
     const newestSample = bars[71]?.style.getPropertyValue('--dictation-amplitude')
-    expect(newestSample).toBe('1.000')
+    expect(newestSample).toBe('0.880')
     expect(waveform.dataset.waveformTravelMs).toBe('7000')
 
     act(() => { frames.step(32) })
@@ -758,15 +758,18 @@ describe('automatic-language dictation', () => {
     expect(audio.analyser.getByteTimeDomainData).toHaveBeenCalledOnce()
     act(() => { frames.step(120) })
     expect(bars[70]?.style.getPropertyValue('--dictation-amplitude')).toBe(newestSample)
-    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.080')
+    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.817')
     expect(audio.analyser.getByteTimeDomainData).toHaveBeenCalledTimes(2)
 
     // A throttled frame catches up by elapsed cadence slots, preserving the
     // advertised seven-second travel instead of advancing only once per RAF.
     act(() => { frames.step(704) })
     expect(bars[64]?.style.getPropertyValue('--dictation-amplitude')).toBe(newestSample)
-    expect(bars[65]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.080')
-    expect(audio.analyser.getByteTimeDomainData).toHaveBeenCalledTimes(8)
+    expect(bars[65]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.817')
+    // RC50 samples once per paint and holds a decaying envelope during catch-up.
+    expect(audio.analyser.getByteTimeDomainData).toHaveBeenCalledTimes(3)
+    act(() => { frames.step(10_000) })
+    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.080')
 
     fireEvent.click(microphone)
     expect(frames.cancel).toHaveBeenCalled()
@@ -788,9 +791,11 @@ describe('automatic-language dictation', () => {
     await vi.waitFor(() => { expect(microphone.getAttribute('aria-pressed')).toBe('true') })
     const bars = result.view.container.querySelectorAll<HTMLElement>('[data-waveform-bar]')
     act(() => { frames.step(16) })
-    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.331')
+    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.426')
     act(() => { frames.step(120) })
-    expect(bars[70]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.331')
+    expect(bars[70]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.426')
+    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.395')
+    act(() => { frames.step(10_000) })
     expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.080')
     fireEvent.keyDown(result.textarea, { key: 'Escape' })
   })
@@ -851,11 +856,11 @@ describe('automatic-language dictation', () => {
 
     act(() => { frames.step(16) })
     expect(waveform.dataset.waveformMotion).toBe('reduced')
-    expect(new Set(bars.map(bar => bar.style.getPropertyValue('--dictation-amplitude')))).toEqual(new Set(['1.000']))
+    expect(new Set(bars.map(bar => bar.style.getPropertyValue('--dictation-amplitude')))).toEqual(new Set(['0.880']))
     act(() => { frames.step(100) })
-    expect(new Set(bars.map(bar => bar.style.getPropertyValue('--dictation-amplitude')))).toEqual(new Set(['1.000']))
+    expect(new Set(bars.map(bar => bar.style.getPropertyValue('--dictation-amplitude')))).toEqual(new Set(['0.880']))
     act(() => { frames.step(300) })
-    expect(new Set(bars.map(bar => bar.style.getPropertyValue('--dictation-amplitude')))).toEqual(new Set(['0.080']))
+    expect(new Set(bars.map(bar => bar.style.getPropertyValue('--dictation-amplitude')))).toEqual(new Set(['0.817']))
 
     result.view.unmount()
     expect(frames.cancel).toHaveBeenCalled()

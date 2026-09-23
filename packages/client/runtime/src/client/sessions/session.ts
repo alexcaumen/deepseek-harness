@@ -1,4 +1,4 @@
-// Sessions remain resident after creation so they continue consuming mux frames off-screen.
+// Control state remains resident; offscreen display history can be reloaded from the host.
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { AttachmentIdType, ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
@@ -27,12 +27,15 @@ import { ProjectionValueStore } from './projection-store.ts'
 import type { ProjectionsBaseline } from './projection-store.ts'
 import { resolvedClientTimeZone } from '../time-zone.ts'
 import { SessionQueueMirror } from './queue-mirror.ts'
+import { resolveHistoryBudget, type HistoryBudget, type HistoryBudgetConfig } from './history-budget.ts'
 
 /** Messages requested per history page. */
 export const PAGE_MESSAGES = 50
 
 /** Manager-owned observers of a Session object's local state edges. */
 export interface SessionOptions {
+  /** Limits for automatic history retention. A current step remains atomic. */
+  historyBudget?: HistoryBudgetConfig
   /** Catalog-discovered address selecting non-activating subagent transport. */
   address?: SubagentAddress
   /** Whether the exact direct parent Agent was live at the latest catalog read. */
@@ -68,6 +71,8 @@ export class Session implements SessionFace {
   /** Wire views aligned with `events` by index (envelope-level annotations; undefined = no view).
    *  Kept parallel rather than merged so `events` stays the raw log slice (model-visible ⟺ logged). */
   private views: (ToolEventView | undefined)[] = []
+  private historyChars = 0
+  private readonly historyBudget: HistoryBudget
   private baseSeq = 0
   private hasMore = false
   private openState: OpenState = 'cold'
@@ -145,6 +150,7 @@ export class Session implements SessionFace {
     private readonly remote: SessionRemotes,
     private readonly options: SessionOptions = {},
   ) {
+    this.historyBudget = resolveHistoryBudget(options.historyBudget)
     this.projections = options.projections ?? new ProjectionValueStore()
     this.address = options.address
     this.parentAvailable = options.parentAvailable ?? false
@@ -384,10 +390,13 @@ export class Session implements SessionFace {
   /** Page up: pull one earlier page with the window's first seq as beforeSeq and prepend. */
   async loadOlder(): Promise<void> {
     if (this.openState !== 'open' || !this.hasMore || this.loadingOlder) return
+    const generation = this.openGeneration
+    const beforeSeq = this.baseSeq
     this.loadingOlder = true
     this.notifier.markDirty()
     try {
-      const { result } = await this.history({ beforeSeq: this.baseSeq, maxMessages: PAGE_MESSAGES })
+      const { result } = await this.history({ beforeSeq, maxMessages: PAGE_MESSAGES })
+      if (generation !== this.openGeneration || beforeSeq !== this.baseSeq) return
       if (!result.ok) return // keep the window as-is; do not overwrite openError (open already succeeded)
       const older = result.value.events
       if (older.length === 0) {
@@ -405,6 +414,7 @@ export class Session implements SessionFace {
       }
       this.events = [...older.map(e => e.event), ...this.events]
       this.views = [...older.map(e => e.view), ...this.views]
+      this.historyChars += older.reduce((sum, entry) => sum + this.entryChars(entry.event, entry.view), 0)
       /* v8 ignore next -- the ?? arm needs older[0] undefined, but the empty-page branch above already returned. */
       this.baseSeq = older[0]?.event.seq ?? this.baseSeq
       this.hasMore = result.value.hasMore
@@ -412,16 +422,21 @@ export class Session implements SessionFace {
     } catch (error) {
       console.error('[web-runtime] loadOlder failed:', error)
     } finally {
-      this.loadingOlder = false
-      this.notifier.markDirty()
+      if (generation === this.openGeneration) {
+        this.loadingOlder = false
+        this.notifier.markDirty()
+      }
     }
   }
 
   /** Reconnect rebuild (manager calls this on onConnected for instances that were opened):
-   *  reset the window and rerun open; pending waits for the baseline replay. Invalidates any
+   *  reset the window and rerun open. Invalidates any
    *  in-flight open first — its history request rode the dead connection and must not settle
-   *  the fresh generation into 'error'. */
-  async resync(): Promise<void> {
+   *  the fresh generation into 'error'.
+   *  @param preservePending - reconnect already cleared dead waits before replay arrived. */
+  async resync(preservePending = false): Promise<void> {
+    // Reconnect replay can precede the ready handshake; its fresh waits must survive.
+    if (!preservePending) this.handleDisconnected()
     // The queue mirror is NOT cleared here: onConnected (which drives resync)
     // races the mux frames — the fresh generation's baseline may have landed
     // already, and the host never resends it. The mirror re-baselines on the
@@ -434,11 +449,10 @@ export class Session implements SessionFace {
     this.openError = null
     this.events = []
     this.views = []
+    this.historyChars = 0
     this.baseSeq = 0
-    // Superseded, not settled: the baseline replay re-sends still-pending requested frames verbatim
-    // (same rpcId), re-minting fresh waits; a stale reference's respond() still reaches the host.
-    this.pending.clear()
-    this.pendingRev++
+    this.loadingOlder = false
+    this.stitching = false
     this.subscribedLastSeq = null
     this.liveBuffer = []
     this.notifier.markDirty()
@@ -597,6 +611,34 @@ export class Session implements SessionFace {
   /** No-op because session instances remain resident. */
   dispose(): void {}
 
+  /** Invalidate dead-generation waits before the next mux stream can replay them. */
+  handleDisconnected(): void {
+    // Superseded, not settled: baseline replay mints fresh waits with live RPC identities.
+    this.pending.clear()
+    this.pendingRev++
+    this.notifier.markDirty()
+  }
+
+  /** Release only offscreen display history; preserve approvals, queues and the host task. */
+  suspendHistory(): void {
+    this.openGeneration++
+    this.openPromise = null
+    this.openState = 'cold'
+    this.openError = null
+    this.events = []
+    this.views = []
+    this.historyChars = 0
+    this.liveBuffer = []
+    this.loadingOlder = false
+    this.stitching = false
+    this.baseSeq = 0
+    this.hasMore = false
+    this.conversation.replaceWindow([], false)
+    this.notifier.markDirty()
+    // The previous materialized snapshot must not retain evicted payloads offscreen.
+    this.notifier.ensureFresh()
+  }
+
   /** Rebuild the current window after a low-frequency Definition or view registration change. */
   rebuildConversationRegistry(): void {
     this.scheduleConversation(this.conversation.rebuildRegistry())
@@ -661,10 +703,12 @@ export class Session implements SessionFace {
   private installWindow(entries: HistoryEntry[], hasMore: boolean, projections?: ProjectionsBaseline): void {
     this.events = entries.map(e => e.event)
     this.views = entries.map(e => e.view)
+    this.historyChars = entries.reduce((sum, entry) => sum + this.entryChars(entry.event, entry.view), 0)
     this.baseSeq = this.events[0]?.seq ?? 0
     this.hasMore = hasMore
     if (this.events.some(event => event.type === 'turn/start')) this.firstPromptPendingTurn = false
-    this.conversation.replaceWindow(entries.map(conversationInput), hasMore)
+    this.trimHistory()
+    this.conversation.replaceWindow(this.events.map((event, index) => ({ event, view: this.views[index] })), this.hasMore)
     if (projections !== undefined) this.projections.seed(projections)
     const buffered = this.liveBuffer
     this.liveBuffer = []
@@ -678,10 +722,44 @@ export class Session implements SessionFace {
     if (tailSeq !== null && event.seq <= tailSeq) return 'none' // replay overlap, drop
     this.events.push(event)
     this.views.push(view)
+    this.historyChars += this.entryChars(event, view)
     if (event.type === 'turn/start') this.firstPromptPendingTurn = false
     const queueChanged = this.queueMirror.acceptDurable(event)
-    const publication = this.conversation.append({ event, view })
+    // Never cut an in-flight step's chunks, tool calls or results apart.
+    const boundary = event.type === 'step/start' || event.type === 'turn/start' || event.type === 'step/end'
+    const publication = boundary && this.trimHistory()
+      ? this.conversation.replaceWindow(this.events.map((item, index) => ({ event: item, view: this.views[index] })), this.hasMore)
+      : this.conversation.append({ event, view })
     return queueChanged ? 'immediate' : publication
+  }
+
+  private entryChars(event: SessionEvent, view?: ToolEventView): number {
+    return JSON.stringify(event).length + (view === undefined ? 0 : JSON.stringify(view).length)
+  }
+
+  private trimHistory(): boolean {
+    const { maxHistoryEvents, maxHistoryChars } = this.historyBudget
+    if (this.events.length <= maxHistoryEvents && this.historyChars <= maxHistoryChars) return false
+    let chars = this.historyChars
+    let cut = 0
+    let cutSeq = this.baseSeq
+    // Keep about half the budget to avoid rebuilding on each subsequent event.
+    for (const [index, event] of this.events.entries()) {
+      if (index > 0 && (event.type === 'step/start' || event.type === 'turn/start')) {
+        cut = index
+        cutSeq = event.seq
+        if (this.events.length - index <= Math.max(1, Math.floor(maxHistoryEvents / 2))
+          && chars <= Math.max(1, Math.floor(maxHistoryChars / 2))) break
+      }
+      chars -= this.entryChars(event, this.views[index])
+    }
+    if (cut === 0) return false
+    this.events = this.events.slice(cut)
+    this.views = this.views.slice(cut)
+    this.historyChars = this.events.reduce((sum, event, index) => sum + this.entryChars(event, this.views[index]), 0)
+    this.baseSeq = cutSeq
+    this.hasMore = true
+    return true
   }
 
   /** Land a live session/event (open/repair in flight -> buffer; overlapping seq -> drop;
@@ -727,7 +805,7 @@ export class Session implements SessionFace {
     } catch (error) {
       console.error('[web-runtime] gap repair failed:', error)
     } finally {
-      this.stitching = false
+      if (generation === this.openGeneration) this.stitching = false
     }
   }
 

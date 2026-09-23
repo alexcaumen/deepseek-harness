@@ -21,6 +21,7 @@ import type {} from '@deepseek-ai/dsh-session-title/client'
 import { Notifier } from './notifier.ts'
 import { ProjectionValueStore } from './projection-store.ts'
 import { Session } from './session.ts'
+import type { HistoryBudgetConfig } from './history-budget.ts'
 import type { SessionRemotes } from './remotes.ts'
 
 /**
@@ -170,6 +171,7 @@ export class SessionManager {
     restoredSelection?: SessionId,
     restoredAddress?: SubagentAddress,
     private readonly conversation?: ConversationRuntime,
+    private readonly historyBudget?: HistoryBudgetConfig,
   ) {
     this.selected = restoredSelection
     if (restoredAddress !== undefined) this.addresses.set(restoredAddress.childSessionId, restoredAddress)
@@ -194,6 +196,7 @@ export class SessionManager {
         ? false
         : this.catalogs.get(address.parentSessionId)?.parentAvailable ?? false,
     )
+    if (this.selected !== undefined && this.selected !== sessionId) this.sessions.get(this.selected)?.suspendHistory()
     this.selected = sessionId
     // Looking at the session consumes its completion reminder (dot clears).
     this.completedNotifications.delete(sessionId)
@@ -213,6 +216,7 @@ export class SessionManager {
     }
     this.addresses.set(address.childSessionId, address)
     this.sessions.get(address.childSessionId)?.configureSubagent(address, catalog?.parentAvailable ?? false)
+    if (this.selected !== undefined && this.selected !== address.childSessionId) this.sessions.get(this.selected)?.suspendHistory()
     this.selected = address.childSessionId
     this.completedNotifications.delete(address.childSessionId)
     void this.refreshSubagents(address.childSessionId)
@@ -221,6 +225,7 @@ export class SessionManager {
 
   /** Clear the selection (the layout falls to the no-session view state). */
   clearSelection(): void {
+    if (this.selected !== undefined) this.sessions.get(this.selected)?.suspendHistory()
     this.selected = undefined
     this.notifier.notifyNow()
   }
@@ -318,6 +323,7 @@ export class SessionManager {
         this.recordMutation({ kind: 'engaged', sessionId: engaged.sessionId })
       },
       projections: this.projectionStore(sessionId),
+      ...(this.historyBudget === undefined ? {} : { historyBudget: this.historyBudget }),
       ...this.conversation === undefined ? {} : { conversation: this.conversation },
     })
   }
@@ -885,6 +891,7 @@ export class SessionManager {
    * request with its live rpcId.
   */
   handleDisconnected(): void {
+    for (const session of this.sessions.values()) session.handleDisconnected()
     if (this.pendingInteractions.size > 0) {
       this.pendingInteractions.clear()
       this.notifier.markDirty()
@@ -905,7 +912,7 @@ export class SessionManager {
     if (selectedAddress !== undefined) void this.refreshSubagents(selectedAddress.parentSessionId)
     if (this.selected !== undefined) void this.refreshSubagents(this.selected)
     for (const parentSessionId of this.openCatalogs) void this.refreshSubagents(parentSessionId)
-    for (const session of this.sessions.values()) void session.resync()
+    for (const session of this.sessions.values()) void session.resync(true)
   }
 
   /** Debounce membership refetches while one parent catalog is selected or open. */

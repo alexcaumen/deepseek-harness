@@ -32,6 +32,7 @@ import type { AgentContext, ISessions } from '../contract/sessions.ts'
 import { createScope, scopeOf as scopeTagOf } from '../agents/scope.ts'
 import type { ConversationRuntime } from './conversation-assembler.ts'
 import { SessionManager } from './manager.ts'
+import type { HistoryBudgetConfig } from './history-budget.ts'
 import type { SessionRemotes } from './remotes.ts'
 import type { SessionListPhase, SessionSearchResultItem, SubagentCatalogSnapshot } from './manager.ts'
 import type { PendingInteractionStatus } from './pending.ts'
@@ -280,6 +281,7 @@ export class SessionRuntime implements ISessions {
     api: IApiClient,
     remote: SessionRemotes,
     conversationRuntime?: ConversationRuntime,
+    historyBudget?: HistoryBudgetConfig,
   ) {
     this.selection = createSnapshotStore<SessionSelection>(
       {},
@@ -298,6 +300,7 @@ export class SessionRuntime implements ISessions {
       restored.sessionId,
       restored.subagentAddress,
       conversation,
+      historyBudget,
     )
     this.list = createSnapshotStore<SessionListState>({
       ids: [], byId: {}, current: undefined, phase: 'pending',
@@ -609,7 +612,13 @@ export class SessionRuntime implements ISessions {
     // A masked gap (current blanked while the selection's session is
     // transiently absent) holds the stage: tearing down on the gap would
     // destroy exactly the frozen scope the mask exists to preserve.
-    if (current === undefined || snapshot.byId[current] === undefined || current === this.watched) return
+    if (current === undefined || snapshot.byId[current] === undefined) return
+    if (current === this.watched) {
+      // Clearing selection releases history but deliberately keeps the scope staged.
+      const record = this.resolve(current)
+      if (record?.session.getSnapshot().openState === 'cold') void record.session.open()
+      return
+    }
     this.watched = current
     this.sweepDeferred()
     const record = this.resolve(current)

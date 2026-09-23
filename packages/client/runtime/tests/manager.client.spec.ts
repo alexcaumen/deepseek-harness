@@ -1025,6 +1025,27 @@ describe('pending-interaction list status', () => {
     const session = manager.get(S1)
     expect(session.getSnapshot().pending).toEqual([])
   })
+
+  it.each([false, true])('clears dead waits and retains fresh replay in resident sessions (suspended=%s)', async (suspended) => {
+    const api = new FakeApiClient()
+    const manager = new SessionManager(api, fakeRemote())
+    const session = manager.get(S1)
+    await session.open()
+    manager.handleMuxEnvelope({ rpcId: 'old' as never, payload: { type: 'approval/requested', sessionId: S1, approvalId: 'old' as never, toolName: 'read' } })
+    manager.handleMuxEnvelope({ rpcId: 'q-old' as never, payload: { type: 'question/requested', sessionId: S1, questions: [] } })
+    if (suspended) session.suspendHistory()
+    manager.handleDisconnected()
+    expect(session.getSnapshot().pending).toEqual([])
+    manager.handleMuxEnvelope({ rpcId: 'fresh' as never, payload: { type: 'approval/requested', sessionId: S1, approvalId: 'fresh' as never, toolName: 'read' } })
+    manager.handleConnected()
+    await Promise.resolve()
+    expect(session.getSnapshot().pending).toHaveLength(1)
+    expect(session.getSnapshot().pending[0]?.payload).toMatchObject({ approvalId: 'fresh' })
+    if (suspended) {
+      expect(session.getSnapshot().openState).toBe('cold')
+      expect(api.calls.filter(call => call.method === 'session.history')).toHaveLength(1)
+    }
+  })
 })
 
 describe('completed reminder', () => {

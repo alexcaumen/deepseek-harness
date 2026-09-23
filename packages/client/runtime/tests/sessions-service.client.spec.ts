@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SessionId } from '@deepseek-ai/dsh-api-remotes/client'
 import { SessionCreateError, SessionRuntime, scopeOf } from '../src/client/sessions/service.ts'
 import { FakeApiClient, deferred, err, fakeRemote, ok } from './fake-api.client.ts'
+import { ev } from './event-script.client.ts'
 
 const sid = (s: string): SessionId => s as SessionId
 
@@ -175,6 +176,23 @@ describe('scope tree', () => {
 
 describe('current selection (migrated from ui-layout, arbitrated into the list snapshot)', () => {
   afterEach(() => { vi.unstubAllGlobals() })
+
+  it('reopens the same suspended session after clear and accepts new live history', async () => {
+    const b = bench()
+    await feedList(b, [{ id: 's1' }])
+    b.svc.open(sid('s1'))
+    await Promise.resolve()
+    const session = b.svc.binding(sid('s1'))!.session
+    expect(session.getSnapshot().openState).toBe('open')
+    b.svc.clear()
+    expect(session.getSnapshot().openState).toBe('cold')
+    b.svc.open(sid('s1'))
+    await Promise.resolve()
+    expect(session.getSnapshot().openState).toBe('open')
+    expect(b.api.calls.filter(call => call.method === 'session.history')).toHaveLength(2)
+    b.svc.handleMuxEnvelope({ rpcId: 'live' as never, payload: { type: 'session/event', sessionId: sid('s1'), event: ev.turnStart(0, 0) } })
+    expect((session as unknown as { events: unknown[] }).events).toHaveLength(1)
+  })
 
   it('open() writes list.current; unknown ids fail loud', async () => {
     const b = bench()
