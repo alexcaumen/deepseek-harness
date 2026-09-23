@@ -23,6 +23,8 @@ import UserQuestionService from '@deepseek-ai/dsh-user-questions'
 import type { RpcRequest } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
 import { createApiProxy } from '../src/api-proxy.ts'
+import { InProcessApiClient } from '../src/fetch/client.ts'
+import { toFetchHandler } from '../src/fetch/handler.ts'
 import ApiProxyService from '../src/index.ts'
 
 let nextRpc = 1
@@ -537,6 +539,71 @@ describe('Web session model selection', () => {
       provider: 'deepseek-official', model: 'deepseek-reasoner',
     })
     expect(save).toHaveBeenCalledTimes(1)
+    await ctx.fiber.dispose()
+  })
+
+  it('keeps provider and model bound through transport cancellation, the next request, and adapter dispatch', async () => {
+    const { ctx, agent, sessionId } = await harness()
+    const firstAdapter = new CatalogAdapter('First', [
+      { provider: 'route-first', id: 'first-model', name: 'First Model' },
+    ])
+    const secondAdapter = new CatalogAdapter('Second', [
+      { provider: 'route-second', id: 'second-model', name: 'Second Model' },
+    ])
+    const firstStream = vi.spyOn(firstAdapter, 'stream')
+    const secondStream = vi.spyOn(secondAdapter, 'stream')
+    ctx.llm.registerAdapter(['route-first'], firstAdapter)
+    ctx.llm.registerAdapter(['route-second'], secondAdapter)
+    const releases: Array<() => void> = []
+    const prepare = vi.fn(() => new Promise<void>((resolve) => { releases.push(resolve) }))
+    const api = createApiProxy(ctx, {
+      defaultModelSelection: () => ({ provider: 'route-first', model: 'first-model' }),
+      prepareModelSelection: prepare,
+      cwd: '/tmp',
+    })
+    const hostResults: Array<ReturnType<typeof api.sessions.selectModel>> = []
+    const selectModel = api.sessions.selectModel.bind(api.sessions)
+    api.sessions.selectModel = (request, signal) => {
+      const result = selectModel(request, signal)
+      hostResults.push(result)
+      return result
+    }
+    const client = new InProcessApiClient(toFetchHandler(api), 25)
+    const selection = { sessionId, provider: 'route-second', model: 'second-model' }
+
+    const controller = new AbortController()
+    const cancelled = client.sessions.selectModel(selection, controller.signal)
+    await vi.waitFor(() => { expect(prepare).toHaveBeenCalledTimes(1) })
+    controller.abort(new Error('selection cancelled by caller'))
+    releases.shift()?.()
+    await expect(cancelled).rejects.toThrow('selection cancelled by caller')
+    expect((await hostResults[0])?.result)
+      .toMatchObject({ ok: false, error: { code: 'cancelled' } })
+    expect(expectValue(await client.sessions.models({ sessionId })).current)
+      .toEqual({ provider: 'route-first', model: 'first-model' })
+
+    const retry = client.sessions.selectModel(selection)
+    await vi.waitFor(() => { expect(prepare).toHaveBeenCalledTimes(2) })
+    releases.shift()?.()
+    expect(expectValue(await retry).selected)
+      .toEqual({ provider: 'route-second', model: 'second-model' })
+    expect(expectValue(await client.sessions.models({ sessionId })).current)
+      .toEqual({ provider: 'route-second', model: 'second-model' })
+
+    expect((await ctx.systemPrompt.assemble()).variables)
+      .toMatchObject({ provider: 'route-second', model: 'second-model' })
+    const nextRequest = await agentEvents(ctx, agent).waterfall(
+      'agent/request', { turn: 1, step: 0, signal: new AbortController().signal },
+      () => Promise.resolve({ provider: 'route-first', model: 'first-model', reasoningEffort: ReasoningEffortId('off') }),
+    )
+    expect(nextRequest).toMatchObject({ provider: 'route-second', model: 'second-model' })
+    expect(nextRequest.reasoningEffort).toBeUndefined()
+    for await (const _chunk of ctx.llm.stream({ ...nextRequest, messages: [] })) { /* drain */ }
+    expect(firstStream).not.toHaveBeenCalled()
+    expect(secondStream).toHaveBeenCalledOnce()
+    expect(secondStream).toHaveBeenCalledWith(expect.objectContaining({
+      provider: 'route-second', model: 'second-model',
+    }))
     await ctx.fiber.dispose()
   })
 
