@@ -7,13 +7,13 @@ import { CallId, createUserMessage } from '@deepseek-ai/dsh-llm'
  * @module dsh-agent-loop/tests/cancel
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId, TurnEndReason } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture, TOOL_ABORTED_BEFORE_DISPATCH } from '@deepseek-ai/dsh-tools'
-import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { Inbox, type Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { MockAdapter, textResponse, toolCallResponse } from './mock-adapter.ts'
 
@@ -239,6 +239,55 @@ describe('Agent.cancel()', () => {
 
     expect(adapter.requests).toHaveLength(1)
     expect(userTexts(agent)).toEqual(['active'])
+  })
+
+  it('disposal preserves user queue and steering work for inbox replay', async () => {
+    const adapter = new MockAdapter(['hang'])
+    const ctx = await harness(adapter)
+    const handle = await ctx.agents.create({
+      sessionId: SessionId('dispose-preserves-inbox'),
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })
+    const agent = handle.agent
+    send(agent, 'active')
+    await vi.waitFor(() => { expect(adapter.requests).toHaveLength(1) })
+    const queued = createUserMessage({ content: [{ type: 'text', text: 'queued' }], source: { kind: 'user' } })
+    const steering = createUserMessage({ content: [{ type: 'text', text: 'steer' }], source: { kind: 'user' } })
+    agent.followup(queued)
+    agent.steer(steering)
+
+    await handle.dispose()
+
+    expect(agent.inbox.nextTurn.map(item => item.id)).toEqual([queued.id])
+    expect(agent.inbox.nextStep.map(item => item.id)).toEqual([steering.id])
+    const replayed = new Inbox(agent.session, { inserted: () => {}, discarded: () => {}, claimed: () => {} })
+    expect(replayed.nextTurn.map(item => item.id)).toEqual([queued.id])
+    expect(replayed.nextStep.map(item => item.id)).toEqual([steering.id])
+    expect(adapter.requests).toHaveLength(1)
+    await ctx.fiber.dispose()
+  })
+
+  it('disposal preserves a maintenance-latched wake without starting it', async () => {
+    const adapter = new MockAdapter([textResponse('must not run')])
+    const ctx = await harness(adapter)
+    const handle = await ctx.agents.create({
+      sessionId: SessionId('dispose-maintenance-wake'),
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })
+    const agent = handle.agent
+    const release = Promise.withResolvers<undefined>()
+    const maintenance = agent.runMaintenance(async () => { await release.promise })
+    const queued = createUserMessage({ content: [{ type: 'text', text: 'later' }], source: { kind: 'user' } })
+    agent.followup(queued)
+
+    const disposal = handle.dispose()
+    release.resolve(undefined)
+    await Promise.all([maintenance, disposal])
+
+    expect(adapter.requests).toHaveLength(0)
+    expect(agent.inbox.nextTurn.map(item => item.id)).toEqual([queued.id])
+    expect(agent.session.events.filter(event => event.type === 'turn/start')).toHaveLength(0)
+    await ctx.fiber.dispose()
   })
 
   it('cancel after waking send closes its synchronously opened turn without a step', async () => {

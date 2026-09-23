@@ -610,6 +610,7 @@ describe('the session-persistence Agent Note: AgentLoop factory create/resume', 
     a1.inject(createUserMessage({ content: [{ type: 'text', text: 'background job 42 finished' }], source: { kind: 'plugin', plugin: 'tool-bash' } }))
     await a1.whenIdle()
     await ctx1.sessions.flush(a1.session)
+    await ctx1.fiber.dispose()
 
     // Lifecycle 2: resume; the injected context is still pending and becomes
     // model-visible when the next turn admits it.
@@ -633,7 +634,6 @@ describe('the session-persistence Agent Note: AgentLoop factory create/resume', 
     const flat = JSON.stringify(a2.session.deriveMessages())
     expect(flat).toContain('background job 42 finished')
     await ctx2.fiber.dispose()
-    await ctx1.fiber.dispose()
   })
 
   it('resume reloads a persisted session: history + turn numbering continue, no duplicate seqs', async () => {
@@ -678,6 +678,62 @@ describe('the session-persistence Agent Note: AgentLoop factory create/resume', 
     const turnStarts = a2.session.events.filter(e => e.type === 'turn/start')
     expect(turnStarts.map(e => e.type === 'turn/start' && e.data.turn)).toEqual([1, 2])
     await ctx2.fiber.dispose()
+  })
+
+  it('preserves queued and steering FIFO across stop and a persisted restart', async () => {
+    const sessionId = SessionId('stopped-queue-restart')
+    const adapter1 = new MockAdapter(['hang'])
+    const { ctx: ctx1 } = await persistentHarness(adapter1)
+    const a1 = (await ctx1.agents.create({
+      sessionId,
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })).agent
+    const message = (text: string) => createUserMessage({
+      content: [{ type: 'text' as const, text }], source: { kind: 'user' as const },
+    })
+
+    a1.followup(message('active'))
+    await vi.waitFor(() => { expect(adapter1.requests).toHaveLength(1) })
+    a1.followup(message('queue one'))
+    a1.followup(message('queue two'))
+    a1.steer(message('steer first'))
+    a1.cancel({ kind: 'user' }, { keepInbox: true })
+    await a1.whenIdle()
+    expect(a1.inbox.nextTurn.map(item => item.content)).toEqual([
+      [{ type: 'text', text: 'queue one' }],
+      [{ type: 'text', text: 'queue two' }],
+    ])
+    expect(a1.inbox.nextStep.map(item => item.content)).toEqual([
+      [{ type: 'text', text: 'steer first' }],
+    ])
+    await ctx1.sessions.flush(a1.session)
+
+    // Replay the flushed snapshot into a separate private home. The first
+    // agent still owns its writer lease, as it would at an abrupt stop.
+    const snapshot = await ctx1.sessionPersistence.load(sessionId)
+    const adapter2 = new MockAdapter([
+      textResponse('first'), textResponse('second'), textResponse('third'),
+    ])
+    const { ctx: ctx2 } = await persistentHarness(adapter2)
+    await ctx2.sessionPersistence.create(snapshot.meta)
+    await ctx2.sessionPersistence.append(sessionId, snapshot.events)
+    const a2 = (await ctx2.agents.resume({
+      resumeSessionId: sessionId,
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })).agent
+    expect(a2.inbox.nextTurn.map(item => item.content)).toEqual(a1.inbox.nextTurn.map(item => item.content))
+    expect(a2.inbox.nextStep.map(item => item.content)).toEqual(a1.inbox.nextStep.map(item => item.content))
+
+    a2.followup(message('wake after restart'))
+    await a2.whenIdle()
+    const texts = a2.session.events.flatMap(event => event.type === 'user/message'
+      ? event.data.content.flatMap(block => block.type === 'text' ? [block.text] : [])
+      : [])
+    expect(texts).toEqual(['active', 'steer first', 'queue one', 'queue two', 'wake after restart'])
+    expect(adapter2.requests).toHaveLength(3)
+    expect(a2.inbox.hasPending).toBe(false)
+    await ctx2.fiber.dispose()
+    await ctx1.fiber.dispose()
   })
 
   it('resume rejects when session persistence is not configured', async () => {

@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore from '@deepseek-ai/dsh-session'
-import AgentRegistry from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
 import { TypertLookupFailure } from '@deepseek-ai/dsh-typert-protocol'
 import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
 import { createUserMessage, MessageId } from '@deepseek-ai/dsh-llm'
@@ -723,6 +723,50 @@ describe('degenerate composition (no persistence, no factory)', () => {
     expect(response.result.ok).toBe(false)
     if (!response.result.ok) expect(response.result.error.code).toBe('session-not-found')
     expect(inspect).not.toHaveBeenCalled()
+  })
+})
+
+describe('sessions.updateQueue busy-turn boundary', () => {
+  it('steers only while running and preserves the next queued row after Stop', async () => {
+    const ctx = new Context()
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(UserQuestionService)
+    const session = ctx.sessions.create(sid('session-queue-stop'))
+    const inbox = new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} })
+    const first = createUserMessage({ content: [{ type: 'text', text: 'first' }], source: { kind: 'user' } })
+    const second = createUserMessage({ content: [{ type: 'text', text: 'second' }], source: { kind: 'user' } })
+    inbox.append('next-turn', first)
+    inbox.append('next-turn', second)
+    let running = true
+    const steer = vi.fn((message: typeof first) => { inbox.append('next-step', message) })
+    const cancel = vi.fn(() => { running = false })
+    ctx.agents.register({
+      id: session.id, session, inbox, ctx,
+      get status() { return running ? 'running' : 'idle' },
+      steer, cancel,
+    } as unknown as Agent)
+    const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
+
+    const accepted = await api.sessions.updateQueue(request({
+      sessionId: session.id, itemId: first.id, action: { kind: 'steer' },
+    }))
+    expect(accepted.result.ok).toBe(true)
+    expect(steer).toHaveBeenCalledOnce()
+    expect(inbox.nextStep.map(item => item.id)).toEqual([first.id])
+    expect(inbox.nextTurn.map(item => item.id)).toEqual([second.id])
+
+    expect((await api.sessions.cancel(request({ sessionId: session.id }))).result.ok).toBe(true)
+    expect(cancel).toHaveBeenCalledWith({ kind: 'user' }, { keepInbox: true })
+    const unavailable = await api.sessions.updateQueue(request({
+      sessionId: session.id, itemId: second.id, action: { kind: 'steer' },
+    }))
+    expect(unavailable.result).toMatchObject({ ok: false, error: { code: 'steer-unavailable' } })
+    expect(steer).toHaveBeenCalledOnce()
+    const replayed = new Inbox(session, { inserted: () => {}, discarded: () => {}, claimed: () => {} })
+    expect(replayed.nextStep.map(item => item.id)).toEqual([first.id])
+    expect(replayed.nextTurn.map(item => item.id)).toEqual([second.id])
+    await ctx.fiber.dispose()
   })
 })
 

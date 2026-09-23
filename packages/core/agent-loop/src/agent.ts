@@ -132,11 +132,18 @@ export class ReactLoopAgent implements Agent {
   }
 
   cancel(cause: AgentCancelCause, options: CancelOptions = {}): void {
-    if (!options.keepInbox) {
-      this.inbox.clear()
-      if (this.phase.kind !== 'idle') this.phase.wakeRequested = false
+    if (!options.keepInbox) this.inbox.clear()
+    else if (cause.kind === 'disposed' && this.phase.kind === 'running') {
+      // Context injected for the aborted turn is stale; user steering and
+      // next-turn work remain durable for resume.
+      for (const message of [...this.inbox.nextStep]) {
+        if (message.source.kind !== 'user') this.inbox.remove(message.id)
+      }
     }
-    if (this.phase.kind !== 'idle') this.phase.abort.abort(cause)
+    if (this.phase.kind !== 'idle') {
+      if (!options.keepInbox || cause.kind === 'disposed') this.phase.wakeRequested = false
+      this.phase.abort.abort(cause)
+    }
   }
 
   runMaintenance<T>(job: (signal: AbortSignal) => Promise<T>): Promise<T> {

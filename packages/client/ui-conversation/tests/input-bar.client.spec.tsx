@@ -1094,6 +1094,19 @@ describe('running and lock semantics', () => {
     expect(result.stop).not.toHaveBeenCalled()
   })
 
+  it('uses the opposite keyboard mode after an explicit busy-turn selection', () => {
+    const steerSelected = bench({ running: true, draft: 'queue by chord' })
+    fireEvent.click(steerSelected.view.getByRole('button', { name: '插话' }))
+    fireEvent.keyDown(steerSelected.textarea, { key: 'Enter', ctrlKey: true })
+    expect(steerSelected.sink).toHaveBeenCalledWith('queue by chord', [], 'queue', expect.any(AbortSignal))
+    steerSelected.view.unmount()
+
+    const queueSelected = bench({ running: true, busyEnter: 'steer', draft: 'steer by chord' })
+    fireEvent.click(queueSelected.view.getByRole('button', { name: '快速排队' }))
+    fireEvent.keyDown(queueSelected.textarea, { key: 'Enter', metaKey: true })
+    expect(queueSelected.sink).toHaveBeenCalledWith('steer by chord', [], 'steer', expect.any(AbortSignal))
+  })
+
   it('shows annotations as one compact attachment and keeps the draft free of annotation text', () => {
     const result = bench()
     act(() => {

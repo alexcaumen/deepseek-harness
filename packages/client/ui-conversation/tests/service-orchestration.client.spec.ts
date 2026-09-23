@@ -184,16 +184,17 @@ describe('InputHub queue steering (empty-draft accelerated Enter)', () => {
     await vi.waitFor(() => { expect(b.updateQueue).toHaveBeenCalledTimes(1) })
     expect(b.shell.notices.getSnapshot()).toBeNull()
 
-    // A row the host already claimed (e.g. a repeated empty-draft chord):
-    // the duplicate strict steer is a silent no-op.
+    // A row the host already claimed (e.g. a repeated empty-draft chord)
+    // does not prevent later still-pending rows from steering.
     await b.runtime.sessions.updateSnapshot('s1', (draft) => {
-      draft.queue = [row('q-3')]
+      draft.queue = [row('q-3'), row('q-4')]
     })
     b.updateQueue.mockResolvedValueOnce({
       ok: false, error: { code: 'queue-item-not-found', message: 'claimed', details: {} },
     } as never)
     b.shell.steerQueue()
-    await vi.waitFor(() => { expect(b.updateQueue).toHaveBeenCalledTimes(2) })
+    await vi.waitFor(() => { expect(b.updateQueue).toHaveBeenCalledTimes(3) })
+    expect(b.updateQueue).toHaveBeenNthCalledWith(3, 'q-4', { kind: 'steer' })
     expect(b.shell.notices.getSnapshot()).toBeNull()
     await b.runtime.dispose()
   })

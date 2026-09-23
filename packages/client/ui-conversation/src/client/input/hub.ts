@@ -180,12 +180,10 @@ export class InputHub implements SessionInputResolver {
   /**
    * Steer every still-pending queued message into the running turn, in FIFO
    * order — the same strict-steer operation as the queue dock's per-row
-   * button. A turn closing mid-way (`steer-unavailable`) or a row already
-   * claimed by the agent (`queue-item-not-found`) converges silently, while a
-   * genuine failure surfaces as one composer notice. Repeated triggers
-   * (e.g. two rapid empty-draft chords) rely on that `queue-item-not-found`
-   * convergence: the snapshot may still list a row the host already steered,
-   * and the duplicate strict steer is a silent no-op.
+   * button. A turn closing mid-way (`steer-unavailable`) stops the flush.
+   * A row already claimed by the agent (`queue-item-not-found`) is skipped so
+   * later still-pending rows can be steered. A genuine failure surfaces as
+   * one composer notice.
    * @param session - the addressed host session.
    * @param shell - the resident shell (notice outlet).
    */
@@ -195,7 +193,8 @@ export class InputHub implements SessionInputResolver {
     for (const item of queued) {
       const result = await session.updateQueue(item.id, { kind: 'steer' })
       if (result.ok) continue
-      if (result.error.code === 'steer-unavailable' || result.error.code === 'queue-item-not-found') return
+      if (result.error.code === 'queue-item-not-found') continue
+      if (result.error.code === 'steer-unavailable') return
       shell.notify('error', this.t('queue.steerFailed'))
       return
     }

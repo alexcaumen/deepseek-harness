@@ -499,12 +499,12 @@ export class AgentLoop extends Service implements AgentFactory {
       callerSignal?.removeEventListener('abort', onCallerAbort)
       this.ownership.signal.removeEventListener('abort', onFactoryTeardown)
       try {
-        // Disposal IS a disposed-cause cancel followed by quiescence. New work
-        // sent after this point is the sender's bug — the registries are about
-        // to drop the agent, so nothing should still hold it.
+        // Disposal stops the active turn but leaves durable pending input for
+        // resume. New work sent after this point is the sender's bug — the
+        // registries are about to drop the agent, so nothing should hold it.
         if (machine === undefined) await machineReady.promise
         if (machine !== undefined) {
-          machine.cancel({ kind: 'disposed' })
+          machine.cancel({ kind: 'disposed' }, { keepInbox: true })
           await machine.whenIdle()
           await machine.scope.dispose()
         }
