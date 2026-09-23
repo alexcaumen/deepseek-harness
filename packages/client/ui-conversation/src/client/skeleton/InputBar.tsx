@@ -315,6 +315,7 @@ export function InputBar({
     const reducedMotion = typeof matchMediaCandidate === 'function'
       && (matchMediaCandidate as (query: string) => MediaQueryList)('(prefers-reduced-motion: reduce)').matches
     let frame = 0
+    let heldAmplitude = DICTATION_WAVEFORM_FLOOR
     let lastPaint = Number.NEGATIVE_INFINITY
     const advance = (timestamp: number): void => {
       const audio = waveformAudioRef.current
@@ -335,10 +336,12 @@ export function InputBar({
           : analyserWaveformAmplitude(audio.analyser, audio.values)
         frame += elapsedSteps - paintSteps
         for (let step = 0; step < paintSteps; step += 1) {
+          heldAmplitude = Math.max(DICTATION_WAVEFORM_FLOOR,
+            observedAmplitude ?? fallbackWaveformAmplitude(frame), heldAmplitude * 0.86)
           const amplitude = observedAmplitude === null
             ? fallbackWaveformAmplitude(frame)
             : Math.max(DICTATION_WAVEFORM_FLOOR,
-              observedAmplitude * (0.88 + 0.12 * Math.abs(Math.sin(frame * 0.62))))
+              heldAmplitude * (0.88 + 0.12 * Math.abs(Math.sin(frame * 0.62))))
           if (reducedMotion) {
             samples.fill(amplitude)
           } else {
