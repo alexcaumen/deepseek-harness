@@ -27,7 +27,17 @@ const launcher = createSnapshotStore<string | null>(null)
 const t = (key: string, values?: Record<string, unknown>): string => {
   if (key === 'annotation.sourceMarker') return `Annotation ${values?.index} source: ${values?.text}`
   if (key === 'annotation.item') return `Annotation ${values?.index}: ${values?.text}`
-  if (key === 'annotation.rail') return `${values?.count} annotations`
+  if (key === 'annotation.countOne') return '1 annotation'
+  if (key === 'annotation.countMany') return `${values?.count} annotations`
+  if (key === 'annotation.selectedText') return 'Selected text'
+  if (key === 'annotation.clear') return 'Remove all annotations'
+  if (key === 'annotation.edit') return `Edit annotation ${values?.index}`
+  if (key === 'annotation.delete') return `Delete annotation ${values?.index}`
+  if (key === 'annotation.showSource') return 'Show source'
+  if (key === 'annotation.commentLabel') return `Comment for annotation ${values?.index}`
+  if (key === 'annotation.commentPlaceholder') return 'Add a comment'
+  if (key === 'annotation.save') return 'Save'
+  if (key === 'annotation.cancel') return 'Cancel'
   return key
 }
 const props = {
@@ -51,8 +61,14 @@ const props = {
   renderSlot: () => null,
   variant: 'composer',
 }
-const annotation = shell.snapshot.occurrences[0]
-if (annotation === undefined) throw new Error('Annotation fixture did not create an occurrence')
+const annotation = {
+  occurrenceId: 1,
+  index: 1,
+  messageId: messageId as never,
+  text: quote,
+  startOffset,
+  endOffset: startOffset + quote.length,
+}
 
 createRoot(document.getElementById('root')!).render(
   <main>
@@ -60,14 +76,7 @@ createRoot(document.getElementById('root')!).render(
       <div className="eyebrow">Assistant response</div>
       <ResponseSelectionActions
         messageId={messageId as never}
-        occurrences={[{
-          occurrenceId: annotation.occurrenceId,
-          index: 1,
-          messageId: messageId as never,
-          text: quote,
-          startOffset,
-          endOffset: startOffset + quote.length,
-        }]}
+        occurrences={[annotation]}
         inputActions={shell.actions}
         t={t as never}
       >

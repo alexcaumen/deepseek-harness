@@ -18,6 +18,9 @@ describe('response selection actions', () => {
     const inputActions = {
       setDraft: vi.fn(),
       addResponseAnnotation,
+      removeResponseAnnotation: vi.fn(),
+      clearResponseAnnotations: vi.fn(),
+      commentResponseAnnotation: vi.fn(),
       addImages: vi.fn(),
       removeImage: vi.fn(),
       pruneImages: vi.fn(),
@@ -67,7 +70,8 @@ describe('response selection actions', () => {
     })
     try {
       const inputActions = {
-        setDraft: vi.fn(), addResponseAnnotation: vi.fn(() => true), addImages: vi.fn(),
+        setDraft: vi.fn(), addResponseAnnotation: vi.fn(() => true),
+        removeResponseAnnotation: vi.fn(), clearResponseAnnotations: vi.fn(), commentResponseAnnotation: vi.fn(), addImages: vi.fn(),
         removeImage: vi.fn(), pruneImages: vi.fn(), submit: vi.fn(),
       } satisfies InputActions
       const view = render(
@@ -107,7 +111,8 @@ describe('response selection actions', () => {
     })
     try {
       const inputActions = {
-        setDraft: vi.fn(), addResponseAnnotation: vi.fn(() => true), addImages: vi.fn(),
+        setDraft: vi.fn(), addResponseAnnotation: vi.fn(() => true),
+        removeResponseAnnotation: vi.fn(), clearResponseAnnotations: vi.fn(), commentResponseAnnotation: vi.fn(), addImages: vi.fn(),
         removeImage: vi.fn(), pruneImages: vi.fn(), submit: vi.fn(),
       } satisfies InputActions
       const view = render(

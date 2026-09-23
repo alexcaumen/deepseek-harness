@@ -106,6 +106,8 @@ function questionInteractionStatus(
 /** Instance cluster + frame entry + the session list. */
 export class SessionManager {
   private readonly sessions = new Map<SessionId, Session>()
+  /** Keep the current and most recently viewed history window for fast tab/session return. */
+  private readonly warmHistory: SessionId[] = []
   /** Pre-instantiation buffer for answerable requests and the queued-turn snapshot, which history
    *  cannot reconstruct on open. Live requests remain until resolution; queue and replay duplicates
    *  compact by identity. Instantiation replays and clears it, while removal drops it. */
@@ -196,8 +198,8 @@ export class SessionManager {
         ? false
         : this.catalogs.get(address.parentSessionId)?.parentAvailable ?? false,
     )
-    if (this.selected !== undefined && this.selected !== sessionId) this.sessions.get(this.selected)?.suspendHistory()
     this.selected = sessionId
+    this.touchWarmHistory(sessionId)
     // Looking at the session consumes its completion reminder (dot clears).
     this.completedNotifications.delete(sessionId)
     void this.refreshSubagents(sessionId)
@@ -216,8 +218,8 @@ export class SessionManager {
     }
     this.addresses.set(address.childSessionId, address)
     this.sessions.get(address.childSessionId)?.configureSubagent(address, catalog?.parentAvailable ?? false)
-    if (this.selected !== undefined && this.selected !== address.childSessionId) this.sessions.get(this.selected)?.suspendHistory()
     this.selected = address.childSessionId
+    this.touchWarmHistory(address.childSessionId)
     this.completedNotifications.delete(address.childSessionId)
     void this.refreshSubagents(address.childSessionId)
     this.notifier.notifyNow()
@@ -225,9 +227,17 @@ export class SessionManager {
 
   /** Clear the selection (the layout falls to the no-session view state). */
   clearSelection(): void {
-    if (this.selected !== undefined) this.sessions.get(this.selected)?.suspendHistory()
     this.selected = undefined
     this.notifier.notifyNow()
+  }
+
+  private touchWarmHistory(sessionId: SessionId): void {
+    const previous = this.warmHistory.indexOf(sessionId)
+    if (previous !== -1) this.warmHistory.splice(previous, 1)
+    this.warmHistory.push(sessionId)
+    if (this.warmHistory.length <= 2) return
+    const oldest = this.warmHistory.shift()
+    if (oldest !== undefined) this.sessions.get(oldest)?.suspendHistory()
   }
 
   /**
@@ -265,6 +275,8 @@ export class SessionManager {
    * @param sessionId - the session to drop.
    */
   drop(sessionId: SessionId): void {
+    const warmIndex = this.warmHistory.indexOf(sessionId)
+    if (warmIndex !== -1) this.warmHistory.splice(warmIndex, 1)
     this.sessions.delete(sessionId)
   }
 

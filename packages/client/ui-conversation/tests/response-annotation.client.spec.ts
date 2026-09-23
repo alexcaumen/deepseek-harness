@@ -5,9 +5,7 @@ import type {
   InputTriggerController, SubmitOutcome,
 } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import { SessionInputShell } from '../src/client/input/facade.ts'
-import {
-  RESPONSE_ANNOTATION_SOURCE, responseAnnotationSource,
-} from '../src/client/input/response-annotation.ts'
+import { responseAnnotationSource } from '../src/client/input/response-annotation.ts'
 import { responseAnnotationPresentations } from '../src/client/response-annotation.ts'
 
 const commandImages = {
@@ -57,13 +55,53 @@ describe('response annotations', () => {
     )).toEqual([])
   })
 
-  it('numbers selected passages and serializes them as model-facing response annotations', async () => {
-    const source = responseAnnotationSource()
-    const serializeReference = vi.fn((name: string, ref: string, signal: AbortSignal) => {
-      expect(name).toBe(RESPONSE_ANNOTATION_SOURCE)
-      if (source.codec === undefined) throw new Error('response annotation codec missing')
-      return source.codec.serialize(ref, signal)
+  it('recovers annotations after a mixed file and session reference send and history reload', async () => {
+    const sessionRef = '@[Research notes](dsh-session:InNvdXJjZSI)'
+    const fileRef = '@"docs/design notes.md"'
+    const sink = vi.fn((
+      _text: string,
+      _imageIds: readonly unknown[],
+      _mode: 'queue' | 'steer',
+      _signal: AbortSignal,
+      _displayText?: string,
+    ) => Promise.resolve<SubmitOutcome>({ kind: 'success' }))
+    const shell = new SessionInputShell({
+      actx: {} as ClientContext,
+      inputTriggers: () => ({
+        serializeReference: (_source: string, ref: string) => Promise.resolve(ref),
+        track: vi.fn(),
+      } as unknown as InputTriggerController),
+      defaultSink: sink,
+      commandImages,
     })
+    shell.addResponseAnnotation({ messageId: 'assistant-source' as MessageId, text: 'selected answer' })
+    shell.setDraft('@res')
+    expect(shell.insertReference({ source: 'reference', ref: sessionRef, label: 'Research notes', clipboardText: sessionRef }, {
+      start: 0, end: 4, draftRev: shell.snapshot.draftRev,
+    })).toBe(true)
+    shell.setDraft(`${shell.snapshot.draft}and @file`)
+    const fileStart = shell.snapshot.draft.indexOf('@file')
+    expect(shell.insertReference({ source: 'reference', ref: fileRef, label: 'design notes.md', clipboardText: fileRef }, {
+      start: fileStart, end: fileStart + 5, draftRev: shell.snapshot.draftRev,
+    })).toBe(true)
+    shell.submit()
+    await vi.waitFor(() => { expect(sink).toHaveBeenCalledOnce() })
+    const model = sink.mock.calls[0]?.[0] ?? ''
+    const display = sink.mock.calls[0]?.[4] ?? ''
+    expect(model).toContain(sessionRef)
+    expect(model).toContain(fileRef)
+    expect(display).toBe('@Annotation 1 @Research notes and @design notes.md')
+    const reloadedModel = JSON.parse(JSON.stringify([{ type: 'text', text: model }])) as unknown[]
+    const reloadedDisplay = JSON.parse(JSON.stringify([{ type: 'text', text: display }])) as unknown[]
+    expect(responseAnnotationPresentations(reloadedModel, reloadedDisplay)).toMatchObject([{
+      index: 1, messageId: 'assistant-source', text: 'selected answer', displayStart: 0,
+    }])
+    expect(responseAnnotationPresentations(reloadedModel, [{ type: 'text', text: `${display} changed` }])).toEqual([])
+    expect(responseAnnotationPresentations([{ type: 'text', text: `${model} changed` }], reloadedDisplay)).toEqual([])
+  })
+
+  it('keeps selected passages out of the draft and sends them as one model-facing envelope', async () => {
+    const serializeReference = vi.fn()
     const inputTriggers = { serializeReference, track: vi.fn() } as unknown as InputTriggerController
     const sink = vi.fn((
       _text: string,
@@ -89,15 +127,18 @@ describe('response annotations', () => {
       messageId: 'assistant-2' as MessageId,
       text: 'second selected passage',
     })).toBe(true)
-    shell.setDraft(`${shell.snapshot.draft}please compare both`)
+    shell.actions.commentResponseAnnotation(2, 'is this cheaper?')
+    shell.setDraft('please compare both')
 
-    expect(shell.snapshot.draft).toBe('@Annotation 1 @Annotation 2 please compare both')
-    expect(shell.snapshot.occurrences.map(item => item.label)).toEqual(['Annotation 1', 'Annotation 2'])
+    expect(shell.snapshot.draft).toBe('please compare both')
+    expect(shell.snapshot.occurrences).toEqual([])
+    expect(shell.snapshot.annotations.map(item => item.index)).toEqual([1, 2])
     shell.submit()
 
     await vi.waitFor(() => { expect(sink).toHaveBeenCalledOnce() })
-    const submitted = sink.mock.calls[0]?.[0]
-    expect(submitted).toContain('<response-annotations>')
+    const submitted = sink.mock.calls[0]?.[0] ?? ''
+    const display = sink.mock.calls[0]?.[4] ?? ''
+    expect(submitted.startsWith('<response-annotations>\n')).toBe(true)
     expect(submitted).toContain('"index":1')
     expect(submitted).toContain('"sourceMessageId":"assistant-1"')
     expect(submitted).toContain('"text":"first selected passage"')
@@ -105,15 +146,128 @@ describe('response annotations', () => {
     expect(submitted).toContain('"sourceEnd":26')
     expect(submitted).toContain('"index":2')
     expect(submitted).toContain('"sourceMessageId":"assistant-2"')
-    expect(submitted).toContain('please compare both')
-    expect(sink.mock.calls[0]?.[4]).toBe('@Annotation 1 @Annotation 2 please compare both')
-    expect(serializeReference).toHaveBeenCalledTimes(2)
+    expect(submitted).toContain('"comment":"is this cheaper?"')
+    expect(submitted.endsWith(' please compare both')).toBe(true)
+    expect(display).toBe('@Annotation 1 @Annotation 2 please compare both')
+    expect(serializeReference).not.toHaveBeenCalled()
+    // The durable projection of the model text reproduces the display text, so history renders the chips.
+    expect(responseAnnotationPresentations([{ type: 'text', text: submitted }], [{ type: 'text', text: display }])
+      .map(item => [item.index, item.messageId, item.comment]))
+      .toEqual([[1, 'assistant-1', undefined], [2, 'assistant-2', 'is this cheaper?']])
+    await vi.waitFor(() => { expect(shell.snapshot.annotations).toEqual([]) })
+    expect(shell.snapshot.draft).toBe('')
+  })
+
+  it('renumbers after removal and sends annotations without authored text', async () => {
+    const sink = vi.fn((
+      _text: string,
+      _imageIds: readonly unknown[],
+      _mode: 'queue' | 'steer',
+      _signal: AbortSignal,
+      _displayText?: string,
+    ) => Promise.resolve<SubmitOutcome>({ kind: 'success' }))
+    const shell = new SessionInputShell({ actx: {} as ClientContext, defaultSink: sink, commandImages })
+    for (const text of ['one', 'two', 'three']) {
+      expect(shell.actions.addResponseAnnotation({ messageId: 'assistant-1' as MessageId, text })).toBe(true)
+    }
+    expect(shell.actions.addResponseAnnotation({ messageId: 'assistant-1' as MessageId, text: 'two' })).toBe(true)
+    expect(shell.snapshot.annotations).toHaveLength(3)
+    shell.actions.removeResponseAnnotation(2)
+    expect(shell.snapshot.annotations.map(item => [item.index, item.text])).toEqual([[1, 'one'], [2, 'three']])
+
+    shell.submit()
+    await vi.waitFor(() => { expect(sink).toHaveBeenCalledOnce() })
+    expect(sink.mock.calls[0]?.[0]).toMatch(/^<response-annotations>\n.*\n<\/response-annotations>$/u)
+    expect(sink.mock.calls[0]?.[4]).toBe('@Annotation 1 @Annotation 2')
+    await vi.waitFor(() => { expect(shell.snapshot.annotations).toEqual([]) })
+  })
+
+  it('keeps annotations for correction when the send fails', async () => {
+    const sink = vi.fn(() => Promise.resolve<SubmitOutcome>({ kind: 'error', text: 'offline' }))
+    const shell = new SessionInputShell({ actx: {} as ClientContext, defaultSink: sink, commandImages })
+    shell.actions.addResponseAnnotation({ messageId: 'assistant-1' as MessageId, text: 'kept' })
+    shell.setDraft('ask')
+    shell.submit()
+    await vi.waitFor(() => { expect(sink).toHaveBeenCalledOnce() })
+    await vi.waitFor(() => { expect(shell.snapshot.phase).toBe('plain') })
+    expect(shell.snapshot.annotations.map(item => item.text)).toEqual(['kept'])
+    expect(shell.snapshot.draft).toBe('ask')
   })
 
   it('fails closed for malformed persisted annotation payloads', async () => {
     const source = responseAnnotationSource()
     await expect(source.codec?.serialize('{"index":0}', new AbortController().signal))
       .rejects.toThrow('Response annotation payload is invalid')
+  })
+
+  it.each(['', 'question'])('freezes attachments during admission and retains later text for draft %j', async (draft) => {
+    let finish!: (outcome: SubmitOutcome) => void
+    const pending = new Promise<SubmitOutcome>((resolve) => { finish = resolve })
+    const sink = vi.fn(() => pending)
+    const shell = new SessionInputShell({ actx: {} as ClientContext, defaultSink: sink, commandImages })
+    shell.addResponseAnnotation({ messageId: 'assistant-1' as MessageId, text: 'quote' })
+    shell.commentResponseAnnotation(1, 'keep comment')
+    shell.setDraft(draft)
+    shell.submit('steer')
+    expect(shell.snapshot.phase).toBe('submitting')
+    expect(shell.addResponseAnnotation({ messageId: 'assistant-2' as MessageId, text: 'late' })).toBe(false)
+    shell.commentResponseAnnotation(1, 'changed')
+    shell.removeResponseAnnotation(1)
+    shell.clearResponseAnnotations()
+    shell.actions.setDraft('stale', [{ offset: -1, ref: '{"index":1,"messageId":"other","text":"stale"}' }])
+    expect(shell.snapshot.draft).toBe(draft)
+    expect(shell.snapshot.annotations).toMatchObject([{ text: 'quote', comment: 'keep comment' }])
+    shell.submit()
+    expect(sink).toHaveBeenCalledOnce()
+
+    // RC52 permits programmatic suffix edits while a prompt is awaiting admission.
+    shell.setDraft(`${draft} later`)
+    finish({ kind: 'success' })
+    await vi.waitFor(() => { expect(shell.snapshot.phase).toBe('plain') })
+    expect(shell.snapshot.annotations).toEqual([])
+    expect(shell.snapshot.draft).toBe(' later')
+    shell.undo()
+    expect(shell.snapshot.draft).toBe(' later')
+  })
+
+  it.each(['outcome', 'rejection', 'throw'] as const)('retains annotation-only drafts after %s and retries once', async (failure) => {
+    const sink = vi.fn((): Promise<SubmitOutcome> => {
+      if (failure === 'throw') throw new Error('offline')
+      return failure === 'rejection'
+        ? Promise.reject(new Error('offline'))
+        : Promise.resolve({ kind: 'error', text: 'offline' })
+    })
+    const shell = new SessionInputShell({ actx: {} as ClientContext, defaultSink: sink, commandImages })
+    shell.addResponseAnnotation({ messageId: 'assistant-1' as MessageId, text: 'kept' })
+    shell.commentResponseAnnotation(1, 'retry this')
+    shell.submit()
+    await vi.waitFor(() => { expect(shell.snapshot.phase).toBe('plain') })
+    expect(shell.snapshot.annotations).toMatchObject([{ text: 'kept', comment: 'retry this' }])
+    expect(shell.notices.getSnapshot()?.text).toBe('offline')
+    sink.mockResolvedValue({ kind: 'success' })
+    shell.submit()
+    shell.submit()
+    await vi.waitFor(() => { expect(shell.snapshot.annotations).toEqual([]) })
+    expect(sink).toHaveBeenCalledTimes(2)
+  })
+
+  it('aborts an annotation-only send on disposal and ignores its late settlement', async () => {
+    let finish!: (outcome: SubmitOutcome) => void
+    const pending = new Promise<SubmitOutcome>((resolve) => { finish = resolve })
+    const sink = vi.fn((_text: string, _images: readonly unknown[], _mode: string, _signal: AbortSignal) => pending)
+    const shell = new SessionInputShell({ actx: {} as ClientContext, defaultSink: sink, commandImages })
+    shell.addResponseAnnotation({ messageId: 'assistant-1' as MessageId, text: 'quote' })
+    shell.submit()
+    const signal = sink.mock.calls[0]![3]
+    shell.dispose()
+    expect(signal.aborted).toBe(true)
+    const annotations = shell.snapshot.annotations
+    finish({ kind: 'success' })
+    await pending
+    expect(shell.snapshot.annotations).toBe(annotations)
+    expect(shell.addResponseAnnotation({ messageId: 'assistant-2' as MessageId, text: 'late' })).toBe(false)
+    shell.submit()
+    expect(sink).toHaveBeenCalledOnce()
   })
 
   it('keeps legacy behavior when an incomplete source anchor is supplied', async () => {

@@ -1,12 +1,9 @@
-import { memo, useMemo, useState } from 'react'
+import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { ChatSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
 import type { MessageId } from '@deepseek-ai/dsh-client-connection/client'
 import type { ChatNodeViewProps, TurnTailOwnerProps } from '../contract/slots.ts'
-import {
-  parseResponseAnnotationPayload, RESPONSE_ANNOTATION_SOURCE,
-  type ResponseAnnotationPresentation,
-} from '../response-annotation.ts'
+import type { ResponseAnnotationPresentation } from '../response-annotation.ts'
 import { AssistantMarkdown } from './AssistantMarkdown.tsx'
 import {
   ResponseSelectionActions, type ResponseAnnotationOccurrence,
@@ -14,9 +11,7 @@ import {
 
 interface AnnotationPreview {
   readonly text: string
-  readonly left: number
-  readonly top: number
-  readonly above: boolean
+  readonly marker: HTMLButtonElement
 }
 
 function annotationMarker(target: EventTarget): HTMLButtonElement | null {
@@ -31,23 +26,55 @@ function AnnotationMarkerPreviewScope({ messageId, children }: {
   readonly children: ReactNode
 }): ReactNode {
   const [preview, setPreview] = useState<AnnotationPreview | null>(null)
+  const [position, setPosition] = useState<{ left: number; top: number } | null>(null)
+  const tooltipRef = useRef<HTMLSpanElement | null>(null)
   const show = (target: EventTarget): void => {
     const marker = annotationMarker(target)
     if (marker === null || marker.title === '') return
-    const rect = marker.getBoundingClientRect()
-    const above = rect.bottom + 56 > window.innerHeight
-    setPreview({
-      text: marker.title,
-      left: Math.min(window.innerWidth - 12, Math.max(12, rect.left + rect.width / 2)),
-      top: above ? rect.top - 8 : rect.bottom + 8,
-      above,
-    })
+    if (preview?.marker !== marker) setPosition(null)
+    setPreview(current => current?.marker === marker && current.text === marker.title
+      ? current : { text: marker.title, marker })
   }
   const hide = (target: EventTarget, relatedTarget: EventTarget | null): void => {
     const marker = annotationMarker(target)
     if (marker !== null && relatedTarget instanceof Node && marker.contains(relatedTarget)) return
+    if (relatedTarget instanceof Node && tooltipRef.current?.contains(relatedTarget)) return
     setPreview(null)
   }
+  useLayoutEffect(() => {
+    if (preview === null) return
+    const place = (): void => {
+      const tooltip = tooltipRef.current
+      if (tooltip === null) return
+      if (!preview.marker.isConnected) {
+        setPreview(null)
+        return
+      }
+      const anchor = preview.marker.getBoundingClientRect()
+      const box = tooltip.getBoundingClientRect()
+      const margin = 12
+      const gap = 8
+      const below = window.innerHeight - anchor.bottom - gap - margin
+      const above = anchor.top - gap - margin
+      const useAbove = box.height > below && above > below
+      const preferredTop = useAbove ? anchor.top - gap - box.height : anchor.bottom + gap
+      setPosition((current) => {
+        const next = {
+          left: Math.max(margin, Math.min(anchor.left + anchor.width / 2 - box.width / 2,
+            window.innerWidth - margin - box.width)),
+          top: Math.max(margin, Math.min(preferredTop, window.innerHeight - margin - box.height)),
+        }
+        return current?.left === next.left && current.top === next.top ? current : next
+      })
+    }
+    place()
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => {
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+    }
+  }, [preview])
 
   return (
     <div
@@ -61,22 +88,29 @@ function AnnotationMarkerPreviewScope({ messageId, children }: {
       {children}
       {preview !== null && (
         <span
+          ref={tooltipRef}
           role="tooltip"
           data-response-annotation-preview="source"
           style={{
             position: 'fixed',
             zIndex: 1000,
-            left: preview.left,
-            top: preview.top,
+            left: position?.left ?? 12,
+            top: position?.top ?? 12,
             maxWidth: 'min(320px, calc(100vw - 24px))',
-            transform: preview.above ? 'translate(-50%, -100%)' : 'translateX(-50%)',
+            maxHeight: 'calc(100vh - 24px)',
+            overflowY: 'auto',
+            overflowWrap: 'anywhere',
+            visibility: position === null ? 'hidden' : 'visible',
             padding: '6px 8px',
             borderRadius: 4,
             background: 'var(--dsw-alias-bg-inverse, #202124)',
             color: 'var(--dsw-alias-label-inverse, #fff)',
             font: '12px/1.4 var(--dsw-font-family)',
             whiteSpace: 'normal',
-            pointerEvents: 'none',
+          }}
+          onMouseLeave={(event) => {
+            if (event.relatedTarget instanceof Node && preview.marker.contains(event.relatedTarget)) return
+            setPreview(null)
           }}
         >
           {preview.text}
@@ -172,17 +206,13 @@ export const AssistantNodeView = memo(function AssistantNodeView({
     />
   )
   const messageId = data.finalNode?.messageId
-  const activeOccurrences = useInput(state => state.occurrences)
-  const activeAnnotations = useMemo<readonly ResponseAnnotationOccurrence[]>(() => activeOccurrences.flatMap(
-    (occurrence): ResponseAnnotationOccurrence[] => {
-      if (occurrence.source !== RESPONSE_ANNOTATION_SOURCE) return []
-      try {
-        return [{ ...parseResponseAnnotationPayload(occurrence.ref), occurrenceId: occurrence.occurrenceId }]
-      } catch {
-        return []
-      }
-    },
-  ), [activeOccurrences])
+  const composerAnnotations = useInput(state => state.annotations)
+  // Composer attachments use their positive index as occurrence id; durable
+  // occurrences use negative ids, so marker keys stay disjoint.
+  const activeAnnotations = useMemo<readonly ResponseAnnotationOccurrence[]>(
+    () => composerAnnotations.map(annotation => ({ ...annotation, occurrenceId: annotation.index })),
+    [composerAnnotations],
+  )
   const durableOccurrences = useSession(state => messageId === undefined
     ? EMPTY_OCCURRENCES
     : durableAnnotationOccurrences(state.chat, messageId))

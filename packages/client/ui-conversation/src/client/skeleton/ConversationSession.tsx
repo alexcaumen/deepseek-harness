@@ -187,7 +187,10 @@ export function ConversationSession({
   const inspect = useStore(s => s.inspect ?? null)
 
   useEffect(() => {
-    if (inputState.draft === '' && storedDraft !== '') inputActions.setDraft(storedDraft, storedAnnotations)
+    if (inputState.draft === '' && inputState.annotations.length === 0
+      && (storedDraft !== '' || (storedAnnotations?.length ?? 0) > 0)) {
+      inputActions.setDraft(storedDraft, storedAnnotations)
+    }
     const unmirror = bindDraftMirror(actions.setDraft)
     return () => { unmirror() }
     // Mount-only (deps pinned to inputActions): later store writes come from

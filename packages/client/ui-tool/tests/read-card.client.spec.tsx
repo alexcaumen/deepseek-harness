@@ -297,6 +297,7 @@ describe('DetailsPanel Output section (read)', () => {
         inputActions={{
           setDraft: () => {},
           addResponseAnnotation: () => true,
+          removeResponseAnnotation: () => {}, clearResponseAnnotations: () => {}, commentResponseAnnotation: () => {},
           addImages: () => true,
           removeImage: () => {},
           pruneImages: () => {},

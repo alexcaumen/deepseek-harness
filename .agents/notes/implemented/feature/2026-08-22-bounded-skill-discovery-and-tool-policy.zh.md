@@ -14,6 +14,10 @@ Status: implemented
 
 同一插件注册 `skill_search`。它查询完整的、受 cwd 和 agent 作用域约束的模型可调用总体，按确定性词法规则排序匹配项，以 `searchResultLimit` 限制返回记录，并且只返回名称和有界描述。它不会加载正文或披露提供方路径。既有 `skill` 工具仍是按精确名称加载所选 skill 的唯一模型接口。
 
+GCP 的 `standard`、`code` 和 `cordis` 预设将 `j-space` 固定在首位，因为其指令要求在非简单任务前加载该 skill。
+目录仍限制为 12 条摘要；这既不会安装缺失的 skill，也不会扩大其权限。
+完整目录搜索和按精确名称加载仍然可用。
+
 宽广的外部工具面由部署自有的 `tool-access-policy` 插件独立治理。它挂载在 `tools/pre-execute`，先评估 deny pattern，再评估 approval pattern，并在工具实现运行前返回规范的 deny 或 ask 决策。策略来自配置，因此部署可以绑定精确的、带服务命名空间的 MCP 名称，而不必修改共享工具运行时。
 
 Princess OS 将已评审的本地 skill 投影到一个只含 junction 的目录，该目录由可审计 manifest 生成。重复名称按固定来源优先级解析。可移植且已治理的来源处于 active；依赖连接器或平台的候选项会继续记录为 held，直至其运行时依赖和权限得到证明。投影不会复制 skill 正文，并拒绝删除非 junction 成员。
@@ -23,6 +27,9 @@ Princess OS 将已评审的本地 skill 投影到一个只含 junction 的目录
 单元测试证明有界及固定目录输出、完整搜索、确定性排序、无效配置拒绝，以及 executor 层拒绝。源码启动的 parity 同步具备幂等性。隔离组装的 Web profile 证明插件组合和浏览器渲染。协议 canary 对隔离 Harness 执行 Playwright MCP 导航、快照和截图；Office canary 则通过 `ctx.tools.execute` 创建并读取 XLSX、PDF、PPTX 和 DOCX。
 
 ## 曾考虑的替代方案
+
+**只在提示词中要求 J-Space。** 不充分：即使提供方已经注册该 skill，有界初始目录仍可能遗漏它。
+固定其摘要，而不注入所有 skill 正文，也不绕过提供方的作用域。
 
 **在持久目录中渲染所有已发现 skill。** 否决，因为提示词和缓存成本会随整个生态增长，而多数轮次只使用很小的子集。
 

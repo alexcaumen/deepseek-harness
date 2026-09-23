@@ -492,7 +492,9 @@ describe('DetailsPanel Output section', () => {
         useWorkspaces={bindSnapshotSelector(workspaces)}
         useInput={(() => { throw new Error('unused') })}
         inputActions={{
-          setDraft: () => {}, addResponseAnnotation: () => true, addImages: () => true,
+          setDraft: () => {}, addResponseAnnotation: () => true,
+          removeResponseAnnotation: () => {}, clearResponseAnnotations: () => {}, commentResponseAnnotation: () => {},
+          addImages: () => true,
           removeImage: () => {}, pruneImages: () => {}, submit: () => {},
         }}
         useProjection={(() => undefined)}
@@ -682,7 +684,9 @@ describe('DetailsPanel Output section', () => {
         }))}
         useInput={(() => { throw new Error('unused') })}
         inputActions={{
-          setDraft: () => {}, addResponseAnnotation: () => true, addImages: () => true,
+          setDraft: () => {}, addResponseAnnotation: () => true,
+          removeResponseAnnotation: () => {}, clearResponseAnnotations: () => {}, commentResponseAnnotation: () => {},
+          addImages: () => true,
           removeImage: () => {}, pruneImages: () => {}, submit: () => {},
         }}
         useProjection={(() => undefined)}

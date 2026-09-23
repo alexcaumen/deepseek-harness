@@ -17,10 +17,10 @@
 - text: Explain event sourcing in one sentence. {{clock}}
 - button "Copy":
   - img
-- button "Context injection Giana CoWork":
+- button "Context injection Giana CoWork Preview":
   - img
   - img
-  - text: Context injection Giana CoWork
+  - text: Context injection Giana CoWork Preview
 - status: Thinking Completed
 - button "Thinking":
   - img

@@ -46,21 +46,21 @@ The chat stats line takes its token accounting from the generic token-meter `tok
 
 A finished turn materializes one ordered `turn-tail` Conversation Node. Its engine-owned `TurnLocation` supplies the closing Assistant and Turn data; the renderer places the `conversation.chat.turnTail` chain before that node's IconActions and dispatches `TurnTailOwnerProps` containing the Turn, closing seq, and `openFile`. This package owns only the hole; `@deepseek-ai/dsh-client-ui-deliverables` accumulates mutation-tool `locations` into Turn data and owns the produced-files row, chip cap, and copy, so composing that plugin out of cordis.yml turns the surface off while the hole renders empty at zero cost. The closing prose participates through the same off switch: the chat view asks the optional `chatFileMentions` service (ctx.get; provided by the same plugin) for a closing message's inline-code vocabulary and threads the result into MarkdownText's `fileMentions` seam — an absent service leaves the prose inert.
 
-Submitted reference chips and their surrounding literal text share one inline flow. Annotation badges wrap only with available width or authored newlines; display layout never rewrites the stored annotation payload, source offsets, or user text.
+Selecting response text adds a composer annotation attachment, not draft text. The composer shows one compact "N annotations" chip with a remove-all control; hover or keyboard focus opens a card listing each selected passage with its number, an optional comment editor, and delete. Deleting one renumbers the rest 1..N, and numbered source markers stay beside the selected passage in the conversation. On send, the annotations become one `<response-annotations>` model envelope before the authored text and an `@Annotation N` display prefix, so history renders them from the durable envelope. Persisted drafts keep annotations beside the text at offset `-1`; a draft saved while annotations were inline tokens is converted on restore. Submitted reference chips and their surrounding literal text share one inline flow. Annotation badges wrap only with available width or authored newlines; display layout never rewrites the stored annotation payload, source offsets, or user text.
 
 The empty-session headline shows the 96px user-provided Giana CoWork mark and a visible Preview designation in both locales. At content widths of 320px or less, the logo, name and Preview line stack without shrinking the logo. Product identity follows the [GCP branding glossary](../ui-brand-official/README.md); this presentation does not imply release or production acceptance.
 
 ## Dictation Presentation
 
-The recording waveform uses a theme-owned gold token with a fixed 36px track and slender bars. Quiet input receives display-only amplitude compression; silence stays at the floor and peak height is capped. The 72-sample history traverses the track in seven seconds. This does not change the recorded audio, STT endpoint, cancellation, or reduced-motion behavior. The empty-session brand mark occupies a 96px slot. Visual component verification does not establish speech-service availability or packaged-application acceptance.
+The recording waveform uses a theme-owned gold token with a fixed 36px track and slender bars. Quiet input receives display-only amplitude compression; silence settles at the floor and peak height is capped. The 72-sample history traverses the track in seven seconds: the analyser is read once per animation frame, each sample combines the mean and peak of its step window, and a held, decaying envelope feeds asymmetric smoothing. Delayed frames fill elapsed slots with bounded work and retain the visible tail; the bar strip slides continuously between steps. Reduced motion keeps one uniform, unsmoothed level with no sliding. This does not change the recorded audio, STT endpoint, or cancellation behavior. The empty-session brand mark occupies a 96px slot. Visual component verification does not establish speech-service availability or packaged-application acceptance.
 
 ## Model Experience
 
-None, as the conversation UI renders session history and streams in the browser; nothing here reaches a model request.
+Explicitly attached response annotations prepend selected quotes, source message ids, optional source offsets, and optional comments to the user's model-facing text. The existing durable user-message path retains that envelope; display labels and waveform animation are presentation only. Attachment-only sends use the same admission transaction as text sends, freeze attachment edits while pending, and retain annotations on failure.
 
 #### KV Cache effect
 
-None; this package neither assembles nor sends a provider request.
+Annotations add tokens to the submitted user message without rewriting earlier history or changing provider request assembly.
 
 ## Known Limitations and Deferred Work
 

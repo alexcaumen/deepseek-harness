@@ -351,17 +351,28 @@ describe('ConversationRoot resident composer', () => {
     expect(b.view.queryByText('Root')).toBeNull()
   })
 
-  it('restores structured annotation occurrences through the session mount hook', () => {
-    const annotation = {
-      offset: 0,
-      ref: JSON.stringify({ index: 1, messageId: 'assistant-1', text: 'selected quote', startOffset: 2, endOffset: 16 }),
-    }
+  it('restores persisted annotations as composer attachments through the session mount hook', () => {
+    const payload = { index: 1, messageId: 'assistant-1', text: 'selected quote', startOffset: 2, endOffset: 16 }
+    const legacyInline = { offset: 0, ref: JSON.stringify(payload) }
     const b = mount(conversationSnapshot(), undefined, undefined, {
-      storedDraft: { text: '@Annotation 1 compare', annotations: [annotation] },
+      storedDraft: { text: '@Annotation 1 compare', annotations: [legacyInline] },
     })
-    expect((b.view.getByRole('textbox') as HTMLTextAreaElement).value).toBe('@Annotation 1 compare')
-    expect(b.view.container.querySelector('[data-annotation-inline-chip="1"]')).toBeTruthy()
-    expect(b.chat.store.getSnapshot().draftAnnotations).toEqual([annotation])
+    const textbox = b.view.getByRole('textbox') as HTMLTextAreaElement
+    expect(textbox.value).toBe('compare')
+    expect(b.view.getByRole('button', { name: '1 条批注' })).toBeTruthy()
+    fireEvent.change(textbox, { target: { value: 'compare them' } })
+    expect(b.chat.store.getSnapshot().draft).toBe('compare them')
+    expect(b.chat.store.getSnapshot().draftAnnotations).toEqual([{ offset: -1, ref: JSON.stringify(payload) }])
+  })
+
+  it('restores an annotation-only draft through the resident session mount', () => {
+    const payload = { index: 1, messageId: 'assistant-1', text: 'quote', comment: 'check this' }
+    const b = mount(conversationSnapshot(), undefined, undefined, {
+      storedDraft: { text: '', annotations: [{ offset: -1, ref: JSON.stringify(payload) }] },
+    })
+    expect((b.view.getByRole('textbox') as HTMLTextAreaElement).value).toBe('')
+    fireEvent.focus(b.view.getByRole('button', { name: '1 条批注' }))
+    expect(b.view.container.querySelector('[data-annotation-comment]')?.textContent).toBe('check this')
   })
 
   it('shows hierarchy only for subagents and opens their ordinary owner', () => {

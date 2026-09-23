@@ -257,11 +257,25 @@ describe('web e2e: settings modal and General preferences', () => {
     await page.getByRole('button', { name: '设置', exact: true }).click()
     const restoredDialog = page.getByRole('dialog', { name: '设置' })
     const systemCube = restoredDialog.getByRole('button', { name: '跟随系统' })
+    const systemMutate = vi.spyOn(scaffold.ctx.apiProxy.settings, 'mutate')
     await systemCube.click()
     await expect.poll(() => systemCube.getAttribute('aria-pressed'), { timeout: 5_000 }).toBe('true')
     await expect.poll(() => page.evaluate(() => document.body.hasAttribute('data-ds-dark-theme')), {
       timeout: 5_000,
     }).toBe(false)
+    await expect.poll(() => systemMutate.mock.calls.some(([request]) => (
+      request.payload.ns === 'ui-theme'
+      && request.payload.ops.some(op => op.op === 'set' && op.path[0] === 'preference' && op.value === 'system')
+    )), { timeout: 5_000 }).toBe(true)
+    for (const result of systemMutate.mock.results) {
+      if (result.type === 'return') {
+        const response = await Promise.resolve(result.value as Awaited<ReturnType<typeof systemMutate>>)
+        expect(response.result.ok).toBe(true)
+      }
+    }
+    systemMutate.mockRestore()
+    await expect.poll(async () => readFile(join(scaffold.harnessHome, 'settings.yaml'), 'utf8'), { timeout: 5_000 })
+      .toMatch(/ui-theme:\n\s+preference: system/)
     await page.keyboard.press('Escape')
     expect(tripwire.pageErrors).toEqual([])
   }, 90_000)
@@ -305,6 +319,7 @@ describe('web e2e: settings modal and General preferences', () => {
     const dialog = page.getByRole('dialog', { name: '设置' })
     await dialog.waitFor({ timeout: 10_000 })
     const darkCube = dialog.getByRole('button', { name: '深色' })
+    const darkMutate = vi.spyOn(scaffold.ctx.apiProxy.settings, 'mutate')
     expect(await darkCube.getAttribute('aria-pressed')).toBe('false')
     await darkCube.click()
     // The full cascade: pressed state, Host-backed preference, body attribute,
@@ -315,6 +330,18 @@ describe('web e2e: settings modal and General preferences', () => {
     expect(dark.legacy).toBeNull()
     expect(dark.token).not.toBe(light.token)
     expectThemeColorSynchronized(dark)
+    await expect.poll(() => darkMutate.mock.calls.some(([request]) => (
+      request.payload.ns === 'ui-theme'
+      && request.payload.ops.some(op => op.op === 'set' && op.path[0] === 'preference' && op.value === 'dark')
+    )), { timeout: 5_000 }).toBe(true)
+    for (const result of darkMutate.mock.results) {
+      if (result.type === 'return') {
+        const response = await Promise.resolve(result.value as Awaited<ReturnType<typeof darkMutate>>)
+        expect({ ok: response.result.ok, code: response.result.ok ? undefined : response.result.error.code })
+          .toEqual({ ok: true, code: undefined })
+      }
+    }
+    darkMutate.mockRestore()
     await expect.poll(async () => readFile(join(scaffold.harnessHome, 'settings.yaml'), 'utf8'), { timeout: 5_000 })
       .toMatch(/ui-theme:\n\s+preference: dark/)
     await page.keyboard.press('Escape')

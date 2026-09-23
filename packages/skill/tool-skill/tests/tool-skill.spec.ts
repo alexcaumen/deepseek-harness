@@ -793,6 +793,46 @@ describe('dsh-tool-skill', () => {
     })
   })
 
+  it('loads pinned j-space and unlisted skills from the same full filesystem catalog', async () => {
+    const home = await tempDir('gcp-skill-catalog')
+    const project = await tempDir('gcp-skill-workspace')
+    await mkdir(join(project, '.git'), { recursive: true })
+    const root = join(project, '.dsh', 'skills')
+    await writeSkill(root, 'j-space', 'Workspace reasoning ledger.', 'J-Space fixture body.')
+    await writeSkill(root, 'zz-catalog-tail', 'Unique tail fixture.', 'Tail fixture body.')
+    const ctx = await setup(home, { catalogMaxEntries: 12, catalogPinnedNames: ['j-space'], searchResultLimit: 8 })
+    try {
+      for (let i = 0; i < 16; i++) {
+        ctx.skills.register({ name: `aaa-skill-${String(i).padStart(2, '0')}`, description: 'Other skill.', source: 'runtime', content: 'Other body.' })
+      }
+      const prefix = await composePrefix(ctx, project)
+      expect(prefix[0]?.source).toMatchObject({
+        kind: 'skill-catalog', totalAvailable: 18,
+        entries: expect.arrayContaining([{ name: 'j-space', description: 'Workspace reasoning ledger.' }]),
+      })
+      const catalog = prefix[0]?.source as unknown as { entries: Array<{ name: string }> }
+      expect(catalog.entries).toHaveLength(12)
+      expect(catalog.entries[0]?.name).toBe('j-space')
+      expect(catalog.entries.some(entry => entry.name === 'zz-catalog-tail')).toBe(false)
+
+      const agent = agentForCwd(project)
+      const search = await ctx.tools.execute({ signal: testToolSignal, callId: CallId('tail-search'), name: 'skill_search',
+        arguments: { query: 'zz-catalog-tail' }, agent })
+      expect(search.isError).toBe(false)
+      if (search.isError) throw new Error('expected full-catalog search success')
+      expect(search.value).toMatchObject({ totalMatches: 1, results: [{ name: 'zz-catalog-tail' }] })
+      for (const [name, content] of [['j-space', 'J-Space fixture body.'], ['zz-catalog-tail', 'Tail fixture body.']]) {
+        const loaded = await ctx.tools.execute({ signal: testToolSignal, callId: CallId(`load-${name}`), name: 'skill',
+          arguments: { name }, agent })
+        expect(loaded.isError).toBe(false)
+        if (loaded.isError) throw new Error(`expected ${name} load success`)
+        expect(loaded.value).toMatchObject({ name, provider: 'filesystem', content })
+      }
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('loads a skill for the calling agent cwd', async () => {
     const home = await tempDir('tool-load')
     const project = await tempDir('tool-project')

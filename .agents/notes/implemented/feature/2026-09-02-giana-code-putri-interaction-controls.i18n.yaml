@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-09-02-giana-code-putri-interaction-controls.md
-2026-09-02-giana-code-putri-interaction-controls.md: 57c2eea160609d32fe63ed9ce7b0d14901a976c9
-2026-09-02-giana-code-putri-interaction-controls.zh.md: 72b87bdf6597ad7b5393e7373090fa2bc17943c8
+2026-09-02-giana-code-putri-interaction-controls.md: 201374002ba40d4092b0339d3666bd847911a811
+2026-09-02-giana-code-putri-interaction-controls.zh.md: c3324ee974075e5c70da6b7e69453375cb1b38c7

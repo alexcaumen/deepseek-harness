@@ -576,9 +576,9 @@ describe('web e2e: workspace management (create / rename / flat view / hover aff
     // without a confirmation dialog (non-destructive: log + accounting stay).
     await clickHoverAction(sessionRow, `Session actions for ${rowTitle}`)
     await page.getByRole('menuitem', { name: 'Archive session' }).click()
-    // The row disappears on the archive-set echo; with no other visible
-    // stray, the whole Ungrouped bucket withdraws.
-    await expect.poll(() => page.getByText(rowTitle, { exact: true }).count(), { timeout: 10_000 }).toBe(0)
+    // The row moves out of the active Ungrouped bucket into the visible archive.
+    const archived = page.getByRole('group', { name: 'Archived sessions' })
+    await expect.poll(() => archived.getByText(rowTitle, { exact: true }).count(), { timeout: 10_000 }).toBe(1)
     await expect.poll(() => page.getByText('Ungrouped', { exact: true }).count(), { timeout: 10_000 }).toBe(0)
     // Durable on the host: the registry-global set carries the id while the
     // session log itself stays in persistence untouched.
@@ -590,10 +590,8 @@ describe('web e2e: workspace management (create / rename / flat view / hover aff
     await page.waitForSelector('[class*="frame"]', { timeout: 30_000 })
     acknowledgeReloadConnectionLoss(tripwire, warningStart)
     await expect.poll(() => page.getByText('Workspaces', { exact: true }).count(), { timeout: 15_000 }).toBe(1)
-    // The archived row must not resurface (the Ungrouped bucket itself may
-    // reappear if selection restore lands on another stray — not this test's
-    // concern).
-    expect(await page.getByText(rowTitle, { exact: true }).count()).toBe(0)
+    // Reload preserves the archived placement rather than restoring an active row.
+    await expect.poll(() => archived.getByText(rowTitle, { exact: true }).count(), { timeout: 10_000 }).toBe(1)
     expect(tripwire.pageErrors).toEqual([])
   }, 90_000)
 

@@ -145,6 +145,7 @@ export class InputMachine {
     return {
       draft: this.draft,
       imageIds: [],
+      annotations: [],
       draftRev: this.draftRev,
       phase: this.phase,
       ...(c
@@ -183,7 +184,7 @@ export class InputMachine {
         this.paste = undefined
         return []
       }
-      case 'enter': return this.onEnter(ev.mode)
+      case 'enter': return this.onEnter(ev.mode, ev.hasAttachments)
       case 'adjudicated': return this.onAdjudicated(ev.attempt, ev.outcome)
       case 'adjudication-failed': return this.onAdjudicationFailed(ev.attempt, ev.message)
       case 'submit-settled': return this.onSubmitSettled(ev)
@@ -498,7 +499,7 @@ export class InputMachine {
     return attempt
   }
 
-  private onEnter(mode: InputSubmitMode): InputEffect[] {
+  private onEnter(mode: InputSubmitMode, hasAttachments = false): InputEffect[] {
     if (this.phase === 'adjudicating' || this.phase === 'submitting') return []
     if (this.phase === 'claimed' && this.claim !== undefined) {
       const attempt = this.beginAttempt(mode)
@@ -507,7 +508,7 @@ export class InputMachine {
       return [{ type: 'begin-submit', attempt, claim: this.claim, args: argsAfter(this.draft, this.claim.token) }]
     }
     const trimmed = this.draft.trim()
-    if (trimmed === '') return []
+    if (trimmed === '' && !hasAttachments) return []
     this.paste = undefined
     if (trimmed.startsWith('/')) {
       const attempt = this.beginAttempt(mode)

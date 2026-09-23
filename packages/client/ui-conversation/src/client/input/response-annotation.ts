@@ -1,33 +1,17 @@
-import type {
-  InputTriggerSource, ReferenceInsert,
-} from '@deepseek-ai/dsh-client-ui-input-trigger/client'
+import type { InputTriggerSource } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import {
-  parseResponseAnnotationPayload, RESPONSE_ANNOTATION_SOURCE, type ResponseAnnotationPayload,
+  parseResponseAnnotationPayload, RESPONSE_ANNOTATION_SOURCE, responseAnnotationEnvelope,
+  type ResponseAnnotationPayload,
 } from '../response-annotation.ts'
 
 export { parseResponseAnnotationPayload, RESPONSE_ANNOTATION_SOURCE }
 export type { ResponseAnnotationPayload }
 
-/** Build the structured composer reference for one selected response passage. */
-export function responseAnnotationReference(payload: ResponseAnnotationPayload): ReferenceInsert {
-  return {
-    source: RESPONSE_ANNOTATION_SOURCE,
-    ref: JSON.stringify(payload),
-    label: `Annotation ${payload.index}`,
-    clipboardText: `Annotation ${payload.index}`,
-  }
-}
-
-/** Recover an annotation index for numbering and tests. */
-export function responseAnnotationIndex(ref: string): number | undefined {
-  try {
-    return parseResponseAnnotationPayload(ref).index
-  } catch {
-    return undefined
-  }
-}
-
-/** Codec-only source: selection creates references directly, so it has no menu candidates. */
+/**
+ * Codec-only source: selection creates composer attachments directly, so it
+ * has no menu candidates. It still serializes a reference that arrives through
+ * the shared reference pipeline (for example a pasted durable reference).
+ */
 export function responseAnnotationSource(): InputTriggerSource {
   return {
     trigger: '@',
@@ -37,19 +21,7 @@ export function responseAnnotationSource(): InputTriggerSource {
     onPick: () => undefined,
     codec: {
       clipboardText: ref => `Annotation ${parseResponseAnnotationPayload(ref).index}`,
-      serialize: ref => Promise.resolve().then(() => {
-        const payload = parseResponseAnnotationPayload(ref)
-        const body = JSON.stringify([{
-          index: payload.index,
-          sourceMessageId: payload.messageId,
-          text: payload.text,
-          ...payload.startOffset === undefined ? {} : {
-            sourceStart: payload.startOffset,
-            sourceEnd: payload.endOffset,
-          },
-        }])
-        return `<response-annotations>\n${body}\n</response-annotations>`
-      }),
+      serialize: ref => Promise.resolve().then(() => responseAnnotationEnvelope([parseResponseAnnotationPayload(ref)])),
     },
   }
 }

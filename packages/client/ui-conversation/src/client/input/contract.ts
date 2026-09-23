@@ -14,7 +14,7 @@ import type {
 } from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type { QueueRow } from '../contract/queue.ts'
 import type { InputSubmitMode } from '../contract/composer-submission.ts'
-import type { PersistedResponseAnnotation } from '../response-annotation.ts'
+import type { PersistedResponseAnnotation, ResponseAnnotationPayload } from '../response-annotation.ts'
 
 /** Browser-runtime identity of one unsent image draft. */
 export type DraftAttachmentId = Branded<'DraftAttachmentId'>
@@ -45,8 +45,14 @@ export interface InputTarget {
 export interface SessionInput extends InputTarget {
   /** Single write path for draft text (all mutation rides machine events). */
   setDraft(text: string): void
-  /** Add selected response text as a numbered structured reference. */
+  /** Add selected response text as the next numbered composer annotation; busy admission phases refuse. */
   addResponseAnnotation(annotation: ResponseAnnotationDraft): boolean
+  /** Remove one composer annotation and renumber the rest 1..N; busy admission phases refuse. */
+  removeResponseAnnotation(index: number): void
+  /** Remove every composer annotation; busy admission phases refuse. */
+  clearResponseAnnotations(): void
+  /** Set or clear one annotation's comment; busy admission phases refuse. */
+  commentResponseAnnotation(index: number, comment: string): void
   /** Append ordered browser-owned image ids; busy admission phases refuse. */
   addImages(ids: readonly DraftAttachmentId[]): boolean
   /** Remove one browser-owned image id; busy admission phases refuse. */
@@ -87,8 +93,14 @@ export interface SessionInputResolver {
 export interface InputActions {
   /** Single public draft write path (full next draft; occurrence math via diff scan). */
   setDraft(text: string, annotations?: readonly PersistedResponseAnnotation[]): void
-  /** Add selected response text as a numbered structured reference. */
+  /** Add selected response text as the next numbered composer annotation. */
   addResponseAnnotation(annotation: ResponseAnnotationDraft): boolean
+  /** Remove one composer annotation and renumber the rest 1..N. */
+  removeResponseAnnotation(index: number): void
+  /** Remove every composer annotation. */
+  clearResponseAnnotations(): void
+  /** Set or clear one annotation's comment. */
+  commentResponseAnnotation(index: number, comment: string): void
   /** Append ordered browser-owned image ids; busy admission phases refuse. */
   addImages(ids: readonly DraftAttachmentId[]): boolean
   /** Remove one browser-owned image id; busy admission phases refuse. */
@@ -230,6 +242,8 @@ export interface InputState {
   readonly draft: string
   /** Ordered runtime-only image ids; bytes and URLs stay in ConversationController. */
   readonly imageIds: readonly DraftAttachmentId[]
+  /** Composer annotation attachments, numbered 1..N in order; never part of `draft`. */
+  readonly annotations: readonly ResponseAnnotationPayload[]
   /** Monotonic draft revision (span CAS compares against this). */
   readonly draftRev: number
   readonly phase: 'plain' | 'adjudicating' | 'claimed' | 'submitting'
@@ -289,7 +303,7 @@ export type InputEvent =
   | { readonly type: 'paste-upgrade'; readonly attemptId: number; readonly span: TokenSpan; readonly reference: ReferenceInsert }
   /** Shell-observed attempt killers the machine cannot see itself (caret/selection ops, Slash interaction updates). */
   | { readonly type: 'invalidate-paste' }
-  | { readonly type: 'enter'; readonly mode: InputSubmitMode }
+  | { readonly type: 'enter'; readonly mode: InputSubmitMode; readonly hasAttachments?: boolean }
   | { readonly type: 'adjudicated'; readonly attempt: SubmitAttempt; readonly outcome: PickOutcome }
   | { readonly type: 'adjudication-failed'; readonly attempt: SubmitAttempt; readonly message: string }
   | { readonly type: 'submit-settled'; readonly attempt: SubmitAttempt; readonly ok: boolean; readonly outcome?: SubmitOutcome; readonly message?: string }

@@ -271,12 +271,15 @@ function makeHarness(init?: Partial<ConversationSnapshot>) {
     useWorkspaces: emptyWorkspaces(),
     useProjection: (() => undefined),
     useInput: bindSnapshotSelector(createSnapshotStore({
-      draft: '', imageIds: [], draftRev: 0, phase: 'plain' as const,
+      draft: '', imageIds: [], annotations: [], draftRev: 0, phase: 'plain' as const,
       occurrences: [], queue: [],
     })),
     inputActions: {
       setDraft: () => {},
       addResponseAnnotation: () => true,
+      removeResponseAnnotation: () => {},
+      clearResponseAnnotations: () => {},
+      commentResponseAnnotation: () => {},
       addImages: () => true,
       removeImage: () => {},
       pruneImages: () => {},

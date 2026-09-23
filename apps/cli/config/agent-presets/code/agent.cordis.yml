@@ -99,6 +99,7 @@
     catalogMaxEntries: 12
     searchResultLimit: 8
     catalogPinnedNames:
+      - j-space
       - computer-use
       - frontend-app-builder
       - frontend-testing-debugging

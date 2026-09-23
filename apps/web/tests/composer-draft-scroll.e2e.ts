@@ -138,10 +138,14 @@ function measureComposer(page: Page): Promise<ComposerMetrics> {
     // two that carry glyphs.
     const mirror = input.nextElementSibling
     if (!(mirror instanceof HTMLElement)) throw new Error('no auto-grow mirror after the composer textarea')
-    // The draft carries no chips or claim token, so the decoration walk emits it
-    // as a single text node, which is what the Range below needs.
-    const text = backdrop.firstChild
-    if (!(text instanceof Text)) throw new Error('backdrop does not open with a plain text node')
+    // A plain draft is one span-wrapped text segment; reject chip/claim
+    // decorations so the Range still measures the exact visible glyphs.
+    const plain = backdrop.firstElementChild
+    const text = plain?.firstChild
+    if (backdrop.children.length !== 1 || !(text instanceof Text)
+      || plain?.hasAttribute('data-decoration') === true) {
+      throw new Error('backdrop does not contain one plain text segment')
+    }
     const lineHeight = Number.parseFloat(getComputedStyle(input).lineHeight)
     /** Where the backdrop paints the line holding `marker`, in viewport coordinates. */
     const glyphTop = (marker: string): number => {

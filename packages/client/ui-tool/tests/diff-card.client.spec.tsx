@@ -336,6 +336,7 @@ describe('DetailsPanel diff Output section', () => {
         inputActions={{
           setDraft: () => {},
           addResponseAnnotation: () => true,
+          removeResponseAnnotation: () => {}, clearResponseAnnotations: () => {}, commentResponseAnnotation: () => {},
           addImages: () => true,
           removeImage: () => {},
           pruneImages: () => {},

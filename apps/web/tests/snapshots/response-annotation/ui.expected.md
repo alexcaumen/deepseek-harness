@@ -1,0 +1,48 @@
+- banner:
+  - navigation "Session hierarchy":
+    - button "Annotation target" [disabled]
+  - button "Session log":
+    - text: Session log
+    - img
+  - tablist:
+    - tab "Chat" [selected]
+    - tab "Trajectory"
+- text: Explain the annotation target. {{clock}}
+- button "Copy":
+  - img
+- paragraph: Please note that the selected passage stays anchored to this answer after selection.
+- 'button "Annotation 1 source: the selected passage stays anchored to this answer"': "1"
+- button "Copy":
+  - img
+- button "Good response":
+  - img
+- button "Bad response":
+  - img
+- button "Branch into a new conversation":
+  - img
+- text: {{clock}} Ran for {{duration}}
+- button "1 annotation" [expanded]:
+  - img
+  - text: 1 annotation
+- button "Remove all annotations":
+  - img
+- dialog "1 annotation":
+  - list:
+    - listitem:
+      - text: "1. Selected text:"
+      - button "Edit comment for annotation 1":
+        - img
+      - button "Delete annotation 1":
+        - img
+      - button "the selected passage stays anchored to this answer"
+- textbox "Message the agent"
+- button "Commands":
+  - img
+- 'button "Access mode, current: Workspace Write"': Workspace Write
+- button "Select model, current DeepSeek-V4-Flash":
+  - text: DeepSeek-V4-Flash
+  - img
+- button "Start automatic-language dictation":
+  - img
+- button "Send message"
+- text: 1 turns · 1 steps LLM {{duration}}

@@ -73,6 +73,18 @@ function evaluatedBoolean(value: unknown, env: Record<string, string>): boolean 
 }
 
 describe('Giana CoWork runtime binding', () => {
+  it.each(GCP_PRESET_PATHS)('keeps required j-space visible without expanding the $name catalog', ({ path }) => {
+    const parsed: unknown = yaml.load(readFileSync(path, 'utf8'), { schema: entryListSchema })
+    expect(Array.isArray(parsed)).toBe(true)
+    const config = configById(parsed as PatchEntry[], 'tool-skill')
+    expect(config.catalogMaxEntries).toBe(12)
+    expect(config.searchResultLimit).toBe(8)
+    expect(config.catalogDescriptionMaxLength).toBe(48)
+    expect(Array.isArray(config.catalogPinnedNames)).toBe(true)
+    expect((config.catalogPinnedNames as string[])[0]).toBe('j-space')
+    expect(new Set(config.catalogPinnedNames as string[]).size).toBe((config.catalogPinnedNames as string[]).length)
+  })
+
   it.each(GCP_PRESET_PATHS)('enables collision-free model-selectable delegation in $name', ({ path }) => {
     const parsed: unknown = yaml.load(readFileSync(path, 'utf8'), { schema: entryListSchema })
     expect(Array.isArray(parsed)).toBe(true)

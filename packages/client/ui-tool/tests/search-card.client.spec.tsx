@@ -401,6 +401,7 @@ describe('DetailsPanel Output section (search)', () => {
         inputActions={{
           setDraft: () => {},
           addResponseAnnotation: () => true,
+          removeResponseAnnotation: () => {}, clearResponseAnnotations: () => {}, commentResponseAnnotation: () => {},
           addImages: () => true,
           removeImage: () => {},
           pruneImages: () => {},

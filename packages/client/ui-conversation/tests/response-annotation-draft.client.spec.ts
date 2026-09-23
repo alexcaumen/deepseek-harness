@@ -41,13 +41,14 @@ describe('persisted response annotation drafts', () => {
     first.setDraft(`${first.snapshot.draft}compare these`)
 
     const persisted = createChatStore().create('annotation-reload').store.getSnapshot()
-    expect(persisted.draft).toBe('short @Annotation 1 @Annotation 2 compare these')
-    expect(persisted.draftAnnotations?.map(item => item.offset)).toEqual([6, 20])
+    expect(persisted.draft).toBe('short compare these')
+    expect(persisted.draftAnnotations?.map(item => item.offset)).toEqual([-1, -1])
 
     const restored = new SessionInputShell(deps)
     restored.actions.setDraft(persisted.draft, persisted.draftAnnotations)
-    expect(restored.snapshot.occurrences.map(item => [item.offset, item.label])).toEqual([
-      [6, 'Annotation 1'], [20, 'Annotation 2'],
+    expect(restored.snapshot.draft).toBe('short compare these')
+    expect(restored.snapshot.annotations.map(item => [item.index, item.messageId])).toEqual([
+      [1, 'assistant-1'], [2, 'assistant-2'],
     ])
     restored.submit()
     await vi.waitFor(() => { expect(sink).toHaveBeenCalledOnce() })
@@ -60,7 +61,7 @@ describe('persisted response annotation drafts', () => {
     expect(modelText).toContain('"sourceEnd":45')
     expect(modelText.match(/"text":"repeated quote"/gu)).toHaveLength(2)
     expect(modelText).toContain('compare these')
-    expect(serializeReference).toHaveBeenCalledTimes(2)
+    expect(serializeReference).not.toHaveBeenCalled()
   })
 
   it('keeps authored text but rejects a stale annotation sidecar', () => {
@@ -72,5 +73,48 @@ describe('persisted response annotation drafts', () => {
     shell.actions.setDraft('plain @Annotation 1', [{ offset: 5, ref: '{"index":1,"messageId":"assistant-1","text":"quote"}' }])
     expect(shell.snapshot.draft).toBe('plain @Annotation 1')
     expect(shell.snapshot.occurrences).toHaveLength(0)
+    expect(shell.snapshot.annotations).toHaveLength(0)
+  })
+
+  it('moves inline annotation tokens from an older persisted draft into attachments', () => {
+    const shell = new SessionInputShell({
+      actx: {} as ClientContext,
+      defaultSink: () => Promise.resolve({ kind: 'success' }),
+      commandImages: { serialize: () => Promise.resolve([]), release: () => {}, unsupportedNotice: () => '' },
+    })
+    shell.actions.setDraft('plain @Annotation 2 @Annotation 1 tail', [
+      { offset: 6, ref: '{"index":2,"messageId":"assistant-2","text":"later"}' },
+      { offset: 20, ref: '{"index":1,"messageId":"assistant-1","text":"earlier"}' },
+    ])
+    expect(shell.snapshot.draft).toBe('plain tail')
+    expect(shell.snapshot.annotations.map(item => [item.index, item.text])).toEqual([[1, 'earlier'], [2, 'later']])
+  })
+
+  it('does not consume a partial label from stale legacy metadata', () => {
+    const shell = new SessionInputShell({
+      actx: {} as ClientContext,
+      defaultSink: () => Promise.resolve({ kind: 'success' }),
+      commandImages: { serialize: () => Promise.resolve([]), release: () => {}, unsupportedNotice: () => '' },
+    })
+    shell.actions.setDraft('@Annotation 10 is literal', [{
+      offset: 0, ref: '{"index":1,"messageId":"assistant-1","text":"quote"}',
+    }])
+    expect(shell.snapshot.draft).toBe('@Annotation 10 is literal')
+    expect(shell.snapshot.annotations).toEqual([])
+  })
+
+  it('restores valid comments while ignoring corrupt and overlapping persisted entries', () => {
+    const shell = new SessionInputShell({
+      actx: {} as ClientContext,
+      defaultSink: () => Promise.resolve({ kind: 'success' }),
+      commandImages: { serialize: () => Promise.resolve([]), release: () => {}, unsupportedNotice: () => '' },
+    })
+    const ref = JSON.stringify({ index: 1, messageId: 'assistant-1', text: 'quote', comment: 'check' })
+    shell.actions.setDraft('@Annotation 1 tail', [
+      null, { offset: -1, ref: 'broken' }, { offset: 0, ref }, { offset: 0, ref },
+      { offset: -2, ref }, { offset: -1, ref: JSON.stringify({ index: 2, messageId: 'assistant-2', text: 'other', comment: 'x'.repeat(2001) }) },
+    ] as unknown as Parameters<typeof shell.actions.setDraft>[1])
+    expect(shell.snapshot.draft).toBe('tail')
+    expect(shell.snapshot.annotations).toMatchObject([{ index: 1, text: 'quote', comment: 'check' }])
   })
 })

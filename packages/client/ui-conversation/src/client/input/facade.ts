@@ -17,11 +17,13 @@ import type {
   PasteComponent, QueuedMessage, ResponseAnnotationDraft, SessionInput, SubmitAttempt,
 } from './contract.ts'
 import type { InputSubmitMode } from '../contract/composer-submission.ts'
-import { InputMachine, referenceDraftText } from './machine.ts'
+import { InputMachine } from './machine.ts'
+import { parseResponseAnnotationPayload } from './response-annotation.ts'
 import {
-  RESPONSE_ANNOTATION_SOURCE, parseResponseAnnotationPayload, responseAnnotationIndex, responseAnnotationReference,
-} from './response-annotation.ts'
-import type { PersistedResponseAnnotation } from '../response-annotation.ts'
+  RESPONSE_ANNOTATION_ATTACHMENT_OFFSET, RESPONSE_ANNOTATION_COMMENT_MAX_LENGTH, responseAnnotationDisplayPrefix,
+  responseAnnotationEnvelope, responseAnnotationLabel,
+  type PersistedResponseAnnotation, type ResponseAnnotationPayload, type ResponseAnnotationProjection,
+} from '../response-annotation.ts'
 
 /** Popup face the shell needs (dismissal only; typed structurally to avoid a value import). */
 export interface PopupDismissFace {
@@ -78,6 +80,33 @@ function guardOf(phase: InputState['phase']): 'plain' | 'claimed' | 'frozen' {
 
 const EMPTY_QUEUE: readonly QueuedMessage[] = []
 
+/** Renumber annotations 1..N in their current order. */
+function renumbered(annotations: readonly ResponseAnnotationPayload[]): ResponseAnnotationPayload[] {
+  return annotations.map((annotation, position) => (
+    annotation.index === position + 1 ? annotation : { ...annotation, index: position + 1 }
+  ))
+}
+
+/**
+ * Join the annotation display prefix / model envelope with the authored text.
+ * Both halves use one separating space so the durable projection of the model
+ * text equals the display text.
+ */
+function withAnnotations(
+  annotations: readonly ResponseAnnotationPayload[],
+  modelText: string,
+  displayText: string,
+  references: readonly ResponseAnnotationProjection[] = [],
+): { modelText: string; displayText: string } {
+  if (annotations.length === 0) return { modelText, displayText }
+  const envelope = responseAnnotationEnvelope(annotations, references)
+  const prefix = responseAnnotationDisplayPrefix(annotations)
+  return {
+    modelText: modelText === '' ? envelope : `${envelope} ${modelText}`,
+    displayText: displayText === '' ? prefix : `${prefix} ${displayText}`,
+  }
+}
+
 /** No-pipeline lexicon: zero text-ref decorations. */
 const EMPTY_LEXICON: ReadonlyMap<'/' | '@', readonly string[]> = new Map()
 
@@ -94,42 +123,79 @@ export class SessionInputShell implements SessionInput {
   readonly actions: InputActions = {
     setDraft: (text, annotations) => { this.restoreDraft(text, annotations) },
     addResponseAnnotation: annotation => this.addResponseAnnotation(annotation),
+    removeResponseAnnotation: (index) => { this.removeResponseAnnotation(index) },
+    clearResponseAnnotations: () => { this.clearResponseAnnotations() },
+    commentResponseAnnotation: (index, comment) => { this.commentResponseAnnotation(index, comment) },
     addImages: ids => this.addImages(ids),
     removeImage: (id) => { this.removeImage(id) },
     pruneImages: (ids) => { this.pruneImages(ids) },
     submit: () => { this.submit('queue') },
   }
 
-  /** Add one selected response passage at the draft tail as a structured reference. */
+  /**
+   * Add one selected response passage as the next composer annotation. The
+   * draft text is untouched; the passage rides the send as a model envelope.
+   */
   addResponseAnnotation(annotation: ResponseAnnotationDraft): boolean {
     const text = annotation.text.trim()
     if (text.length === 0) return false
-    if (this.snapshot.phase !== 'plain' && this.snapshot.phase !== 'claimed') return false
+    if (this.annotationsLocked()) return false
     const hasValidAnchor = Number.isSafeInteger(annotation.startOffset)
       && Number.isSafeInteger(annotation.endOffset)
       && Number(annotation.startOffset) >= 0
       && Number(annotation.endOffset) > Number(annotation.startOffset)
-    const index = this.snapshot.occurrences.reduce((maximum, occurrence) => {
-      if (occurrence.source !== RESPONSE_ANNOTATION_SOURCE) return maximum
-      return Math.max(maximum, responseAnnotationIndex(occurrence.ref) ?? 0)
-    }, 0) + 1
-    if (this.snapshot.draft !== '' && !/\s$/u.test(this.snapshot.draft)) {
-      this.setDraft(`${this.snapshot.draft} `)
-    }
-    const end = this.snapshot.draft.length
-    return this.insertReference(responseAnnotationReference({
-      index,
+    const duplicate = this.annotations.some(existing => existing.messageId === annotation.messageId
+      && existing.text === text
+      && existing.startOffset === (hasValidAnchor ? annotation.startOffset : undefined)
+      && existing.endOffset === (hasValidAnchor ? annotation.endOffset : undefined))
+    if (duplicate) return true
+    this.annotations = [...this.annotations, {
+      index: this.annotations.length + 1,
       messageId: annotation.messageId,
       text,
       ...hasValidAnchor ? {
-        startOffset: annotation.startOffset,
-        endOffset: annotation.endOffset,
+        startOffset: Number(annotation.startOffset),
+        endOffset: Number(annotation.endOffset),
       } : {},
-    }), {
-      start: end,
-      end,
-      draftRev: this.snapshot.draftRev,
-    })
+    }]
+    this.publish()
+    return true
+  }
+
+  /** Remove one composer annotation; the rest renumber to stay 1..N. */
+  removeResponseAnnotation(index: number): void {
+    if (this.annotationsLocked()) return
+    const next = this.annotations.filter(annotation => annotation.index !== index)
+    if (next.length === this.annotations.length) return
+    this.annotations = renumbered(next)
+    this.publish()
+  }
+
+  /** Remove every composer annotation. */
+  clearResponseAnnotations(): void {
+    if (this.annotationsLocked() || this.annotations.length === 0) return
+    this.annotations = []
+    this.publish()
+  }
+
+  /** Set (non-empty) or clear (empty) one annotation's comment. */
+  commentResponseAnnotation(index: number, comment: string): void {
+    if (this.annotationsLocked()) return
+    const trimmed = comment.trim().slice(0, RESPONSE_ANNOTATION_COMMENT_MAX_LENGTH)
+    const position = this.annotations.findIndex(annotation => annotation.index === index)
+    const current = this.annotations[position]
+    if (current === undefined || (current.comment ?? '') === trimmed) return
+    const { comment: _previous, ...rest } = current
+    const next = [...this.annotations]
+    next[position] = trimmed === '' ? rest : { ...rest, comment: trimmed }
+    this.annotations = next
+    this.publish()
+  }
+
+  /** Busy admission phases freeze the attachment set that the in-flight send captured. */
+  private annotationsLocked(): boolean {
+    const phase = this.core.state.phase
+    return this.disposed || phase === 'adjudicating' || phase === 'submitting'
   }
 
   // Real wall clock: the typing-run merge window must actually expire in
@@ -138,12 +204,12 @@ export class SessionInputShell implements SessionInput {
   private noticeSeq = 0
   private lastMirroredDraft = ''
   private imageIds: readonly DraftAttachmentId[] = []
-  /** One image-only send at a time: Enter during the Host round-trip is a no-op. */
-  private imageSendInFlight = false
+  /** Composer annotation attachments, always numbered 1..N. */
+  private annotations: readonly ResponseAnnotationPayload[] = []
   private disposed = false
   /** Draft persistence mirror (other references use clipboard text; annotations retain their display form). */
   private mirrorFn: ((text: string, annotations?: readonly PersistedResponseAnnotation[]) => void) | undefined
-  private lastMirroredAnnotations: readonly PersistedResponseAnnotation[] = []
+  private lastMirroredAnnotationKey = ''
 
   constructor(private readonly deps: SessionInputDeps) {
     this.state = createSnapshotStore<InputState>(this.compose())
@@ -162,31 +228,50 @@ export class SessionInputShell implements SessionInput {
     this.run(this.core.dispatch({ type: 'draft-changed', draft: text, ...(editRange !== undefined ? { editRange } : {}) }))
   }
 
-  /** Rebuild only valid annotation references from the persisted display draft. */
+  /**
+   * Restore a persisted draft and its annotation attachments. Attachments use
+   * the attachment offset; a draft persisted while annotations were inline
+   * text still carries `@Annotation N` tokens, which move back out of the
+   * authored text into attachments. Invalid entries never block the text.
+   */
   private restoreDraft(text: string, annotations?: readonly PersistedResponseAnnotation[]): void {
-    if (!Array.isArray(annotations) || annotations.length === 0 || this.snapshot.draft !== '') {
+    // Persisted browser storage is a durable boundary: validate every entry.
+    const entries: readonly unknown[] = Array.isArray(annotations) ? annotations as readonly unknown[] : []
+    if (entries.length > 0 && this.annotationsLocked()) return
+    if (entries.length === 0 || this.snapshot.draft !== '' || this.annotations.length > 0) {
       this.setDraft(text)
       return
     }
-    const references: { start: number; end: number; reference: ReferenceInsert }[] = []
-    for (const item of annotations) {
+    const restored: ResponseAnnotationPayload[] = []
+    const inlineRanges: { start: number; end: number }[] = []
+    for (const entry of entries) {
+      if (typeof entry !== 'object' || entry === null) continue
+      const { offset, ref } = entry as { offset?: unknown; ref?: unknown }
+      if (typeof ref !== 'string' || typeof offset !== 'number') continue
       try {
-        if (!Number.isSafeInteger(item.offset) || item.offset < 0) continue
-        const reference = responseAnnotationReference(parseResponseAnnotationPayload(item.ref))
-        const end = item.offset + referenceDraftText(reference).length
-        if (text.slice(item.offset, end) !== referenceDraftText(reference)) continue
-        references.push({ start: item.offset, end, reference })
+        const payload = parseResponseAnnotationPayload(ref)
+        if (offset === RESPONSE_ANNOTATION_ATTACHMENT_OFFSET) {
+          restored.push(payload)
+          continue
+        }
+        if (!Number.isSafeInteger(offset) || offset < 0) continue
+        const label = responseAnnotationLabel(payload.index)
+        const end = offset + label.length
+        if (text.slice(offset, end) !== label || (text[end] !== undefined && !/\s/u.test(text[end]))) continue
+        if (inlineRanges.some(range => offset < range.end && end > range.start)) continue
+        inlineRanges.push({ start: offset, end: text[end] === ' ' ? end + 1 : end })
+        restored.push(payload)
       } catch {
         // A stale persisted sidecar cannot prevent recovery of the authored text.
       }
     }
-    references.sort((a, b) => a.start - b.start)
-    const disjoint: typeof references = []
-    for (const item of references) {
-      if (item.start >= (disjoint.at(-1)?.end ?? 0)) disjoint.push(item)
+    let authored = text
+    for (const range of [...inlineRanges].sort((a, b) => b.start - a.start)) {
+      authored = authored.slice(0, range.start) + authored.slice(range.end)
     }
-    this.run(this.core.dispatch({ type: 'restore-draft', draft: text, references: disjoint }))
-    if (this.snapshot.draft === '') this.setDraft(text)
+    this.annotations = renumbered([...restored].sort((a, b) => a.index - b.index))
+    this.setDraft(authored)
+    this.publish()
   }
 
   /** Append ordered image ids unless an admission transaction is locked. */
@@ -273,22 +358,7 @@ export class SessionInputShell implements SessionInput {
    * dismisses and the menu tracks frozen.
    */
   submit(mode: InputSubmitMode = 'queue'): void {
-    if (this.snapshot.draft.trim() === '' && this.imageIds.length > 0) {
-      if (this.snapshot.phase === 'plain' && !this.imageSendInFlight) {
-        const imageIds = [...this.imageIds]
-        this.imageSendInFlight = true
-        void this.deps.defaultSink('', imageIds, mode, new AbortController().signal).then((outcome) => {
-          this.imageSendInFlight = false
-          if (this.disposed) return
-          if (outcome.kind === 'success') this.commitSend(imageIds)
-          else if (outcome.text !== undefined) this.notify('error', outcome.text)
-        }, (error: unknown) => {
-          this.imageSendInFlight = false
-          if (!this.disposed) this.notify('error', error instanceof Error ? error.message : String(error))
-        })
-      }
-      return
-    }
+    if (this.disposed) return
     // Claimed pre-gate: a claim that does not declare image acceptance never
     // submits while images are attached — one notice, everything retained.
     // Enter-time adjudication applies the same policy for unclaimed lines
@@ -298,7 +368,7 @@ export class SessionInputShell implements SessionInput {
       this.notify('error', this.deps.commandImages.unsupportedNotice(before.claim?.token ?? before.draft))
       return
     }
-    this.run(this.core.dispatch({ type: 'enter', mode }))
+    this.run(this.core.dispatch({ type: 'enter', mode, hasAttachments: this.imageIds.length > 0 || this.annotations.length > 0 }))
     const phase = this.snapshot.phase
     if (phase === 'adjudicating' || phase === 'submitting') {
       this.deps.popup?.()?.dismiss()
@@ -521,9 +591,18 @@ export class SessionInputShell implements SessionInput {
    */
   private sinkSerialized(attempt: SubmitAttempt, draft: string, mode: InputSubmitMode): void {
     const imageIds = [...this.imageIds]
+    const annotations = this.annotations
     const occurrences = this.core.state.occurrences
     if (occurrences.length === 0) {
-      this.settleSubmit(attempt, this.deps.defaultSink(draft.trim(), imageIds, mode, attempt.signal), imageIds)
+      const text = withAnnotations(annotations, draft.trim(), draft.trim())
+      this.settleSubmit(
+        attempt,
+        annotations.length === 0
+          ? this.callSink(text.modelText, imageIds, mode, attempt.signal)
+          : this.callSink(text.modelText, imageIds, mode, attempt.signal, text.displayText),
+        imageIds,
+        annotations,
+      )
       return
     }
     const inputTriggers = this.deps.inputTriggers?.()
@@ -537,20 +616,39 @@ export class SessionInputShell implements SessionInput {
       }
     })).then(
       (parts) => {
-        if (this.disposed) return
+        if (this.dead(attempt)) return
         // Splice model forms over their display ranges (offsets are draft-time;
         // parts arrive offset-sorted since the table is).
         let out = ''
         let cursor = 0
+        const references: ResponseAnnotationProjection[] = []
         for (const part of parts) {
-          out += draft.slice(cursor, part.offset) + part.text
+          out += draft.slice(cursor, part.offset)
+          references.push({
+            modelStart: out.length,
+            displayStart: part.offset,
+            model: part.text,
+            display: draft.slice(part.offset, part.offset + part.length),
+          })
+          out += part.text
           cursor = part.offset + part.length
         }
         out += draft.slice(cursor)
+        const modelLeading = out.length - out.trimStart().length
+        const displayLeading = draft.length - draft.trimStart().length
+        const displayEnd = draft.trimEnd().length
+        const projections = references.map(reference => ({
+          ...reference,
+          modelStart: reference.modelStart - modelLeading,
+          displayStart: reference.displayStart - displayLeading,
+          display: reference.display.slice(0, Math.max(0, displayEnd - reference.displayStart)),
+        }))
+        const text = withAnnotations(annotations, out.trim(), draft.trim(), projections)
         this.settleSubmit(
           attempt,
-          this.deps.defaultSink(out.trim(), imageIds, mode, attempt.signal, draft.trim()),
+          this.callSink(text.modelText, imageIds, mode, attempt.signal, text.displayText),
           imageIds,
+          annotations,
         )
       },
       (error: unknown) => {
@@ -562,11 +660,28 @@ export class SessionInputShell implements SessionInput {
     )
   }
 
-  /** Settle one admission attempt; successful sends consume only their captured images. */
+  /** Synchronous service-resolution failures settle through the same path as rejected sends. */
+  private callSink(...args: Parameters<SessionInputDeps['defaultSink']>): Promise<SubmitOutcome> {
+    try {
+      return this.deps.defaultSink(...args)
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)))
+    }
+  }
+
+  /** Remove exactly the annotations a successful send captured, renumbering later additions. */
+  private consumeAnnotations(submitted: readonly ResponseAnnotationPayload[]): void {
+    if (submitted.length === 0) return
+    const sent = new Set(submitted)
+    this.annotations = renumbered(this.annotations.filter(annotation => !sent.has(annotation)))
+  }
+
+  /** Settle one admission attempt; successful sends consume only their captured images and annotations. */
   private settleSubmit(
     attempt: SubmitAttempt,
     pending: Promise<SubmitOutcome>,
     imageIds: readonly DraftAttachmentId[] = [],
+    annotations: readonly ResponseAnnotationPayload[] = [],
   ): void {
     pending.then(
       (outcome) => {
@@ -575,6 +690,7 @@ export class SessionInputShell implements SessionInput {
           const submitted = new Set(imageIds)
           this.imageIds = this.imageIds.filter(id => !submitted.has(id))
         }
+        if (outcome.kind === 'success') this.consumeAnnotations(annotations)
         this.run(this.core.dispatch({
           type: 'submit-settled',
           attempt,
@@ -660,7 +776,12 @@ export class SessionInputShell implements SessionInput {
 
   private compose(): InputState {
     const core = this.core.state
-    return { ...core, imageIds: this.imageIds, queue: this.deps.queue?.getSnapshot() ?? EMPTY_QUEUE }
+    return {
+      ...core,
+      imageIds: this.imageIds,
+      annotations: this.annotations,
+      queue: this.deps.queue?.getSnapshot() ?? EMPTY_QUEUE,
+    }
   }
 
   private publish(): void {
@@ -668,24 +789,19 @@ export class SessionInputShell implements SessionInput {
     this.state.set(next)
     let mirroredDraft = ''
     let cursor = 0
-    const annotations: PersistedResponseAnnotation[] = []
     for (const occurrence of next.occurrences) {
-      mirroredDraft += next.draft.slice(cursor, occurrence.offset)
-      if (occurrence.source === RESPONSE_ANNOTATION_SOURCE) {
-        annotations.push({ offset: mirroredDraft.length, ref: occurrence.ref })
-        mirroredDraft += next.draft.slice(occurrence.offset, occurrence.offset + occurrence.length)
-      } else {
-        mirroredDraft += occurrence.clipboardText
-      }
+      mirroredDraft += next.draft.slice(cursor, occurrence.offset) + occurrence.clipboardText
       cursor = occurrence.offset + occurrence.length
     }
     mirroredDraft += next.draft.slice(cursor)
-    if (mirroredDraft !== this.lastMirroredDraft
-      || annotations.length !== this.lastMirroredAnnotations.length
-      || annotations.some((item, index) => item.offset !== this.lastMirroredAnnotations[index]?.offset
-        || item.ref !== this.lastMirroredAnnotations[index]?.ref)) {
+    const annotations: PersistedResponseAnnotation[] = next.annotations.map(annotation => ({
+      offset: RESPONSE_ANNOTATION_ATTACHMENT_OFFSET,
+      ref: JSON.stringify(annotation),
+    }))
+    const annotationKey = annotations.map(item => item.ref).join('\n')
+    if (mirroredDraft !== this.lastMirroredDraft || annotationKey !== this.lastMirroredAnnotationKey) {
       this.lastMirroredDraft = mirroredDraft
-      this.lastMirroredAnnotations = annotations
+      this.lastMirroredAnnotationKey = annotationKey
       if (annotations.length > 0) this.mirrorFn?.(mirroredDraft, annotations)
       else this.mirrorFn?.(mirroredDraft)
     }

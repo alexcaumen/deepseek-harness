@@ -56,7 +56,7 @@ GianaOS Putri ACP 启动器对探测和启动路径使用一个固定的 SSH 主
 
 本决策完全取代历史 [Web 推理尾部滚动](../../archived/feature/2026-08-02-web-thinking-tail-scroll.md) 中记录的最新行移动预览与横向跟尾机制。旧说明的动机仍然有效：折叠行必须真实显示推理是否活动，而不强迫用户打开完整推理主体。替代方案明确放弃文本移动所表达的吞吐信号，改用运行中或已完成状态。
 
-它部分取代 [推理分片的逐帧累计发布与浏览器压力验证](../testing/2026-08-03-opt-in-reasoning-chunk-browser-stress.zh.md)：逐帧快照发布和显式压力测试车道仍然有效，而 Think 摘要跟尾调度已不存在。队列与插话生命周期说明以及提问呈现说明继续管理各自机制。[提示词变量与工具引导所有权](../architecture/2026-07-05-prompt-variables-and-tool-guidance-ownership.zh.md) 继续管理 `harness:identity` 提示词段；本决策修改通过该 owner 提供的产品值。此前没有现行 Agent Note 管理回复选择标注、七秒波形、语音路由持久化或 ACP 启动器身份规则。
+它部分取代 [推理分片的逐帧累计发布与浏览器压力验证](../testing/2026-08-03-opt-in-reasoning-chunk-browser-stress.zh.md)：逐帧快照发布和显式压力测试车道仍然有效，而 Think 摘要跟尾调度已不存在。队列与插话生命周期说明以及提问呈现说明继续管理各自机制。[提示词变量与工具引导所有权](../architecture/2026-07-05-prompt-variables-and-tool-guidance-ownership.zh.md) 继续管理 `harness:identity` 提示词段；本决策修改通过该 owner 提供的产品值。此前没有现行 Agent Note 管理回复选择标注、七秒波形、语音路由持久化或 ACP 启动器身份规则。[GCP 批注附件与波形移动](2026-09-23-gcp-annotation-attachments-and-waveform-travel.zh.md) 部分取代本说明中的输入框批注控件和仅按步推进的波形。
 
 ## Alternatives considered
 

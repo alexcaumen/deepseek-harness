@@ -11,6 +11,7 @@ import { entries, ev, plainTurn } from './event-script.client.ts'
 
 const S1 = 'fk-m1' as SessionId
 const S2 = 'fk-m2' as SessionId
+const S3 = 'fk-m3' as SessionId
 
 type SummaryOver = Partial<{
   updatedAt: number
@@ -25,6 +26,29 @@ function summary(sessionId: SessionId, over: SummaryOver = {}) {
 }
 
 describe('instances', () => {
+  it('keeps two recent history windows warm and evicts the oldest on a third selection', async () => {
+    const api = new FakeApiClient()
+    api.onList = () => Promise.resolve(ok({ items: [summary(S1), summary(S2), summary(S3)] as never[] }))
+    const manager = new SessionManager(api, fakeRemote())
+    await manager.refreshList()
+    manager.select(S1)
+    const first = manager.get(S1)
+    await first.open()
+    manager.select(S2)
+    const second = manager.get(S2)
+    await second.open()
+    expect(first.getSnapshot().openState).toBe('open')
+    manager.select(S1)
+    expect(first.getSnapshot().openState).toBe('open')
+    manager.select(S3)
+    expect(first.getSnapshot().openState).toBe('open')
+    expect(second.getSnapshot().openState).toBe('cold')
+    manager.clearSelection()
+    expect(first.getSnapshot().openState).toBe('open')
+    manager.drop(S1)
+    expect(manager.get(S1)).not.toBe(first)
+  })
+
   it('lazily builds one resident instance per id and syncs the running bit from the list', async () => {
     const api = new FakeApiClient()
     api.onList = () => Promise.resolve(ok({ items: [summary(S1, { running: true })] as never[] }))

@@ -225,11 +225,12 @@ function mount(slots: SlotRegistry, nodes: ConversationSnapshot['nodes'] = NODES
     version: () => slots.getVersion('conversation.view'),
   }
   const useInput = bindSnapshotSelector(createSnapshotStore({
-    draft: '', imageIds: [], draftRev: 0, phase: 'plain', occurrences: [], queue: [],
+    draft: '', imageIds: [], annotations: [], draftRev: 0, phase: 'plain', occurrences: [], queue: [],
   })) as never
   const inputActions = {
     setDraft: vi.fn(),
     addResponseAnnotation: vi.fn(() => true),
+    removeResponseAnnotation: vi.fn(), clearResponseAnnotations: vi.fn(), commentResponseAnnotation: vi.fn(),
     addImages: vi.fn(), removeImage: vi.fn(), pruneImages: vi.fn(), submit: vi.fn(),
   }
   // Minimal outlet twin: resolve the ring entry by the `only` filter and

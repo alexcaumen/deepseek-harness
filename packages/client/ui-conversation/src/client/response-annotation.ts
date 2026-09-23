@@ -5,13 +5,18 @@ const ANNOTATION_ENVELOPE = /<response-annotations>\r?\n([^\r\n]+)\r?\n<\/respon
 /** Stable codec owner used by response-selection references. */
 export const RESPONSE_ANNOTATION_SOURCE = 'response-annotation'
 
-/** One selected response passage retained by a composer reference. */
+/** Longest user comment retained on one annotation. */
+export const RESPONSE_ANNOTATION_COMMENT_MAX_LENGTH = 2000
+
+/** One selected response passage retained as a composer annotation attachment. */
 export interface ResponseAnnotationPayload {
   readonly index: number
   readonly messageId: MessageId
   readonly text: string
   readonly startOffset?: number
   readonly endOffset?: number
+  /** Optional user comment delivered to the model with the quote. */
+  readonly comment?: string
 }
 
 /** Durable annotation data plus its exact range in projected user text. */
@@ -20,11 +25,27 @@ export interface ResponseAnnotationPresentation extends ResponseAnnotationPayloa
   readonly displayEnd: number
 }
 
-/** Structured reference retained beside the persisted display-only draft. */
+/** Exact model/display splice for a reference beside an annotation. */
+export interface ResponseAnnotationProjection {
+  readonly modelStart: number
+  readonly displayStart: number
+  readonly model: string
+  readonly display: string
+}
+
+/**
+ * Structured annotation retained beside the persisted draft. `offset` is
+ * {@link RESPONSE_ANNOTATION_ATTACHMENT_OFFSET} for a composer attachment;
+ * a non-negative offset marks a draft written before annotations left the
+ * draft text, whose `@Annotation N` token is removed on restore.
+ */
 export interface PersistedResponseAnnotation {
   readonly offset: number
   readonly ref: string
 }
+
+/** Persisted offset of an annotation held as a composer attachment rather than draft text. */
+export const RESPONSE_ANNOTATION_ATTACHMENT_OFFSET = -1
 
 function responseAnnotationPayload(
   record: Record<string, unknown>,
@@ -44,12 +65,51 @@ function responseAnnotationPayload(
     || Number(startOffset) < 0 || Number(endOffset) <= Number(startOffset))) {
     throw new Error('Response annotation payload is invalid')
   }
+  const comment = record['comment']
+  if (comment !== undefined && (typeof comment !== 'string'
+    || comment.length > RESPONSE_ANNOTATION_COMMENT_MAX_LENGTH)) {
+    throw new Error('Response annotation payload is invalid')
+  }
   return {
     index: Number(record['index']),
     messageId: record[messageIdKey] as MessageId,
     text: record['text'],
     ...hasAnchor ? { startOffset: Number(startOffset), endOffset: Number(endOffset) } : {},
+    ...typeof comment === 'string' && comment.trim().length > 0 ? { comment: comment.trim() } : {},
   }
+}
+
+/** Display label of one annotation inside sent user text. */
+export function responseAnnotationLabel(index: number): string {
+  return `@Annotation ${index}`
+}
+
+/**
+ * Model-facing envelope for composer annotations, in index order. Its
+ * projection is the labels joined by one space, which is the display prefix
+ * produced by {@link responseAnnotationDisplayPrefix}.
+ */
+export function responseAnnotationEnvelope(
+  payloads: readonly ResponseAnnotationPayload[],
+  references: readonly ResponseAnnotationProjection[] = [],
+): string {
+  const annotations = payloads.map(payload => ({
+    index: payload.index,
+    sourceMessageId: payload.messageId,
+    text: payload.text,
+    ...payload.startOffset === undefined ? {} : {
+      sourceStart: payload.startOffset,
+      sourceEnd: payload.endOffset,
+    },
+    ...payload.comment === undefined ? {} : { comment: payload.comment },
+  }))
+  const body = JSON.stringify(references.length === 0 ? annotations : { annotations, references })
+  return `<response-annotations>\n${body}\n</response-annotations>`
+}
+
+/** Display-text prefix matching {@link responseAnnotationEnvelope}'s projection. */
+export function responseAnnotationDisplayPrefix(payloads: readonly ResponseAnnotationPayload[]): string {
+  return payloads.map(payload => responseAnnotationLabel(payload.index)).join(' ')
 }
 
 /** Parse one persisted response-annotation reference. */
@@ -59,11 +119,18 @@ export function parseResponseAnnotationPayload(ref: string): ResponseAnnotationP
   return responseAnnotationPayload(value as Record<string, unknown>, 'messageId', 'startOffset', 'endOffset')
 }
 
-function parseEnvelope(body: string): readonly ResponseAnnotationPayload[] | undefined {
+function parseEnvelope(body: string): {
+  annotations: readonly ResponseAnnotationPayload[]
+  references: readonly ResponseAnnotationProjection[]
+} | undefined {
   try {
     const value: unknown = JSON.parse(body)
-    if (!Array.isArray(value) || value.length === 0) throw new Error('Response annotation payload is invalid')
-    return value.map((item) => {
+    const wrapped = !Array.isArray(value) && typeof value === 'object' && value !== null
+      ? value as Record<string, unknown>
+      : undefined
+    const items = wrapped?.['annotations'] ?? value
+    if (!Array.isArray(items) || items.length === 0) throw new Error('Response annotation payload is invalid')
+    const annotations = items.map((item) => {
       if (typeof item !== 'object' || item === null) throw new Error('Response annotation payload is invalid')
       return responseAnnotationPayload(
         item as Record<string, unknown>,
@@ -72,9 +139,38 @@ function parseEnvelope(body: string): readonly ResponseAnnotationPayload[] | und
         'sourceEnd',
       )
     })
+    const rawReferences = wrapped?.['references'] ?? []
+    if (!Array.isArray(rawReferences)) throw new Error('Response annotation projection is invalid')
+    const references = rawReferences.map((item): ResponseAnnotationProjection => {
+      if (typeof item !== 'object' || item === null) throw new Error('Response annotation projection is invalid')
+      const ref = item as Record<string, unknown>
+      if (!Number.isSafeInteger(ref['modelStart']) || Number(ref['modelStart']) < 0
+        || !Number.isSafeInteger(ref['displayStart']) || Number(ref['displayStart']) < 0
+        || typeof ref['model'] !== 'string' || ref['model'].length === 0
+        || typeof ref['display'] !== 'string' || ref['display'].length === 0) {
+        throw new Error('Response annotation projection is invalid')
+      }
+      return ref as unknown as ResponseAnnotationProjection
+    })
+    return { annotations, references }
   } catch {
     return undefined
   }
+}
+
+function projectReferences(model: string, references: readonly ResponseAnnotationProjection[]): string | undefined {
+  let projected = ''
+  let modelCursor = 0
+  for (const reference of references) {
+    if (reference.modelStart < modelCursor || reference.displayStart !== projected.length
+      + reference.modelStart - modelCursor
+      || model.slice(reference.modelStart, reference.modelStart + reference.model.length) !== reference.model) {
+      return undefined
+    }
+    projected += model.slice(modelCursor, reference.modelStart) + reference.display
+    modelCursor = reference.modelStart + reference.model.length
+  }
+  return projected + model.slice(modelCursor)
 }
 
 function textBlocks(content: readonly unknown[]): readonly string[] {
@@ -88,6 +184,7 @@ function textBlocks(content: readonly unknown[]): readonly string[] {
 function projectModelText(text: string): {
   readonly text: string
   readonly annotations: readonly ResponseAnnotationPresentation[]
+  readonly valid: boolean
 } {
   let projected = ''
   let cursor = 0
@@ -96,15 +193,31 @@ function projectModelText(text: string): {
     const envelopeStart = match.index
     const envelope = match[0]
     const body = match[1]
-    if (envelopeStart === undefined || envelope === undefined || body === undefined) continue
+    if (body === undefined) continue
     projected += text.slice(cursor, envelopeStart)
-    const payloads = parseEnvelope(body)
-    if (payloads === undefined) {
+    const parsed = parseEnvelope(body)
+    if (parsed === undefined) {
       projected += envelope
     } else {
-      payloads.forEach((payload, index) => {
+      if (parsed.references.length > 0) {
+        // Reference offsets are relative to the suffix after this envelope.
+        // Such envelopes are emitted only at the start of a user message.
+        const suffix = text.slice(envelopeStart + envelope.length)
+        if (envelopeStart !== 0 || !suffix.startsWith(' ')) return { text: '', annotations: [], valid: false }
+        const displaySuffix = projectReferences(suffix.slice(1), parsed.references)
+        if (displaySuffix === undefined) return { text: '', annotations: [], valid: false }
+        parsed.annotations.forEach((payload, index) => {
+          if (index > 0) projected += ' '
+          const label = responseAnnotationLabel(payload.index)
+          const displayStart = projected.length
+          projected += label
+          annotations.push({ ...payload, displayStart, displayEnd: projected.length })
+        })
+        return { text: `${projected} ${displaySuffix}`, annotations, valid: true }
+      }
+      parsed.annotations.forEach((payload, index) => {
         if (index > 0) projected += ' '
-        const label = `@Annotation ${payload.index}`
+        const label = responseAnnotationLabel(payload.index)
         const displayStart = projected.length
         projected += label
         annotations.push({ ...payload, displayStart, displayEnd: projected.length })
@@ -113,7 +226,7 @@ function projectModelText(text: string): {
     cursor = envelopeStart + envelope.length
   }
   projected += text.slice(cursor)
-  return { text: projected, annotations }
+  return { text: projected, annotations, valid: true }
 }
 
 /**
@@ -128,6 +241,7 @@ export function responseAnnotationPresentations(
   const annotations: ResponseAnnotationPresentation[] = []
   for (const text of textBlocks(modelContent)) {
     const projected = projectModelText(text)
+    if (!projected.valid) return []
     const base = projectedText.length
     projectedText += projected.text
     annotations.push(...projected.annotations.map(annotation => ({

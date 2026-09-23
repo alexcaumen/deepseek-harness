@@ -605,7 +605,7 @@ describe('automatic-language dictation', () => {
       expect(reportDictation).not.toHaveBeenCalled()
       fireEvent.click(microphone)
       expect(fetchMock).toHaveBeenCalledExactlyOnceWith(speechTranscriptionUrl, expect.objectContaining({
-        method: 'POST', body: expect.any(FormData), signal: expect.any(AbortSignal),
+        method: 'POST', body: expect.any(FormData) as unknown, signal: expect.any(AbortSignal) as unknown,
       }))
       expect(reportDictation).not.toHaveBeenCalled()
 
@@ -623,7 +623,7 @@ describe('automatic-language dictation', () => {
 
       expect(reportDictation).toHaveBeenCalledExactlyOnceWith({
         kind: 'dictation', route: 'speech.transcribe', outcome,
-        at: expect.any(String), elapsedMs: expect.any(Number),
+        at: expect.any(String) as unknown, elapsedMs: expect.any(Number) as unknown,
         ...(outcome === 'network-error' ? {} : { httpStatus: outcome === 'http-error' ? 503 : 200 }),
       })
       const record = reportDictation.mock.calls[0]![0]
@@ -722,7 +722,7 @@ describe('automatic-language dictation', () => {
     expect(getUserMedia).toHaveBeenCalledTimes(2)
   })
 
-  it('samples microphone amplitude into a bounded left-moving waveform and releases it on stop', async () => {
+  it('slides a smoothed microphone envelope continuously and releases it on stop', async () => {
     const frames = installAnimationFrames()
     let reads = 0
     const audio = installAudioContext((values) => {
@@ -741,35 +741,44 @@ describe('automatic-language dictation', () => {
     fireEvent.click(microphone)
     await vi.waitFor(() => { expect(microphone.getAttribute('aria-pressed')).toBe('true') })
     const waveform = result.view.container.querySelector<HTMLElement>('[data-dictation-waveform]')!
+    const track = waveform.querySelector<HTMLElement>('[data-dictation-track]')!
     const bars = [...waveform.querySelectorAll<HTMLElement>('[data-waveform-bar]')]
+    const amplitude = (index: number): string | undefined => bars[index]?.style.getPropertyValue('--dictation-amplitude')
 
     act(() => { frames.step(16) })
     expect(waveform.dataset.waveformSource).toBe('microphone')
     expect(waveform.dataset.waveformMotion).toBe('live')
-    expect(audio.analyser.getByteTimeDomainData).toHaveBeenCalledOnce()
-    expect(bars).toHaveLength(72)
-    expect(bars[0]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.080')
-    const newestSample = bars[71]?.style.getPropertyValue('--dictation-amplitude')
-    expect(newestSample).toBe('0.880')
     expect(waveform.dataset.waveformTravelMs).toBe('7000')
+    expect(bars).toHaveLength(72)
+    expect(amplitude(0)).toBe('0.080')
+    // A loud onset rises most of the way in one sample instead of jumping to full scale.
+    expect(amplitude(71)).toBe('0.560')
+    expect(track.style.getPropertyValue('--dictation-progress')).toBe('0.000')
 
-    act(() => { frames.step(32) })
-    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe(newestSample)
-    expect(audio.analyser.getByteTimeDomainData).toHaveBeenCalledOnce()
-    act(() => { frames.step(120) })
-    expect(bars[70]?.style.getPropertyValue('--dictation-amplitude')).toBe(newestSample)
-    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.817')
+    // Between sample steps the strip slides instead of holding still.
+    act(() => { frames.step(64) })
+    expect(amplitude(71)).toBe('0.560')
+    expect(track.style.getPropertyValue('--dictation-progress')).toBe('0.494')
     expect(audio.analyser.getByteTimeDomainData).toHaveBeenCalledTimes(2)
 
-    // A throttled frame catches up by elapsed cadence slots, preserving the
-    // advertised seven-second travel instead of advancing only once per RAF.
+    // The next step shifts one slot while RC52's held peak keeps the tail visible.
+    act(() => { frames.step(120) })
+    expect(amplitude(70)).toBe('0.560')
+    expect(amplitude(71)).toBe('0.714')
+    expect(track.style.getPropertyValue('--dictation-progress')).toBe('0.070')
+
+    // A throttled frame catches up by elapsed steps, preserving seven-second travel.
     act(() => { frames.step(704) })
-    expect(bars[64]?.style.getPropertyValue('--dictation-amplitude')).toBe(newestSample)
-    expect(bars[65]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.817')
-    // RC50 samples once per paint and holds a decaying envelope during catch-up.
-    expect(audio.analyser.getByteTimeDomainData).toHaveBeenCalledTimes(3)
+    expect(amplitude(64)).toBe('0.560')
+    expect(amplitude(65)).toBe('0.714')
+    const decay = [66, 67, 68, 69, 70, 71].map(index => Number(amplitude(index)))
+    decay.slice(1).forEach((value, position) => { expect(value).toBeLessThan(decay[position]!) })
+    expect(decay.at(-1)).toBeGreaterThan(0.08)
+    // Catch-up reads the analyser once per RAF, not once per missing slot.
+    expect(audio.analyser.getByteTimeDomainData).toHaveBeenCalledTimes(4)
     act(() => { frames.step(10_000) })
-    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.080')
+    expect(amplitude(71)).toBe('0.080')
+    expect(audio.analyser.getByteTimeDomainData).toHaveBeenCalledTimes(5)
 
     fireEvent.click(microphone)
     expect(frames.cancel).toHaveBeenCalled()
@@ -779,7 +788,7 @@ describe('automatic-language dictation', () => {
     expect(stopTrack).toHaveBeenCalledOnce()
   })
 
-  it('makes quiet speech visible while leaving silence at the waveform floor', async () => {
+  it('makes quiet speech visible and settles silence back to the waveform floor', async () => {
     const frames = installAnimationFrames()
     let reads = 0
     installAudioContext((values) => { values.fill(reads++ === 0 ? 132 : 128) })
@@ -791,11 +800,11 @@ describe('automatic-language dictation', () => {
     await vi.waitFor(() => { expect(microphone.getAttribute('aria-pressed')).toBe('true') })
     const bars = result.view.container.querySelectorAll<HTMLElement>('[data-waveform-bar]')
     act(() => { frames.step(16) })
-    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.426')
+    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.288')
     act(() => { frames.step(120) })
-    expect(bars[70]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.426')
-    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.395')
-    act(() => { frames.step(10_000) })
+    expect(bars[70]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.288')
+    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.352')
+    act(() => { frames.step(5000) })
     expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.080')
     fireEvent.keyDown(result.textarea, { key: 'Escape' })
   })
@@ -856,11 +865,12 @@ describe('automatic-language dictation', () => {
 
     act(() => { frames.step(16) })
     expect(waveform.dataset.waveformMotion).toBe('reduced')
-    expect(new Set(bars.map(bar => bar.style.getPropertyValue('--dictation-amplitude')))).toEqual(new Set(['0.880']))
+    expect(waveform.querySelector<HTMLElement>('[data-dictation-track]')?.style.getPropertyValue('--dictation-progress')).toBe('0.000')
+    expect(new Set(bars.map(bar => bar.style.getPropertyValue('--dictation-amplitude')))).toEqual(new Set(['1.000']))
     act(() => { frames.step(100) })
-    expect(new Set(bars.map(bar => bar.style.getPropertyValue('--dictation-amplitude')))).toEqual(new Set(['0.880']))
+    expect(new Set(bars.map(bar => bar.style.getPropertyValue('--dictation-amplitude')))).toEqual(new Set(['1.000']))
     act(() => { frames.step(300) })
-    expect(new Set(bars.map(bar => bar.style.getPropertyValue('--dictation-amplitude')))).toEqual(new Set(['0.817']))
+    expect(new Set(bars.map(bar => bar.style.getPropertyValue('--dictation-amplitude')))).toEqual(new Set(['0.080']))
 
     result.view.unmount()
     expect(frames.cancel).toHaveBeenCalled()
@@ -1084,7 +1094,7 @@ describe('running and lock semantics', () => {
     expect(result.stop).not.toHaveBeenCalled()
   })
 
-  it('renders compact annotation navigation with full hover text', () => {
+  it('shows annotations as one compact attachment and keeps the draft free of annotation text', () => {
     const result = bench()
     act(() => {
       expect(result.shell.actions.addResponseAnnotation({
@@ -1094,70 +1104,131 @@ describe('running and lock semantics', () => {
         endOffset: 26,
       })).toBe(true)
     })
-    const olderScope = document.createElement('div')
-    olderScope.dataset.responseAnnotationSourceMessageId = 'assistant-older'
-    const olderMarker = document.createElement('button')
-    olderMarker.dataset.responseAnnotationMarker = '1'
-    olderScope.append(olderMarker)
+    expect(result.textarea.value).toBe('')
+    expect(result.view.container.querySelector('[data-annotation-inline-chip]')).toBeNull()
+    const chip = result.view.getByRole('button', { name: '1 条批注' })
+    expect(chip.dataset.annotationCount).toBe('1')
+    expect(chip.textContent).toBe('1 条批注')
+    act(() => {
+      expect(result.shell.actions.addResponseAnnotation({
+        messageId: 'assistant-2' as never,
+        text: 'second passage',
+      })).toBe(true)
+    })
+    expect(result.view.getByRole('button', { name: '2 条批注' }).dataset.annotationCount).toBe('2')
+    expect(result.textarea.value).toBe('')
+  })
+
+  it('previews every annotation on focus, navigates to the source, and edits or deletes one', () => {
+    const result = bench()
+    act(() => {
+      result.shell.actions.addResponseAnnotation({
+        messageId: 'assistant-1' as never, text: 'first quote', startOffset: 3, endOffset: 14,
+      })
+      result.shell.actions.addResponseAnnotation({
+        messageId: 'assistant-2' as never, text: 'second quote',
+      })
+    })
     const sourceScope = document.createElement('div')
     sourceScope.dataset.responseAnnotationSourceMessageId = 'assistant-1'
     const marker = document.createElement('button')
     marker.dataset.responseAnnotationMarker = '1'
     sourceScope.append(marker)
     const scrollIntoView = vi.fn()
-    const focus = vi.fn()
     marker.scrollIntoView = scrollIntoView
-    marker.focus = focus
-    document.body.append(olderScope, sourceScope)
+    document.body.append(sourceScope)
     try {
-      const annotation = result.view.getByRole('button', { name: '批注 1：selected source passage' })
-      expect(annotation.textContent).toBe('1')
-      expect(annotation.getAttribute('title')).toBe('selected source passage')
-      fireEvent.mouseEnter(annotation)
-      expect(result.view.getByRole('tooltip').textContent).toBe('selected source passage')
-      fireEvent.mouseLeave(annotation)
-      expect(result.view.queryByRole('tooltip')).toBeNull()
-      fireEvent.focus(annotation)
-      expect(result.view.getByRole('tooltip').textContent).toBe('selected source passage')
-      fireEvent.blur(annotation)
-      fireEvent.click(annotation)
+      const chip = result.view.getByRole('button', { name: '2 条批注' })
+      expect(result.view.container.querySelector('[data-annotation-preview]')).toBeNull()
+      fireEvent.focus(chip)
+      const preview = result.view.container.querySelector<HTMLElement>('[data-annotation-preview]')
+      expect(preview).not.toBeNull()
+      expect([...preview!.querySelectorAll('[data-annotation-preview-item]')].map(item => item.textContent))
+        .toEqual([
+          expect.stringContaining('first quote'),
+          expect.stringContaining('second quote'),
+        ])
+      expect(preview!.textContent).toContain('选中文本：')
+
+      fireEvent.click(result.view.getByRole('button', { name: 'first quote' }))
       expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' })
-      expect(focus).toHaveBeenCalledWith({ preventScroll: true })
+
+      fireEvent.click(result.view.getByRole('button', { name: '编辑批注 2 的备注' }))
+      const comment = result.view.getByRole('textbox', { name: '批注 2 的备注' })
+      fireEvent.change(comment, { target: { value: '  check totals  ' } })
+      fireEvent.click(result.view.getByRole('button', { name: '保存' }))
+      expect(result.shell.snapshot.annotations[1]?.comment).toBe('check totals')
+      expect(result.view.container.querySelector('[data-annotation-comment]')?.textContent).toBe('check totals')
+
+      fireEvent.click(result.view.getByRole('button', { name: '删除批注 1' }))
+      expect(result.shell.snapshot.annotations.map(item => [item.index, item.text])).toEqual([[1, 'second quote']])
+      expect(result.view.getByRole('button', { name: '1 条批注' })).toBeTruthy()
+
+      fireEvent.click(result.view.getByRole('button', { name: '移除全部批注' }))
+      expect(result.shell.snapshot.annotations).toEqual([])
+      expect(result.view.container.querySelector('[data-annotation-attachment]')).toBeNull()
     } finally {
-      olderScope.remove()
       sourceScope.remove()
     }
   })
 
-  it('previews quote and origin on hover and focus of the inline annotation chip', () => {
+  it('opens the annotation preview after hover and cancels pending hover on Escape', () => {
+    vi.useFakeTimers()
+    try {
+      const result = bench()
+      act(() => { result.shell.addResponseAnnotation({ messageId: 'assistant-1' as never, text: 'quote' }) })
+      const attachment = result.view.container.querySelector<HTMLElement>('[data-annotation-attachment]')!
+      fireEvent.pointerEnter(attachment)
+      act(() => { vi.advanceTimersByTime(149) })
+      expect(result.view.queryByRole('dialog')).toBeNull()
+      act(() => { vi.advanceTimersByTime(1) })
+      expect(result.view.getByRole('dialog').textContent).toContain('quote')
+      fireEvent.pointerLeave(attachment)
+      act(() => { vi.advanceTimersByTime(200) })
+      expect(result.view.queryByRole('dialog')).toBeNull()
+      fireEvent.pointerEnter(attachment)
+      fireEvent.keyDown(attachment, { key: 'Escape' })
+      act(() => { vi.advanceTimersByTime(200) })
+      expect(result.view.queryByRole('dialog')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not apply an open comment editor to another annotation after renumbering', () => {
     const result = bench()
     act(() => {
-      expect(result.shell.actions.addResponseAnnotation({
-        messageId: 'assistant-inline' as never,
-        text: 'source quote',
-        startOffset: 4,
-        endOffset: 16,
-      })).toBe(true)
+      for (const text of ['one', 'two', 'three']) {
+        result.shell.addResponseAnnotation({ messageId: 'assistant-1' as never, text })
+      }
     })
-    const chip = result.view.container.querySelector<HTMLElement>('[data-annotation-inline-chip="1"]')
-    expect(chip?.textContent).toBe('@Annotation 1')
-    expect(chip?.getAttribute('tabindex')).toBe('0')
-    expect(chip?.getAttribute('aria-label')).toBe('批注 1 来源：source quote')
-    expect(chip?.closest('[aria-hidden="true"]')).toBeNull()
-    if (chip === null) throw new Error('inline annotation chip missing')
+    fireEvent.focus(result.view.getByRole('button', { name: '3 条批注' }))
+    fireEvent.click(result.view.getByRole('button', { name: '编辑批注 2 的备注' }))
+    fireEvent.change(result.view.getByRole('textbox', { name: '批注 2 的备注' }), { target: { value: 'only for two' } })
+    fireEvent.click(result.view.getByRole('button', { name: '删除批注 1' }))
+    expect(result.view.queryByRole('textbox', { name: '批注 2 的备注' })).toBeNull()
+    expect(result.shell.snapshot.annotations.map(item => [item.text, item.comment])).toEqual([
+      ['two', undefined], ['three', undefined],
+    ])
+  })
 
-    fireEvent.mouseEnter(chip)
-    expect(result.view.getByRole('tooltip').textContent).toBe('批注 1 来源：source quote')
-    fireEvent.mouseLeave(chip)
-    expect(result.view.queryByRole('tooltip')).toBeNull()
-    fireEvent.focus(chip)
-    expect(result.view.getByRole('tooltip').textContent).toBe('批注 1 来源：source quote')
-    fireEvent.blur(chip)
-    expect(result.view.queryByRole('tooltip')).toBeNull()
-    result.textarea.focus()
-    fireEvent.mouseDown(chip)
-    expect(document.activeElement).toBe(result.textarea)
-    expect(result.textarea.value).toBe('@Annotation 1 ')
+  it('locks annotation-only sends and the open editor until a failed send settles', async () => {
+    let finish!: (outcome: SubmitOutcome) => void
+    const result = bench({ sink: () => new Promise((resolve) => { finish = resolve }) })
+    act(() => { result.shell.addResponseAnnotation({ messageId: 'assistant-1' as never, text: 'quote' }) })
+    fireEvent.focus(result.view.getByRole('button', { name: '1 条批注' }))
+    fireEvent.click(result.view.getByRole('button', { name: '编辑批注 1 的备注' }))
+    fireEvent.click(result.button)
+    expect(result.textarea.readOnly).toBe(true)
+    expect(result.button.disabled).toBe(true)
+    expect((result.view.getByRole('textbox', { name: '批注 1 的备注' }) as HTMLTextAreaElement).disabled).toBe(true)
+    expect((result.view.getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.keyDown(result.textarea, { key: 'Enter' })
+    expect(result.sink).toHaveBeenCalledOnce()
+    await act(async () => { finish({ kind: 'error', text: 'offline' }) })
+    expect(result.textarea.readOnly).toBe(false)
+    expect(result.button.disabled).toBe(false)
+    expect(result.view.getByRole('button', { name: '1 条批注' })).toBeTruthy()
   })
 
   it('running keeps Send available and applies the busy-state Queue policy on click', () => {

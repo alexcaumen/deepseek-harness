@@ -26,11 +26,9 @@ import type { InputSubmitMode } from '../contract/composer-submission.ts'
 import { deriveDecorations } from '../input/decorations.ts'
 import type { DraftDecorations } from '../input/decorations.ts'
 import type { EditRange } from '../input/contract.ts'
-import {
-  parseResponseAnnotationPayload, RESPONSE_ANNOTATION_SOURCE,
-  type ResponseAnnotationPayload,
-} from '../input/response-annotation.ts'
+import type { ResponseAnnotationPayload } from '../input/response-annotation.ts'
 import { attachmentErrorText, imageSizeText } from '../image-labels.ts'
+import { AnnotationAttachment } from './AnnotationAttachment.tsx'
 import { ReferenceIcon } from '../reference/ReferenceIcon.tsx'
 import { ContextMeter } from './ContextMeter.tsx'
 import {
@@ -49,6 +47,14 @@ const DICTATION_WAVEFORM_FLOOR = 0.08
 /** Target time for one sample to traverse the full visible waveform. */
 export const DICTATION_WAVEFORM_TRAVEL_MS = 7_000
 const DICTATION_WAVEFORM_STEP_MS = DICTATION_WAVEFORM_TRAVEL_MS / DICTATION_WAVEFORM_BARS
+/** Envelope smoothing per sample: speech onsets rise quickly, decays settle calmly. */
+const DICTATION_WAVEFORM_ATTACK = 0.6
+const DICTATION_WAVEFORM_RELEASE = 0.25
+
+function smoothWaveformAmplitude(previous: number, target: number): number {
+  const next = previous + (target - previous) * (target > previous ? DICTATION_WAVEFORM_ATTACK : DICTATION_WAVEFORM_RELEASE)
+  return target <= DICTATION_WAVEFORM_FLOOR && next < DICTATION_WAVEFORM_FLOOR + 0.005 ? DICTATION_WAVEFORM_FLOOR : next
+}
 
 function fallbackWaveformAmplitude(frame: number): number {
   const carrier = (Math.sin(frame * 0.47) + 1) * 0.14
@@ -155,7 +161,7 @@ export function InputBar({
     () => input === undefined || draftImages === undefined ? [] : draftImages(input.imageIds),
     [draftImages, input?.imageIds],
   )
-  const empty = draft.trim() === '' && attachments.length === 0
+  const empty = draft.trim() === '' && attachments.length === 0 && (input?.annotations.length ?? 0) === 0
   // Transient error banner (machine notices, image-intake rejections, and
   // prompt failures): the seq keys the Toast so an identical repeated message
   // restarts the hold-then-fade cycle instead of reusing the faded one.
@@ -165,6 +171,7 @@ export function InputBar({
   const recorderRef = useRef<MediaRecorder | null>(null)
   const recordingStreamRef = useRef<MediaStream | null>(null)
   const waveformRef = useRef<HTMLSpanElement | null>(null)
+  const waveformTrackRef = useRef<HTMLSpanElement | null>(null)
   const waveformFrameRef = useRef<number | null>(null)
   const waveformAudioRef = useRef<{
     readonly context: AudioContext
@@ -316,42 +323,62 @@ export function InputBar({
       && (matchMediaCandidate as (query: string) => MediaQueryList)('(prefers-reduced-motion: reduce)').matches
     let frame = 0
     let heldAmplitude = DICTATION_WAVEFORM_FLOOR
-    let lastPaint = Number.NEGATIVE_INFINITY
+    let level = DICTATION_WAVEFORM_FLOOR
+    let lastStep = Number.NEGATIVE_INFINITY
+    let bucketSum = 0
+    let bucketPeak = 0
+    let bucketCount = 0
     const advance = (timestamp: number): void => {
       const audio = waveformAudioRef.current
       const element = waveformRef.current
+      const track = waveformTrackRef.current
       if (element !== null) {
         element.dataset.waveformSource = audio === null ? 'fallback' : 'microphone'
         element.dataset.waveformMotion = reducedMotion ? 'reduced' : 'live'
         element.dataset.waveformTravelMs = String(DICTATION_WAVEFORM_TRAVEL_MS)
       }
+      if (audio !== null) {
+        const reading = analyserWaveformAmplitude(audio.analyser, audio.values)
+        bucketSum += reading
+        bucketPeak = Math.max(bucketPeak, reading)
+        bucketCount += 1
+      }
       const cadence = reducedMotion ? 250 : DICTATION_WAVEFORM_STEP_MS
-      const elapsedSteps = Number.isFinite(lastPaint)
-        ? Math.max(0, Math.floor((timestamp - lastPaint) / cadence))
-        : 1
+      const first = !Number.isFinite(lastStep)
+      const elapsedSteps = first ? 1 : Math.max(0, Math.floor((timestamp - lastStep) / cadence))
       if (elapsedSteps > 0) {
         const paintSteps = reducedMotion ? 1 : Math.min(elapsedSteps, samples.length)
-        const observedAmplitude = audio === null
-          ? null
-          : analyserWaveformAmplitude(audio.analyser, audio.values)
+        const measured = bucketCount === 0
+          ? DICTATION_WAVEFORM_FLOOR
+          : 0.6 * (bucketSum / bucketCount) + 0.4 * bucketPeak
+        bucketSum = 0
+        bucketPeak = 0
+        bucketCount = 0
         frame += elapsedSteps - paintSteps
         for (let step = 0; step < paintSteps; step += 1) {
+          // Retain RC52's bounded catch-up and visible decaying tail across delayed frames.
           heldAmplitude = Math.max(DICTATION_WAVEFORM_FLOOR,
-            observedAmplitude ?? fallbackWaveformAmplitude(frame), heldAmplitude * 0.86)
-          const amplitude = observedAmplitude === null
+            audio === null ? fallbackWaveformAmplitude(frame) : measured, heldAmplitude * 0.86)
+          const target = audio === null
             ? fallbackWaveformAmplitude(frame)
             : Math.max(DICTATION_WAVEFORM_FLOOR,
               heldAmplitude * (0.88 + 0.12 * Math.abs(Math.sin(frame * 0.62))))
           if (reducedMotion) {
-            samples.fill(amplitude)
+            level = measured
+            samples.fill(audio === null ? target : level)
           } else {
+            level = smoothWaveformAmplitude(level, target)
             samples.shift()
-            samples.push(amplitude)
+            samples.push(level)
           }
           frame += 1
         }
-        paintWaveform(element, samples)
-        lastPaint = Number.isFinite(lastPaint) ? lastPaint + elapsedSteps * cadence : timestamp
+        paintWaveform(track, samples)
+        lastStep = first ? timestamp : lastStep + elapsedSteps * cadence
+      }
+      if (track !== null) {
+        const progress = reducedMotion ? 0 : Math.min(1, Math.max(0, (timestamp - lastStep) / cadence))
+        track.style.setProperty('--dictation-progress', progress.toFixed(3))
       }
       waveformFrameRef.current = requestAnimationFrame(advance)
     }
@@ -993,15 +1020,7 @@ export function InputBar({
     ? null
     : <PermissionSelect key={sessionId} value={permissions} locked={locked} command={command} t={t} />
 
-  const responseAnnotations = input?.occurrences.flatMap((occurrence) => {
-    if (occurrence.source !== RESPONSE_ANNOTATION_SOURCE) return []
-    try {
-      return [{ occurrenceId: occurrence.occurrenceId, ...parseResponseAnnotationPayload(occurrence.ref) }]
-    } catch {
-      return []
-    }
-  }) ?? []
-  const annotationByOccurrence = new Map(responseAnnotations.map(annotation => [annotation.occurrenceId, annotation]))
+  const responseAnnotations = input?.annotations ?? []
   const navigateToAnnotation = (annotation: ResponseAnnotationPayload): void => {
     const markers = [...document.querySelectorAll<HTMLElement>(
       `[data-response-annotation-marker="${annotation.index}"]`,
@@ -1050,54 +1069,27 @@ export function InputBar({
       pushPlain(b.at)
       if (b.kind === 'chip') {
         const chip = b.chip
-        const annotation = annotationByOccurrence.get(chip.occurrenceId)
-        const chipText = <>{chip.appearance === undefined
-          ? chip.text[0]
-          : (
-            <span className={css.chipTrigger}>
-              <span className={css.chipTriggerGlyph}>{chip.text[0]}</span>
-              <ReferenceIcon kind={chip.appearance} size={16} className={css.chipIcon} />
-            </span>
-          )}<span>{chip.text.slice(1)}</span></>
-        backdrop.push(annotation === undefined
-          ? (
-            <span
-              key={`chip-${chip.occurrenceId}`}
-              className={clsx(css.chip, chip.invalid && css.chipInvalid)}
-              data-decoration="chip"
-              data-reference-appearance={chip.appearance}
-              data-occurrence={chip.occurrenceId}
-              data-invalid={chip.invalid || undefined}
-              title={chip.label}
-              aria-hidden
-            >
-              {chipText}
-            </span>
-          )
-          : (
-            <Tooltip
-              key={`chip-${chip.occurrenceId}`}
-              label={t('annotation.sourceMarker', { index: annotation.index, text: annotation.text })}
-              side="top"
-              maxWidth={320}
-            >
-              <span
-                className={clsx(css.chip, css.annotationInlineChip)}
-                data-decoration="chip"
-                data-annotation-inline-chip={annotation.index}
-                data-occurrence={chip.occurrenceId}
-                role="note"
-                tabIndex={0}
-                aria-label={t('annotation.sourceMarker', { index: annotation.index, text: annotation.text })}
-                onMouseDown={(event) => {
-                  event.preventDefault()
-                  inputRef.current?.focus({ preventScroll: true })
-                }}
-              >
-                {chipText}
-              </span>
-            </Tooltip>
-          ))
+        backdrop.push(
+          <span
+            key={`chip-${chip.occurrenceId}`}
+            className={clsx(css.chip, chip.invalid && css.chipInvalid)}
+            data-decoration="chip"
+            data-reference-appearance={chip.appearance}
+            data-occurrence={chip.occurrenceId}
+            data-invalid={chip.invalid || undefined}
+            title={chip.label}
+            aria-hidden
+          >
+            {chip.appearance === undefined
+              ? chip.text[0]
+              : (
+                <span className={css.chipTrigger}>
+                  <span className={css.chipTriggerGlyph}>{chip.text[0]}</span>
+                  <ReferenceIcon kind={chip.appearance} size={16} className={css.chipIcon} />
+                </span>
+              )}<span>{chip.text.slice(1)}</span>
+          </span>,
+        )
         cursor = chip.offset + chip.length
       } else {
         // Plain-range highlight: the glyphs stay the
@@ -1198,29 +1190,17 @@ export function InputBar({
             size: imageSizeText(imageLimits.maxImageBytes),
           },
         })}
-        {responseAnnotations.length > 0 && (
-          <div
-            className={css.annotationRail}
-            role="list"
-            aria-label={t('annotation.rail', { count: responseAnnotations.length })}
-          >
-            {responseAnnotations.map(annotation => (
-              <span key={annotation.occurrenceId} role="listitem">
-                <Tooltip label={annotation.text} side="top" maxWidth={320}>
-                  <button
-                    type="button"
-                    className={css.annotationBubble}
-                    aria-label={t('annotation.item', { index: annotation.index, text: annotation.text })}
-                    title={annotation.text}
-                    onMouseDown={(event) => { event.preventDefault() }}
-                    onClick={() => { navigateToAnnotation(annotation) }}
-                  >
-                    {annotation.index}
-                  </button>
-                </Tooltip>
-              </span>
-            ))}
-          </div>
+        {inputActions !== undefined && (
+          <AnnotationAttachment
+            key={sessionId}
+            annotations={responseAnnotations}
+            locked={locked || machineBusy}
+            onRemove={(index) => { inputActions.removeResponseAnnotation(index) }}
+            onClear={() => { inputActions.clearResponseAnnotations() }}
+            onComment={(index, comment) => { inputActions.commentResponseAnnotation(index, comment) }}
+            onNavigate={navigateToAnnotation}
+            t={t}
+          />
         )}
         {/* One scrollport, two text layers. The hidden mirror renders draft+'\n' and stretches the
             stack to the draft's FULL height (counting rows by '\n' cannot see soft wraps); the
@@ -1232,7 +1212,7 @@ export function InputBar({
         <div ref={scrollRef} className={css.scroll} data-input-scroll>
           <div className={css.grow}>
             <div
-              aria-hidden={responseAnnotations.length === 0}
+              aria-hidden
               className={clsx(css.backdrop, textareaDisabled && css.backdropDisabled)}
               data-input-backdrop
               data-disabled={textareaDisabled || undefined}
@@ -1283,13 +1263,15 @@ export function InputBar({
             {dictation.phase === 'recording'
               ? (
                 <span ref={waveformRef} className={css.dictationWaveform} data-dictation-waveform aria-hidden>
-                  {Array.from({ length: DICTATION_WAVEFORM_BARS }, (_, index) => (
-                    <span
-                      key={index}
-                      className={css.dictationBar}
-                      data-waveform-bar
-                    />
-                  ))}
+                  <span ref={waveformTrackRef} className={css.dictationTrack} data-dictation-track>
+                    {Array.from({ length: DICTATION_WAVEFORM_BARS }, (_, index) => (
+                      <span
+                        key={index}
+                        className={css.dictationBar}
+                        data-waveform-bar
+                      />
+                    ))}
+                  </span>
                 </span>
               )
               : <span className={css.dictationIndicator} aria-hidden />}

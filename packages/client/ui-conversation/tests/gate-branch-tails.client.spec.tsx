@@ -136,6 +136,7 @@ describe('render branch tails', () => {
         inputActions={{
           setDraft: () => {},
           addResponseAnnotation: () => true,
+          removeResponseAnnotation: () => {}, clearResponseAnnotations: () => {}, commentResponseAnnotation: () => {},
           addImages: () => true,
           removeImage: () => {},
           pruneImages: () => {},
@@ -195,6 +196,7 @@ describe('render branch tails', () => {
         inputActions={{
           setDraft: () => {},
           addResponseAnnotation: () => true,
+          removeResponseAnnotation: () => {}, clearResponseAnnotations: () => {}, commentResponseAnnotation: () => {},
           addImages: () => true,
           removeImage: () => {},
           pruneImages: () => {},
