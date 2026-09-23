@@ -64,6 +64,13 @@ describe('createFixtureApi', () => {
     expect(events.some(event => event.type === 'assistant/message'
       && event.data.message.content.some(block => block.type === 'reasoning'))).toBe(true)
     expect(events.at(-1)?.type).toBe('turn/end')
+    const reloaded = await createFixtureApi({ annotationQa: true }).sessions.history(
+      req({ sessionId: sid('fx-alpha'), maxMessages: 200 }),
+    )
+    if (!reloaded.result.ok) throw new Error('reloaded history failed')
+    const ids = (historyEvents: typeof events) => historyEvents.flatMap(event =>
+      event.type === 'assistant/message' ? [event.data.message.id] : [])
+    expect(ids(events)).toEqual(ids(reloaded.result.value.events.map(entry => entry.event)))
 
     const abort = new AbortController()
     const frames: MuxFrame[] = []

@@ -9,9 +9,10 @@ import {
   createAssistantMessage,
   createToolResultMessage,
   createUserMessage,
+  freezeMessage,
   isTokenDelta,
 } from '@deepseek-ai/dsh-llm/message'
-import { CallId } from '@deepseek-ai/dsh-llm/brand'
+import { CallId, MessageId } from '@deepseek-ai/dsh-llm/brand'
 import type {
   AssistantMessage,
   ContentBlock,
@@ -355,13 +356,13 @@ function fixtureUsage(turn: number, step: number): TokenUsage {
 
 /** fx-alpha history script: 75 turns (~150+ messages -> 4 pages at PAGE_MESSAGES=50),
  *  mixing reasoning blocks / tool call+result / context. */
-function buildAlphaLog(): SessionEvent[] {
+function buildAlphaLog(stableMessageIds = false): SessionEvent[] {
   const events: Record<string, unknown>[] = []
   let time = Date.now() - 3_600_000
   const push = (e: Record<string, unknown>): number => {
     const seq = events.length
     const data = e['data'] as Record<string, unknown> | undefined
-    const authored = e['type'] === 'assistant/message' && data !== undefined
+    let authored = e['type'] === 'assistant/message' && data !== undefined
       ? {
         ...e,
         data: {
@@ -370,6 +371,14 @@ function buildAlphaLog(): SessionEvent[] {
         },
       }
       : e
+    if (stableMessageIds && ['user/message', 'assistant/message', 'tool/result'].includes(String(e['type']))) {
+      const row = authored['data'] as Record<string, unknown>
+      const message = row['message'] as UserMessage | AssistantMessage | ToolResultMessage
+      authored = { ...authored, data: { ...row, message: freezeMessage({
+        ...message,
+        id: MessageId(`00000000-0000-4000-8000-${seq.toString(16).padStart(12, '0')}`),
+      }) } }
+    }
     events.push({ seq, time: (time += 800), ...authored })
     return seq
   }
@@ -1533,7 +1542,7 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
     { sessionId: sid('fx-beta'), updatedAt: Date.now() - 60_000, running: false, blank: false, parentSessionId: sid('fx-alpha'), cwd: '/tmp/fixture' },
     { sessionId: sid('fx-gamma'), updatedAt: Date.now() - 120_000, running: false, blank: false, cwd: '/tmp/fixture' },
   ]
-  const logs = new Map<SessionId, SessionEvent[]>([[sid('fx-alpha'), buildAlphaLog()]])
+  const logs = new Map<SessionId, SessionEvent[]>([[sid('fx-alpha'), buildAlphaLog(options.annotationQa)]])
   const modelSelections = new Map<SessionId, ModelSelection>(sessions.map(session => [
     session.sessionId,
     { provider: 'deepseek-official', model: 'deepseek-v4-flash' },
