@@ -330,11 +330,15 @@ export function InputBar({
         : 1
       if (elapsedSteps > 0) {
         const paintSteps = reducedMotion ? 1 : Math.min(elapsedSteps, samples.length)
+        const observedAmplitude = audio === null
+          ? null
+          : analyserWaveformAmplitude(audio.analyser, audio.values)
         frame += elapsedSteps - paintSteps
         for (let step = 0; step < paintSteps; step += 1) {
-          const amplitude = audio === null
+          const amplitude = observedAmplitude === null
             ? fallbackWaveformAmplitude(frame)
-            : analyserWaveformAmplitude(audio.analyser, audio.values)
+            : Math.max(DICTATION_WAVEFORM_FLOOR,
+              observedAmplitude * (0.88 + 0.12 * Math.abs(Math.sin(frame * 0.62))))
           if (reducedMotion) {
             samples.fill(amplitude)
           } else {
