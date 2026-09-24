@@ -175,6 +175,11 @@ export function SidebarRoot({
             <IconPanelLeftOutline16 className={css.panelIcon} size={wide ? 16 : 18} />
           </button>
         </Tooltip>
+        {!wide && version && (
+          <span className={css.railVersion} title={`v${version}`} aria-label={`Version ${version}`}>
+            {version.replace(/^0\.1\.1-/, '')}
+          </span>
+        )}
       </div>
 
       {/* Expanded, the button carries its own label — tooltip only on the rail. */}

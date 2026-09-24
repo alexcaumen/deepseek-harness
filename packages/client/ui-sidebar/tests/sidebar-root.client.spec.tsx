@@ -81,7 +81,7 @@ function mountShell({ collapsed = false, width = 300 }: { collapsed?: boolean; w
 }
 
 describe('SidebarRoot shell', () => {
-  it('shows the packaged version below the expanded logo only', () => {
+  it('shows the packaged version below the expanded logo and collapsed rail mark', () => {
     vi.useFakeTimers()
     vi.stubGlobal('__GIANA_DESKTOP__', { releaseVersion: '0.1.1-rc.53' })
     const b = mountShell()
@@ -91,6 +91,7 @@ describe('SidebarRoot shell', () => {
     vi.advanceTimersByTime(200)
     b.rerender({})
     expect(screen.queryByText('v0.1.1-rc.53')).toBeNull()
+    expect(screen.getByLabelText('Version 0.1.1-rc.53').textContent).toBe('rc.53')
   })
 
   it('routes New Session (capsule + wordmark) and the column toggle', () => {

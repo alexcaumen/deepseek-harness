@@ -101,9 +101,10 @@
 }
 
 .collapsed .logoRow {
-  height: 36px;
+  height: 56px;
   padding: 0;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
+  flex-direction: column;
   justify-content: flex-start;
 }
 
@@ -206,6 +207,18 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+.railVersion {
+  display: block;
+  width: 36px;
+  height: 14px;
+  color: #53625a;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 14px;
+  text-align: center;
+  white-space: nowrap;
 }
 
 /* Rail icons ride the primary ink (figma rail spec); expanded keeps the
