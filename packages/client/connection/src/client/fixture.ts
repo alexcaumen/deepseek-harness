@@ -3142,6 +3142,7 @@ function createFixtureWorld(options: FixtureOptions): FixtureWorld {
       switch (endpoint) {
         // Client startup publishes its inspect directory; the fixture has no Host mirror.
         case 'dynamicCordisRunner/syncInspectManifest': return Promise.resolve({ ok: true, value: null })
+        case 'dynamicCordisRunner/inventory': return Promise.resolve({ ok: true, value: [] })
         // Settings reads a point-in-time Host Loader projection, absent in fixture mode.
         case 'pluginInventory/list': return Promise.resolve({ ok: true, value: { entries: [] } })
         case 'commands/list': return Promise.resolve(commandRemotes.list(sessionId))

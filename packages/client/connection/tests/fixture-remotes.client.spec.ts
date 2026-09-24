@@ -17,6 +17,13 @@ describe('fixture startup Remotes', () => {
       .resolves.toEqual({ ok: true, value: { entries: [] } })
   })
 
+  it('serves an empty dynamic Cordis runner inventory', async () => {
+    const { rpc } = createFixtureFaces({ annotationQa: true })
+
+    await expect(rpc.call('/api', 'dynamicCordisRunner/inventory', { args: {} }))
+      .resolves.toEqual({ ok: true, value: [] })
+  })
+
   it('still rejects unrelated endpoints and channels', async () => {
     const { rpc } = createFixtureFaces({ annotationQa: true })
 
