@@ -56,6 +56,8 @@ export function SidebarRoot({
     return () => { window.clearTimeout(timer) }
   }, [collapsed])
   const wide = !collapsed || !settled
+  const releaseVersion = (globalThis as { __GIANA_DESKTOP__?: { releaseVersion?: unknown } }).__GIANA_DESKTOP__?.releaseVersion
+  const version = typeof releaseVersion === 'string' && /^0\.1\.1-rc\.\d+$/.test(releaseVersion) ? releaseVersion : undefined
 
   // Freeze the content at its expanded width while it fades out (collapsed
   // && wide): the sliding column then clips it instead of reflowing it. The
@@ -138,6 +140,7 @@ export function SidebarRoot({
             <span className={css.brandIdentity} aria-hidden="true">
               <span className={css.brandMark}>
                 {renderSlot('sidebar.brand.mark', { size: 64 }, { fallback: <FishLogo size={64} /> })}
+                {version && <span className={css.brandVersion}>v{version}</span>}
               </span>
               <span className={css.brandName}>
                 {renderSlot('sidebar.brand.name', {}, {

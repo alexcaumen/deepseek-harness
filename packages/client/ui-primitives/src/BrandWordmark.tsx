@@ -8,8 +8,6 @@ export interface BrandWordmarkProps extends IconProps {
 
 /** Render the GCP wordmark with its visible Preview designation. */
 export function BrandWordmark({ size = 24, className, includeMark = true }: BrandWordmarkProps) {
-  const releaseVersion = (globalThis as { __GIANA_DESKTOP__?: { releaseVersion?: unknown } }).__GIANA_DESKTOP__?.releaseVersion
-  const version = typeof releaseVersion === 'string' && /^0\.1\.1-rc\.\d+$/.test(releaseVersion) ? releaseVersion : undefined
   return (
     <span
       className={className}
@@ -22,7 +20,6 @@ export function BrandWordmark({ size = 24, className, includeMark = true }: Bran
           Giana CoWork
         </span>
         <span style={{ fontSize: 12, fontWeight: 500, lineHeight: '16px' }}>Preview</span>
-        {version && <span style={{ fontSize: 11, fontWeight: 500, lineHeight: '14px', color: '#53625a' }}>v{version}</span>}
       </span>
     </span>
   )

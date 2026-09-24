@@ -65,12 +65,12 @@ describe('FishLogo', () => {
 })
 
 describe('BrandWordmark', () => {
-  it('shows the exact packaged release below Preview when the desktop bridge provides it', () => {
+  it('leaves the release label to the host surface', () => {
     vi.stubGlobal('__GIANA_DESKTOP__', { releaseVersion: '0.1.1-rc.53' })
     const view = render(<primitives.BrandWordmark />)
-    expect(view.getByText('v0.1.1-rc.53')).toBeTruthy()
+    expect(view.queryByText('v0.1.1-rc.53')).toBeNull()
     view.rerender(<primitives.BrandWordmark includeMark={false} />)
-    expect(view.getByText('v0.1.1-rc.53')).toBeTruthy()
+    expect(view.queryByText('v0.1.1-rc.53')).toBeNull()
   })
 
   it('does not display an untrusted release label', () => {
