@@ -56,6 +56,15 @@
   color: var(--dsw-alias-label-secondary);
 }
 
+.version {
+  grid-row: 3;
+  grid-column: 2;
+  align-self: start;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 14px;
+}
+
 /* Keep hover detection on a stationary box while the mark moves within it. */
 .fishHitbox {
   grid-row: 1 / span 2;
@@ -85,6 +94,11 @@
 
   .preview {
     grid-row: 3;
+    grid-column: 1;
+  }
+
+  .version {
+    grid-row: 4;
     grid-column: 1;
   }
 }

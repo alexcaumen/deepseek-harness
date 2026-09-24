@@ -115,6 +115,8 @@ export interface HeroShellProps {
  * @returns the centered hero element tree.
  */
 export function HeroShell({ t, renderSlot, children }: HeroShellProps) {
+  const releaseVersion = (globalThis as { __GIANA_DESKTOP__?: { releaseVersion?: unknown } }).__GIANA_DESKTOP__?.releaseVersion
+  const version = typeof releaseVersion === 'string' && /^0\.1\.1-rc\.\d+$/.test(releaseVersion) ? releaseVersion : undefined
   return (
     <div className={css.root}>
       <div className={css.stack}>
@@ -127,6 +129,7 @@ export function HeroShell({ t, renderSlot, children }: HeroShellProps) {
           </span>
           <span className={css.headlineText}>{t('hero.headline')}</span>
           <span className={css.preview}>{t('hero.preview')}</span>
+          {version && <span className={css.version}>v{version}</span>}
         </div>
         <div className={css.body}>
           {/* The resident composer (ConversationRoot's root-owned scrollport;

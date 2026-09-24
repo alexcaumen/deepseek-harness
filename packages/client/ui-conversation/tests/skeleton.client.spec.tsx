@@ -281,6 +281,13 @@ function mount(
 }
 
 describe('Hero chrome', () => {
+  it('shows the packaged release below Preview when the compact sidebar is collapsed', () => {
+    vi.stubGlobal('__GIANA_DESKTOP__', { releaseVersion: '0.1.1-rc.53' })
+    const view = render(<HeroShell t={makeTranslate(en, commonEn)} renderSlot={() => null} />)
+    expect(view.getByText('Preview')).toBeTruthy()
+    expect(view.getByText('v0.1.1-rc.53')).toBeTruthy()
+  })
+
   it.each([en, zh])('renders the GCP name, visible Preview designation and enlarged mark', (locale) => {
     const renderSlot = vi.fn<HeroShellProps['renderSlot']>(() => null)
     const view = render(<HeroShell t={makeTranslate(locale, commonEn)} renderSlot={renderSlot} />)
