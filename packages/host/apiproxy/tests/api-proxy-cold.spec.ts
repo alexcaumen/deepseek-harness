@@ -24,7 +24,7 @@ import {
   type StoredPrefix,
 } from '@deepseek-ai/dsh-session-persistence'
 import type { RpcRequest } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
-import type { MuxFrame } from '@deepseek-ai/dsh-host-apiproxy/api'
+import type { MuxFrame, QueuedInboxItem } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
 import { createApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
 
@@ -815,7 +815,7 @@ describe('cold pending queue replay', () => {
         const queue = (await stream!.next()).value?.payload
         expect(queue).toMatchObject({ type: 'session/queue', sessionId: session.id })
         if (queue?.type !== 'session/queue') throw new Error('missing cold queue replay')
-        expect(queue.items.map(item => ({ id: item.id, placement: item.placement, message: item.message }))).toEqual([
+        expect(queue.items.map((item: QueuedInboxItem) => ({ id: item.id, placement: item.placement, message: item.message }))).toEqual([
           { id: first.id, placement: 'queued', message: first },
           { id: second.id, placement: 'queued', message: second },
           { id: steering.id, placement: 'steering', message: steering },
