@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 import { cleanup, render } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as primitives from '@deepseek-ai/dsh-client-ui-primitives'
 import {
   IconApiOutline14, IconArchiveOutline20, IconFolderClose16, IconGoalOutline16, IconSendOutline16,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 
-afterEach(cleanup)
+afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 // Icon components all share the IconProps signature; the barrel also exports
 // non-icon atoms (different props shapes), so filter by prefix BEFORE typing.
@@ -65,6 +65,20 @@ describe('FishLogo', () => {
 })
 
 describe('BrandWordmark', () => {
+  it('shows the exact packaged release below Preview when the desktop bridge provides it', () => {
+    vi.stubGlobal('__GIANA_DESKTOP__', { releaseVersion: '0.1.1-rc.53' })
+    const view = render(<primitives.BrandWordmark />)
+    expect(view.getByText('v0.1.1-rc.53')).toBeTruthy()
+    view.rerender(<primitives.BrandWordmark includeMark={false} />)
+    expect(view.getByText('v0.1.1-rc.53')).toBeTruthy()
+  })
+
+  it('does not display an untrusted release label', () => {
+    vi.stubGlobal('__GIANA_DESKTOP__', { releaseVersion: '<script>bad</script>' })
+    const view = render(<primitives.BrandWordmark />)
+    expect(view.queryByText(/<script>/)).toBeNull()
+  })
+
   it('can render the name artwork with or without its leading mark', () => {
     const view = render(<primitives.BrandWordmark />)
     expect(view.getByLabelText('Giana CoWork Preview')).toBeTruthy()
