@@ -69,7 +69,7 @@ function analyserWaveformAmplitude(analyser: AnalyserNode, values: Uint8Array<Ar
   const rms = Math.sqrt(energy / values.length)
   // Reject room/device noise without changing the recorded audio; keep headroom for speech dynamics.
   if (rms < 0.006) return DICTATION_WAVEFORM_FLOOR
-  return Math.max(DICTATION_WAVEFORM_FLOOR, Math.min(1, Math.sqrt(rms) * 1.6))
+  return Math.max(DICTATION_WAVEFORM_FLOOR, Math.min(1, 0.12 + Math.sqrt(rms) * 1.5))
 }
 
 function paintWaveform(element: HTMLSpanElement | null, samples: readonly number[]): void {
