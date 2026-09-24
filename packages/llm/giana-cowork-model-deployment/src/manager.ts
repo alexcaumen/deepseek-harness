@@ -1940,6 +1940,7 @@ export class PreviewManager {
     let hostLease: Pick<LeaseState, 'leaseId' | 'fence'> | undefined
     let consentExpiresAt: number | undefined
     let deviceRecoveryConsent: DeviceRecoveryConsent | undefined
+    let evictionDestination: { route: ManagedRoute; lease: Pick<LeaseState, 'leaseId' | 'fence'> } | undefined
     let allowOwnedUnhealthyCleanup = false
     await this.store.run(async (state) => {
       budget.remaining()
@@ -2017,6 +2018,12 @@ export class PreviewManager {
             throw new ManagerError('STATE_CONFLICT')
           }
           await this.verifyConsent(consent)
+          const destinationLease = lease.hostLeases[destination.target]
+          if (destinationLease === undefined) throw new ManagerError('LEASE_MISMATCH')
+          evictionDestination = {
+            route: destination,
+            lease: { leaseId: lease.leaseId, fence: destinationLease.fence },
+          }
           state.consumedEvictions[consent.id] = transaction.digest
           consentExpiresAt = consent.expires_at
         } else if (envelope.eviction_consent !== undefined) {
@@ -2048,7 +2055,7 @@ export class PreviewManager {
       }
       outcome = await this.executeStage(
         stage, route, budget, hostLease, consentExpiresAt, allowOwnedUnhealthyCleanup, markStartedMutation,
-        deviceRecoveryConsent,
+        deviceRecoveryConsent, evictionDestination,
       )
     }
     catch (error: unknown) {
@@ -2102,6 +2109,7 @@ export class PreviewManager {
     allowOwnedUnhealthyCleanup = false,
     markStartedMutation?: () => Promise<void>,
     deviceRecoveryConsent?: DeviceRecoveryConsent,
+    evictionDestination?: { route: ManagedRoute; lease: Pick<LeaseState, 'leaseId' | 'fence'> },
   ): Promise<{ status: 'PASS' | 'FAIL' | 'QUARANTINED'; decision: string; evidence: unknown }> {
     const restoreAdmission = async (): Promise<boolean> => {
       try {
@@ -2148,6 +2156,14 @@ export class PreviewManager {
         return { status: 'FAIL', decision: 'FAILED', evidence: before }
       }
       if (before.kind === 'resident') {
+        if (evictionDestination !== undefined) {
+          await this.assertHostLease(evictionDestination.route.target, evictionDestination.lease, budget)
+          const fit = await this.capacity(evictionDestination.route, budget)
+          if (fit.kind !== 'available') return {
+            status: 'FAIL', decision: 'SOURCE_RESTORED',
+            evidence: { destinationFitLost: true, assessment: fit.evidence, mutationApplied: false },
+          }
+        }
         let quiesced = false
         try {
           quiesced = await this.endpoints.quiesce(route, budget.remaining(15_000))

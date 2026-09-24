@@ -2062,6 +2062,36 @@ describe('Giana CoWork Preview model manager', () => {
     expect(startIndex).toBeGreaterThan(stopIndex)
   })
 
+  it('keeps the source resident if destination headroom disappears after eviction approval', async () => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    remote.freeVramMiB.set(1, 4_000)
+    const { adapter, endpoints, manager, statePath } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+    const glm = context(grant, route('glm-official'), '9')
+    const qwen = context(grant, route('qwen-local'), '9')
+    await adapter.preflight(qwen)
+    await adapter.capturePrestate(qwen)
+    const eviction = await evictionEnvelope(manager, statePath)
+    await adapter.drain({ ...glm, nextRoute: qwen.route, nextTarget: 'r5300' })
+    remote.freeVramMiB.set(0, 1_000)
+
+    await expect(manager.invoke('stage', eviction)).resolves.toMatchObject({
+      state: 'FAILED_FINAL', next_allowed_stages: [],
+      stage_receipt: {
+        stage: 'stop', status: 'FAIL', decision: 'SOURCE_RESTORED',
+        error_class: 'MODEL_STAGE_NOT_APPLIED_SOURCE_RESTORED',
+      },
+    })
+    expect(remote.residentPort).toBe(18_081)
+    expect(endpoints.calls).not.toContain('quiesce:glm-official@r5300')
+    expect(remote.commands.some(command => command.includes('systemctl stop "$unit"'))).toBe(false)
+    expect(remote.commands.some(command => command.includes('docker start'))).toBe(false)
+    const state = JSON.parse(await readFile(statePath, 'utf8'))
+    expect(state.lease.quarantined).toBe(false)
+    await adapter.release(grant, 'SETTLED', new AbortController().signal)
+  })
+
   it('quarantines the lease when the stopped source port still listens', async () => {
     const remote = new FakeRemote()
     remote.residentPort = 18_081
