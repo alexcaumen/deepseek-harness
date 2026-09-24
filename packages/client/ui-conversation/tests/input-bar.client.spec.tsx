@@ -726,7 +726,7 @@ describe('automatic-language dictation', () => {
     const frames = installAnimationFrames()
     let reads = 0
     const audio = installAudioContext((values) => {
-      values.fill(reads === 0 ? 255 : 128)
+      values.forEach((_, index) => { values[index] = reads === 0 ? (index % 2 ? 255 : 1) : 128 })
       reads += 1
     })
     const stopTrack = vi.fn()
@@ -752,28 +752,28 @@ describe('automatic-language dictation', () => {
     expect(bars).toHaveLength(72)
     expect(amplitude(0)).toBe('0.080')
     // A loud onset rises most of the way in one sample instead of jumping to full scale.
-    expect(amplitude(71)).toBe('0.560')
+    expect(amplitude(71)).toBe('0.770')
     expect(track.style.getPropertyValue('--dictation-progress')).toBe('0.000')
 
     // Between sample steps the strip slides instead of holding still.
     act(() => { frames.step(64) })
-    expect(amplitude(71)).toBe('0.560')
+    expect(amplitude(71)).toBe('0.770')
     expect(track.style.getPropertyValue('--dictation-progress')).toBe('0.494')
     expect(audio.analyser.getByteTimeDomainData).toHaveBeenCalledTimes(2)
 
-    // The next step shifts one slot while RC52's held peak keeps the tail visible.
+    // The next step shifts one slot and quiets quickly when the mic is silent.
     act(() => { frames.step(120) })
-    expect(amplitude(70)).toBe('0.560')
-    expect(amplitude(71)).toBe('0.714')
+    expect(amplitude(70)).toBe('0.770')
+    expect(Number(amplitude(71))).toBeCloseTo(0.39, 2)
     expect(track.style.getPropertyValue('--dictation-progress')).toBe('0.070')
 
     // A throttled frame catches up by elapsed steps, preserving seven-second travel.
     act(() => { frames.step(704) })
-    expect(amplitude(64)).toBe('0.560')
-    expect(amplitude(65)).toBe('0.714')
+    expect(amplitude(64)).toBe('0.770')
+    expect(Number(amplitude(65))).toBeCloseTo(0.39, 2)
     const decay = [66, 67, 68, 69, 70, 71].map(index => Number(amplitude(index)))
     decay.slice(1).forEach((value, position) => { expect(value).toBeLessThan(decay[position]!) })
-    expect(decay.at(-1)).toBeGreaterThan(0.08)
+    expect(decay.at(-1)).toBeGreaterThanOrEqual(0.08)
     // Catch-up reads the analyser once per RAF, not once per missing slot.
     expect(audio.analyser.getByteTimeDomainData).toHaveBeenCalledTimes(4)
     act(() => { frames.step(10_000) })
@@ -791,7 +791,10 @@ describe('automatic-language dictation', () => {
   it('makes quiet speech visible and settles silence back to the waveform floor', async () => {
     const frames = installAnimationFrames()
     let reads = 0
-    installAudioContext((values) => { values.fill(reads++ === 0 ? 132 : 128) })
+    installAudioContext((values) => {
+      values.forEach((_, index) => { values[index] = reads === 0 ? (index % 2 ? 132 : 124) : 128 })
+      reads += 1
+    })
     installMediaDevices(() => Promise.resolve({ getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream))
     vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
     const result = bench()
@@ -800,12 +803,78 @@ describe('automatic-language dictation', () => {
     await vi.waitFor(() => { expect(microphone.getAttribute('aria-pressed')).toBe('true') })
     const bars = result.view.container.querySelectorAll<HTMLElement>('[data-waveform-bar]')
     act(() => { frames.step(16) })
-    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.288')
+    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.232')
     act(() => { frames.step(120) })
-    expect(bars[70]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.288')
-    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.352')
+    expect(bars[70]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.232')
+    expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.148')
     act(() => { frames.step(5000) })
     expect(bars[71]?.style.getPropertyValue('--dictation-amplitude')).toBe('0.080')
+    fireEvent.keyDown(result.textarea, { key: 'Escape' })
+  })
+
+  it('tracks changing loudness without a flat top, and treats DC offset and silence as dots', async () => {
+    const frames = installAnimationFrames()
+    const levels = [0, 8, 24, 60, 12, 0, 0]
+    let reads = 0
+    installAudioContext((values) => {
+      const swing = levels[reads++] ?? 0
+      values.forEach((_, index) => { values[index] = 160 + (index % 2 ? swing : -swing) })
+    })
+    installMediaDevices(() => Promise.resolve({ getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream))
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+    const result = bench()
+    const microphone = result.view.getByRole('button', { name: '开始自动语言听写' })
+    fireEvent.click(microphone)
+    await vi.waitFor(() => { expect(microphone.getAttribute('aria-pressed')).toBe('true') })
+    const bars = result.view.container.querySelectorAll<HTMLElement>('[data-waveform-bar]')
+    const newest = (): number => Number(bars[71]?.style.getPropertyValue('--dictation-amplitude'))
+
+    act(() => { frames.step(16) })
+    expect(newest()).toBe(0.08)
+    act(() => { frames.step(120) })
+    const quiet = newest()
+    act(() => { frames.step(220) })
+    const medium = newest()
+    act(() => { frames.step(320) })
+    const loud = newest()
+    expect(quiet).toBeGreaterThan(0.16)
+    expect(medium).toBeGreaterThan(quiet + 0.15)
+    expect(loud).toBeGreaterThan(medium + 0.15)
+    expect(loud).toBeLessThan(0.95)
+
+    act(() => { frames.step(420) })
+    expect(newest()).toBeLessThan(loud)
+    act(() => { frames.step(2000) })
+    expect(newest()).toBe(0.08)
+    expect([...bars].slice(-6).every(bar => bar.style.getPropertyValue('--dictation-amplitude') === '0.080')).toBe(true)
+    fireEvent.keyDown(result.textarea, { key: 'Escape' })
+  })
+
+  it('keeps very quiet input visible and does not insert silence during sustained sound after a late frame', async () => {
+    const frames = installAnimationFrames()
+    let swing = 1
+    installAudioContext((values) => {
+      values.forEach((_, index) => { values[index] = 128 + (index % 2 ? swing : -swing) })
+    })
+    installMediaDevices(() => Promise.resolve({ getTracks: () => [{ stop: vi.fn() }] } as unknown as MediaStream))
+    vi.stubGlobal('MediaRecorder', FakeMediaRecorder)
+    const result = bench()
+    const microphone = result.view.getByRole('button', { name: '开始自动语言听写' })
+    fireEvent.click(microphone)
+    await vi.waitFor(() => { expect(microphone.getAttribute('aria-pressed')).toBe('true') })
+    const bars = result.view.container.querySelectorAll<HTMLElement>('[data-waveform-bar]')
+    const newest = (): number => Number(bars[71]?.style.getPropertyValue('--dictation-amplitude'))
+
+    act(() => { frames.step(16) })
+    expect(newest()).toBeGreaterThan(0.08)
+    swing = 24
+    act(() => { frames.step(120) })
+    act(() => { frames.step(820) })
+    expect([...bars].slice(-6).every(bar =>
+      Number(bar.style.getPropertyValue('--dictation-amplitude')) > 0.2)).toBe(true)
+    swing = 0
+    act(() => { frames.step(2000) })
+    expect(newest()).toBe(0.08)
     fireEvent.keyDown(result.textarea, { key: 'Escape' })
   })
 
@@ -846,7 +915,7 @@ describe('automatic-language dictation', () => {
     const frames = installAnimationFrames()
     let reads = 0
     const audio = installAudioContext((values) => {
-      values.fill(reads === 0 ? 255 : 128)
+      values.forEach((_, index) => { values[index] = reads === 0 ? (index % 2 ? 255 : 1) : 128 })
       reads += 1
     })
     vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })))

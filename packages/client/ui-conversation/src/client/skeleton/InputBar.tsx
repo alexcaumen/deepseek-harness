@@ -48,31 +48,28 @@ const DICTATION_WAVEFORM_FLOOR = 0.08
 export const DICTATION_WAVEFORM_TRAVEL_MS = 7_000
 const DICTATION_WAVEFORM_STEP_MS = DICTATION_WAVEFORM_TRAVEL_MS / DICTATION_WAVEFORM_BARS
 /** Envelope smoothing per sample: speech onsets rise quickly, decays settle calmly. */
-const DICTATION_WAVEFORM_ATTACK = 0.6
-const DICTATION_WAVEFORM_RELEASE = 0.25
+const DICTATION_WAVEFORM_ATTACK = 0.75
+const DICTATION_WAVEFORM_RELEASE = 0.55
 
 function smoothWaveformAmplitude(previous: number, target: number): number {
   const next = previous + (target - previous) * (target > previous ? DICTATION_WAVEFORM_ATTACK : DICTATION_WAVEFORM_RELEASE)
   return target <= DICTATION_WAVEFORM_FLOOR && next < DICTATION_WAVEFORM_FLOOR + 0.005 ? DICTATION_WAVEFORM_FLOOR : next
 }
 
-function fallbackWaveformAmplitude(frame: number): number {
-  const carrier = (Math.sin(frame * 0.47) + 1) * 0.14
-  const detail = (Math.sin(frame * 0.19 + 1.3) + 1) * 0.08
-  return Math.min(0.72, DICTATION_WAVEFORM_FLOOR + carrier + detail)
-}
-
 function analyserWaveformAmplitude(analyser: AnalyserNode, values: Uint8Array<ArrayBuffer>): number {
   analyser.getByteTimeDomainData(values)
+  let sum = 0
+  for (const value of values) sum += value
+  const center = sum / values.length
   let energy = 0
   for (const value of values) {
-    const normalized = (value - 128) / 128
+    const normalized = (value - center) / 128
     energy += normalized * normalized
   }
   const rms = Math.sqrt(energy / values.length)
-  // Expand quiet speech visually without amplifying the recorded audio or silence.
-  if (rms < 0.004) return DICTATION_WAVEFORM_FLOOR
-  return Math.max(DICTATION_WAVEFORM_FLOOR, Math.min(1, Math.sqrt(rms * 7.5)))
+  // Reject room/device noise without changing the recorded audio; keep headroom for speech dynamics.
+  if (rms < 0.006) return DICTATION_WAVEFORM_FLOOR
+  return Math.max(DICTATION_WAVEFORM_FLOOR, Math.min(1, Math.sqrt(rms) * 1.6))
 }
 
 function paintWaveform(element: HTMLSpanElement | null, samples: readonly number[]): void {
@@ -321,8 +318,6 @@ export function InputBar({
     const matchMediaCandidate = Reflect.get(globalThis, 'matchMedia') as unknown
     const reducedMotion = typeof matchMediaCandidate === 'function'
       && (matchMediaCandidate as (query: string) => MediaQueryList)('(prefers-reduced-motion: reduce)').matches
-    let frame = 0
-    let heldAmplitude = DICTATION_WAVEFORM_FLOOR
     let level = DICTATION_WAVEFORM_FLOOR
     let lastStep = Number.NEGATIVE_INFINITY
     let bucketSum = 0
@@ -354,24 +349,18 @@ export function InputBar({
         bucketSum = 0
         bucketPeak = 0
         bucketCount = 0
-        frame += elapsedSteps - paintSteps
         for (let step = 0; step < paintSteps; step += 1) {
-          // Retain RC52's bounded catch-up and visible decaying tail across delayed frames.
-          heldAmplitude = Math.max(DICTATION_WAVEFORM_FLOOR,
-            audio === null ? fallbackWaveformAmplitude(frame) : measured, heldAmplitude * 0.86)
-          const target = audio === null
-            ? fallbackWaveformAmplitude(frame)
-            : Math.max(DICTATION_WAVEFORM_FLOOR,
-              heldAmplitude * (0.88 + 0.12 * Math.abs(Math.sin(frame * 0.62))))
+          // Preserve sustained sound across throttled frames without inventing an onset before it was measured.
+          const target = audio === null ? DICTATION_WAVEFORM_FLOOR
+            : step === paintSteps - 1 ? measured : Math.min(level, measured)
           if (reducedMotion) {
-            level = measured
-            samples.fill(audio === null ? target : level)
+            level = target
+            samples.fill(level)
           } else {
             level = smoothWaveformAmplitude(level, target)
             samples.shift()
             samples.push(level)
           }
-          frame += 1
         }
         paintWaveform(track, samples)
         lastStep = first ? timestamp : lastStep + elapsedSteps * cadence
