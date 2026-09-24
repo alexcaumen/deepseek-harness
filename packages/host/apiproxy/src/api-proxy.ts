@@ -1297,6 +1297,11 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     broadcast({ type: 'session/queue', sessionId: session.id, items: queueItems(agent, event.data) })
   })
 
+  ctx.on('agent/session-start', ({ agent }) => {
+    if (!agent.inbox.hasPending) return
+    broadcast({ type: 'session/queue', sessionId: agent.session.id, items: queueItems(agent) })
+  })
+
   /** Remove a wait before settling it: synchronous deletion makes the first claimant win. */
   function claimQuestion(pending: PendingQuestion, outcome: 'answered' | 'cancelled'): void {
     pendingQuestions.delete(pending.rpcId)

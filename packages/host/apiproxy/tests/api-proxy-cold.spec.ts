@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import SessionStore from '@deepseek-ai/dsh-session'
-import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
+import AgentRegistry, { agentEvents, Inbox } from '@deepseek-ai/dsh-agent'
 import { TypertLookupFailure } from '@deepseek-ai/dsh-typert-protocol'
 import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
 import { createUserMessage, MessageId } from '@deepseek-ai/dsh-llm'
@@ -24,6 +24,7 @@ import {
   type StoredPrefix,
 } from '@deepseek-ai/dsh-session-persistence'
 import type { RpcRequest } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
+import type { MuxFrame } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { RpcId } from '@deepseek-ai/dsh-host-apiproxy/api/rpc'
 import { createApiProxy } from '@deepseek-ai/dsh-host-apiproxy'
 
@@ -768,6 +769,65 @@ describe('sessions.updateQueue busy-turn boundary', () => {
     expect(replayed.nextTurn.map(item => item.id)).toEqual([second.id])
     await ctx.fiber.dispose()
   })
+})
+
+describe('cold pending queue replay', () => {
+  for (const muxFirst of [true, false]) {
+    it(`${muxFirst ? 'mux-before-resume' : 'resume-before-mux'} preserves pending order and placement`, async () => {
+      const ctx = new Context()
+      await ctx.plugin(SessionStore)
+      await ctx.plugin(AgentRegistry)
+      await ctx.plugin(UserQuestionService)
+      const session = ctx.sessions.create(sid(`session-cold-queue-${muxFirst ? 'early' : 'late'}`))
+      const notices = { inserted: () => {}, discarded: () => {}, claimed: () => {} }
+      const recorded = new Inbox(session, notices)
+      const first = createUserMessage({ content: [{ type: 'text', text: 'first queued' }], source: { kind: 'user' } })
+      const second = createUserMessage({ content: [{ type: 'text', text: 'second queued' }], source: { kind: 'user' } })
+      const steering = createUserMessage({ content: [{ type: 'text', text: 'steer next step' }], source: { kind: 'user' } })
+      const context = createUserMessage({ content: [{ type: 'text', text: 'system context' }],
+        source: { kind: 'plugin', plugin: 'cold-queue-test' } })
+      recorded.append('next-turn', first)
+      recorded.append('next-turn', second)
+      recorded.append('next-step', steering)
+      recorded.append('next-step', context)
+      const replayed = new Inbox(session, notices)
+      expect(replayed.nextTurn.map(item => item.id)).toEqual([first.id, second.id])
+      expect(replayed.nextStep.map(item => item.id)).toEqual([steering.id, context.id])
+      const agent = { id: session.id, session, inbox: replayed, status: 'idle', ctx } as Agent
+      const api = createApiProxy(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
+      const abort = new AbortController()
+      let stream: AsyncIterator<RpcRequest<MuxFrame>> | undefined
+      try {
+        if (muxFirst) {
+          stream = api.events.mux(request({}), abort.signal)[Symbol.asyncIterator]()
+          expect((await stream.next()).value?.payload).toMatchObject({
+            type: 'session/subscribed', sessionId: session.id,
+          })
+        }
+        ctx.agents.register(agent)
+        agentEvents(ctx, agent).emit('agent/session-start', { source: 'resume' })
+        if (!muxFirst) {
+          stream = api.events.mux(request({}), abort.signal)[Symbol.asyncIterator]()
+          expect((await stream.next()).value?.payload).toMatchObject({
+            type: 'session/subscribed', sessionId: session.id,
+          })
+        }
+        const queue = (await stream!.next()).value?.payload
+        expect(queue).toMatchObject({ type: 'session/queue', sessionId: session.id })
+        if (queue?.type !== 'session/queue') throw new Error('missing cold queue replay')
+        expect(queue.items.map(item => ({ id: item.id, placement: item.placement, message: item.message }))).toEqual([
+          { id: first.id, placement: 'queued', message: first },
+          { id: second.id, placement: 'queued', message: second },
+          { id: steering.id, placement: 'steering', message: steering },
+          { id: context.id, placement: 'context', message: context },
+        ])
+      } finally {
+        abort.abort()
+        await stream?.next()
+        await ctx.fiber.dispose()
+      }
+    })
+  }
 })
 
 describe('sessions.prompt synchronous rejection', () => {
