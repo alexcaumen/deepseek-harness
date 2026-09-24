@@ -302,7 +302,7 @@ describe('web e2e: composer shortcut follows the swapped busy behavior', () => {
   }, 90_000)
 })
 
-describe('web e2e: empty-draft Cmd+Enter steers the whole queue', () => {
+describe('web e2e: empty-draft Ctrl+Enter steers the whole queue', () => {
   let scaffold: WebScaffold
   let browser: Browser
   let page: Page
@@ -333,7 +333,7 @@ describe('web e2e: empty-draft Cmd+Enter steers the whole queue', () => {
     await scaffold?.close()
   })
 
-  it.skipIf(MODE === 'record')('queues two messages, then flushes both with an empty-draft Cmd+Enter', async () => {
+  it.skipIf(MODE === 'record')('queues two messages, then flushes both with an empty-draft Ctrl+Enter', async () => {
     onTestFailed(() => saveFailureShot(page, 'web-e2e-steer-all'))
     const input = page.locator('textarea').first()
     await input.waitFor({ timeout: 10_000 })
@@ -357,9 +357,9 @@ describe('web e2e: empty-draft Cmd+Enter steers the whole queue', () => {
     await dock.getByText(STEER_TWO, { exact: true }).waitFor({ timeout: 10_000 })
     expect(await page.locator('[data-pending-steering]').count()).toBe(0)
 
-    // Empty draft + Cmd+Enter: both queued rows steer in FIFO order, the dock
+    // Empty draft + Ctrl+Enter: both queued rows steer in FIFO order, the dock
     // empties, and the pending steering renders at the conversation tail.
-    await input.press('Meta+Enter')
+    await input.press('Control+Enter')
     await expect.poll(
       () => page.locator('[data-pending-steering]').filter({ hasText: /BANANA|ORANGE/ }).count(),
       { timeout: 10_000 },
