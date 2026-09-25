@@ -207,8 +207,9 @@ export function apply(ctx: Context, config: HistoryBudgetConfig = {}): void {
   const notifications = new DesktopNotificationController({
     openSession: (sessionId) => {
       const target = sessionId as SessionId
-      if (sessions.list.getSnapshot().byId[target] === undefined) return
+      if (sessions.list.getSnapshot().byId[target] === undefined) return false
       sessions.open(target)
+      return sessions.list.getSnapshot().current === target
     },
   })
   ctx.typert.contexts.registerClient('agent', {

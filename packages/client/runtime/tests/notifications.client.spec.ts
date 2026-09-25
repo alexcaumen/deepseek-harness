@@ -118,19 +118,19 @@ describe('desktop notifications', () => {
   })
 
   it('routes a typed host click to the registered session opener and releases it on disposal', () => {
-    let listener: ((sessionId: string) => void) | undefined
+    let listener: ((sessionId: string) => boolean) | undefined
     const release = vi.fn()
-    const openSession = vi.fn()
+    const openSession = vi.fn(() => true)
     vi.stubGlobal('__GIANA_DESKTOP__', {
       notify: () => true,
-      onOpenSession: (next: (sessionId: string) => void) => {
+      onOpenSession: (next: (sessionId: string) => boolean) => {
         listener = next
         return release
       },
     })
     try {
       const controller = new DesktopNotificationController({ openSession })
-      listener?.('session-1')
+      expect(listener?.('session-1')).toBe(true)
       expect(openSession).toHaveBeenCalledWith('session-1')
       controller.dispose()
       expect(release).toHaveBeenCalledOnce()

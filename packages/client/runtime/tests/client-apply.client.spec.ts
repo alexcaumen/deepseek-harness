@@ -96,10 +96,10 @@ describe('runtime client apply', () => {
 
   it('routes unattended turn completion to the desktop notification bridge once', async () => {
     const notices: unknown[] = []
-    let openSession: ((sessionId: string) => void) | undefined
+    let openSession: ((sessionId: string) => boolean) | undefined
     vi.stubGlobal('__GIANA_DESKTOP__', {
       notify: (candidate: unknown) => { notices.push(candidate) },
-      onOpenSession: (listener: (sessionId: string) => void) => {
+      onOpenSession: (listener: (sessionId: string) => boolean) => {
         openSession = listener
         return () => { openSession = undefined }
       },
@@ -128,12 +128,13 @@ describe('runtime client apply', () => {
 
       expect(notices).toHaveLength(1)
       expect(notices[0]).toMatchObject({ kind: 'completed', sessionId: 's-notification-hook' })
+      expect(openSession?.('s-notification-hook')).toBe(false)
       bench.sinks?.onHostEnvelope?.({
         rpcId: 'notice-session-added' as never,
         payload: { type: 'host/session-added', blank: false, sessionId: 's-notification-hook' } as never,
       })
       await flushMicrotasks()
-      openSession?.('s-notification-hook')
+      expect(openSession?.('s-notification-hook')).toBe(true)
       expect((bench.ctx.get('sessions') as SessionRuntime).list.getSnapshot().current).toBe('s-notification-hook')
       await bench.ctx.fiber.dispose()
       expect(openSession).toBeUndefined()

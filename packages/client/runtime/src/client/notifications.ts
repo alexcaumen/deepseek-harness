@@ -26,7 +26,7 @@ export interface DesktopNotificationSink {
 
 interface DesktopNotificationBridge {
   notify(candidate: DesktopNotificationCandidate): boolean | Promise<boolean>
-  onOpenSession?(listener: (sessionId: string) => void): (() => void) | void
+  onOpenSession?(listener: (sessionId: string) => boolean): (() => void) | void
 }
 
 interface DesktopNotificationStore {
@@ -206,7 +206,7 @@ export interface DesktopNotificationControllerOptions {
   /** Injectable for tests; production uses the browser's durable local store. */
   readonly store?: DesktopNotificationStore
   /** Uses the sessions domain's canonical open operation; the desktop bridge only carries intent. */
-  readonly openSession?: (sessionId: string) => void
+  readonly openSession?: (sessionId: string) => boolean
 }
 
 /** Converts push frames into at-most-once notices while the app is unattended. */
@@ -228,7 +228,7 @@ export class DesktopNotificationController {
     const release = options.openSession === undefined || registerOpenSession === undefined
       ? undefined
       : registerOpenSession((sessionId) => {
-        if (!this.disposed) options.openSession?.(sessionId)
+        return !this.disposed && options.openSession?.(sessionId) === true
       })
     this.releaseOpenSession = typeof release === 'function' ? release : () => undefined
   }
