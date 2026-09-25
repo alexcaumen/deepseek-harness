@@ -2764,7 +2764,7 @@ export class PreviewManager {
       if (presence.kind === 'unknown') unresolved = true
       else if (presence.kind === 'running') found.push({ route, processGroups: presence.processGroups })
     }
-    if (found.length > 1 || (found.length === 0 && unresolved)) return { kind: 'unknown' }
+    if (found.length > 1 || unresolved) return { kind: 'unknown' }
     if (found.length === 0) return { kind: 'empty' }
     const resident = found[0]
     if (resident === undefined) return { kind: 'unknown' }

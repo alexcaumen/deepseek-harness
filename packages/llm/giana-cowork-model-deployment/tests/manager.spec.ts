@@ -173,6 +173,7 @@ class FakeRemote {
   modelsError: number | undefined
   probeError: number | undefined
   statusError: number | undefined
+  dockerStatusError: number | undefined
   stalePidFile = false
   telemetry: string | undefined
   processTable: string | undefined
@@ -377,7 +378,9 @@ class FakeRemote {
       return { code: 0, stdout: this.scriptMutationReceiptMissing ? '' : 'GCP_SCRIPT_MUTATION_APPLIED\n' }
     }
     if (command.includes('docker inspect')) {
-      if (this.statusError !== undefined) return { code: this.statusError, stdout: '' }
+      if (this.statusError !== undefined || this.dockerStatusError !== undefined) {
+        return { code: this.dockerStatusError ?? this.statusError ?? 76, stdout: '' }
+      }
       const containerId = this.dockerIdentityMismatch ? bare('9') : bare('d')
       const imageId = this.dockerIdentityMismatch ? prefixed('9') : prefixed('e')
       return {
@@ -1194,6 +1197,19 @@ describe('Giana CoWork Preview model manager', () => {
     const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
     await expect(adapter.preflight(context(grant, route('glm-official'), 'f'))).resolves.toMatchObject({ ok: false })
     expect(remote.commands.some(command => command.includes('start-glm'))).toBe(false)
+  })
+
+  it('does not adopt one resident when another registered model has unknown ownership', async () => {
+    const remote = new FakeRemote()
+    remote.residentPort = 18_081
+    remote.dockerStatusError = 76
+    const { adapter } = await fixture(remote)
+    const grant = await adapter.acquire({ targets: ['r5300'] }, new AbortController().signal)
+
+    await expect(adapter.preflight(context(grant, route('glm-official'), 'f')))
+      .resolves.toMatchObject({ ok: false })
+    expect(remote.commands.some(command => command.includes('GCP_SCRIPT_MUTATION_APPLIED'))).toBe(false)
+    expect(remote.commands.some(command => command.includes('GCP_DOCKER_MUTATION_APPLIED'))).toBe(false)
   })
 
   it('recognizes a booting owned process as resident when its HTTP endpoint is unavailable', async () => {
