@@ -281,11 +281,18 @@ function mount(
 }
 
 describe('Hero chrome', () => {
-  it('shows the packaged release below Preview when the compact sidebar is collapsed', () => {
-    vi.stubGlobal('__GIANA_DESKTOP__', { releaseVersion: '0.1.1-rc.53' })
+  it.each(['0.1.1-rc.53', '0.1.1-rc.53.1'])('shows packaged %s below Preview when the compact sidebar is collapsed', (version) => {
+    vi.stubGlobal('__GIANA_DESKTOP__', { releaseVersion: version })
     const view = render(<HeroShell t={makeTranslate(en, commonEn)} renderSlot={() => null} />)
-    expect(view.getByText('Preview')).toBeTruthy()
-    expect(view.getByText('v0.1.1-rc.53')).toBeTruthy()
+    const preview = view.getByText('Preview')
+    const release = view.getByText(`v${version}`)
+    expect(preview.nextElementSibling).toBe(release)
+  })
+
+  it.each(['0.1.1-rc.53.1-extra', '0.1.1-rc.53.1.2', 531])('omits malformed packaged version %s', (releaseVersion) => {
+    vi.stubGlobal('__GIANA_DESKTOP__', { releaseVersion })
+    const view = render(<HeroShell t={makeTranslate(en, commonEn)} renderSlot={() => null} />)
+    expect(view.getByText('Preview').nextElementSibling).toBeNull()
   })
 
   it.each([en, zh])('renders the GCP name, visible Preview designation and enlarged mark', (locale) => {

@@ -81,17 +81,25 @@ function mountShell({ collapsed = false, width = 300 }: { collapsed?: boolean; w
 }
 
 describe('SidebarRoot shell', () => {
-  it('shows the packaged version below the expanded logo and collapsed rail mark', () => {
+  it.each(['0.1.1-rc.53', '0.1.1-rc.53.1'])('shows packaged %s below the expanded logo and collapsed rail mark', (version) => {
     vi.useFakeTimers()
-    vi.stubGlobal('__GIANA_DESKTOP__', { releaseVersion: '0.1.1-rc.53' })
+    vi.stubGlobal('__GIANA_DESKTOP__', { releaseVersion: version })
     const b = mountShell()
     const mark = screen.getByTestId('custom-brand-mark')
-    expect(mark.parentElement?.textContent).toContain('v0.1.1-rc.53')
+    expect(mark.parentElement?.textContent).toContain(`v${version}`)
     b.rerender({ collapsed: true })
     vi.advanceTimersByTime(200)
     b.rerender({})
-    expect(screen.queryByText('v0.1.1-rc.53')).toBeNull()
-    expect(screen.getByLabelText('Version 0.1.1-rc.53').textContent).toBe('rc.53')
+    expect(screen.queryByText(`v${version}`)).toBeNull()
+    expect(screen.getByLabelText(`Version ${version}`).textContent).toBe(version.replace(/^0\.1\.1-/, ''))
+  })
+
+  it.each(['0.1.1-rc.53.1-extra', '0.1.1-rc.53.1.2', 531])('omits malformed packaged version %s', (releaseVersion) => {
+    vi.stubGlobal('__GIANA_DESKTOP__', { releaseVersion })
+    const b = mountShell({ collapsed: true })
+    expect(screen.queryByLabelText(/^Version /)).toBeNull()
+    b.rerender({ collapsed: false })
+    expect(screen.queryByText(`v${releaseVersion}`)).toBeNull()
   })
 
   it('routes New Session (capsule + wordmark) and the column toggle', () => {

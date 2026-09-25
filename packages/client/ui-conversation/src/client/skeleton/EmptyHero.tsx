@@ -116,7 +116,7 @@ export interface HeroShellProps {
  */
 export function HeroShell({ t, renderSlot, children }: HeroShellProps) {
   const releaseVersion = (globalThis as { __GIANA_DESKTOP__?: { releaseVersion?: unknown } }).__GIANA_DESKTOP__?.releaseVersion
-  const version = typeof releaseVersion === 'string' && /^0\.1\.1-rc\.\d+$/.test(releaseVersion) ? releaseVersion : undefined
+  const version = typeof releaseVersion === 'string' && /^0\.1\.1-rc\.\d+(?:\.\d+)?$/.test(releaseVersion) ? releaseVersion : undefined
   return (
     <div className={css.root}>
       <div className={css.stack}>
