@@ -64,10 +64,10 @@ function call(ctx: Context, owner: Agent | undefined, args: unknown) {
 
 async function setup(
   config: ToolStrReplaceEditor.Config = {},
-  options: { fsPolicy?: boolean; sandboxMode?: 'read-only' | 'workspace-write' | 'danger-full-access' } = {},
+  options: { fsPolicy?: boolean; sandboxMode?: 'read-only' | 'workspace-write' | 'danger-full-access'; root?: string } = {},
 ) {
-  const root = await mkdtemp(join(tmpdir(), 'dsh-tool-str-replace-editor-'))
-  roots.push(root)
+  const root = options.root ?? await mkdtemp(join(tmpdir(), 'dsh-tool-str-replace-editor-'))
+  if (options.root === undefined) roots.push(root)
   const ctx = new Context()
   contexts.push(ctx)
   await ctx.plugin(SystemPrompt)
@@ -285,6 +285,20 @@ describe('tool-str-replace-editor', () => {
       path: join(clipped.root, 'large.txt'),
     })))
       .toContain('<response clipped>')
+  })
+
+  it('does not split a surrogate pair in a clipped file view', async () => {
+    const wide = await setup({ maxOutputChars: 10_000 })
+    const file = join(wide.root, 'emoji.txt')
+    await writeFile(file, `${'\u{1F600}'.repeat(4)}tail`)
+    const full = text(await call(wide.ctx, wide.owner, { command: 'view', path: file }))
+    const splitAt = full.indexOf('\u{1F600}') + 1
+    expect(splitAt).toBeGreaterThan(0)
+
+    const clipped = await setup({ maxOutputChars: splitAt }, { root: wide.root })
+    const rendered = text(await call(clipped.ctx, clipped.owner, { command: 'view', path: file }))
+    expect(rendered.startsWith(`${full.slice(0, splitAt - 1)}<response clipped>`)).toBe(true)
+    expect(rendered).not.toContain('\uD83D')
   })
 
   it('matches canonical empty-line, range, and end-insert behavior', async () => {
@@ -505,23 +519,26 @@ describe('tool-str-replace-editor', () => {
     await writeFile(path, 'target:\n\told\nremove\n')
     expect(text(await call(ctx, owner, { command: 'view', path })))
       .toContain('     2  \told')
-    await call(ctx, owner, {
+    const replaceTab = await call(ctx, owner, {
       command: 'str_replace',
       path,
       old_str: '\told',
       new_str: '\tnew',
     })
-    await call(ctx, owner, {
+    expect(replaceTab.isError, `replace tab: ${text(replaceTab)}`).toBe(false)
+    const removeLine = await call(ctx, owner, {
       command: 'str_replace',
       path,
       old_str: 'remove\n',
     })
-    await call(ctx, owner, {
+    expect(removeLine.isError, `remove line: ${text(removeLine)}`).toBe(false)
+    const insertTab = await call(ctx, owner, {
       command: 'insert',
       path,
       insert_line: 1,
       new_str: '\tkept',
     })
+    expect(insertTab.isError, `insert tab: ${text(insertTab)}`).toBe(false)
     expect(await readFile(path, 'utf8')).toBe('target:\n\tkept\n\tnew\n')
   })
 

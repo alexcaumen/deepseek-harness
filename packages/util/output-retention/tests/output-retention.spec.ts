@@ -6,7 +6,25 @@ import {
   type Omitted,
   type RetentionNotice,
   TextRetainer,
+  truncateWithoutSplittingSurrogatePair,
 } from '@deepseek-ai/dsh-output-retention'
+
+describe('truncateWithoutSplittingSurrogatePair', () => {
+  it('keeps ordinary and complete-pair prefixes within the UTF-16 cap', () => {
+    const text = 'ab\u{1F600}cd'
+    expect(truncateWithoutSplittingSurrogatePair(text, 0)).toBe('')
+    expect(truncateWithoutSplittingSurrogatePair(text, 2)).toBe('ab')
+    expect(truncateWithoutSplittingSurrogatePair(text, 4)).toBe('ab\u{1F600}')
+    expect(truncateWithoutSplittingSurrogatePair(text, text.length)).toBe(text)
+  })
+
+  it('drops the high half when a cap splits a surrogate pair', () => {
+    const text = 'ab\u{1F600}cd'
+    expect(truncateWithoutSplittingSurrogatePair(text, 3)).toBe('ab')
+    expect(truncateWithoutSplittingSurrogatePair('\u{1F600}\u{1F600}', 1)).toBe('')
+    expect(truncateWithoutSplittingSurrogatePair('\u{1F600}\u{1F600}', 3)).toBe('\u{1F600}')
+  })
+})
 
 /** Decode a RetainedText via a round-trip helper for readable UTF-8 assertions. */
 const utf8 = (s: string): Uint8Array => new TextEncoder().encode(s)

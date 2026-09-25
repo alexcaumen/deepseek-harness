@@ -441,3 +441,17 @@ export function formatRetentionNotice(
     .filter(part => part.length > 0)
     .join(' ')
 }
+
+/**
+ * Cap UTF-16 code units without leaving the high half of a split surrogate pair.
+ * Existing unpaired surrogates in the input are not repaired.
+ *
+ * @param text The text to cap.
+ * @param maxChars The maximum UTF-16 code units to retain.
+ * @returns A prefix within the cap that does not split a surrogate pair.
+ */
+export function truncateWithoutSplittingSurrogatePair(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text
+  const capped = text.slice(0, maxChars)
+  return /[\uD800-\uDBFF]$/.test(capped) ? capped.slice(0, -1) : capped
+}
