@@ -4,6 +4,7 @@
  */
 
 import { isAbsolute } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { FsError } from '@deepseek-ai/dsh-fs'
@@ -49,6 +50,23 @@ function matchOffsets(content: string, search: string): number[] {
     offsets.push(match)
     offset = match + search.length
   }
+}
+
+function isUnremovedReplacement(error: unknown): boolean {
+  if (error === null || typeof error !== 'object') return false
+  const failure = error as { syscall?: unknown; win32Code?: unknown }
+  return failure.syscall === 'ReplaceFileW' && failure.win32Code === 1175
+}
+
+async function retryUnremovedReplacement<T>(write: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try { return await write() }
+    catch (error) {
+      if (attempt === 2 || !isUnremovedReplacement(error) || signal.aborted) throw error
+      await delay(attempt === 0 ? 25 : 75, undefined, { signal })
+    }
+  }
+  throw new Error('unreachable replacement retry state')
 }
 
 function lineNumbersAt(content: string, offsets: readonly number[]): number[] {
@@ -307,15 +325,12 @@ async function replaceInFile(
   }
   let outcome
   try {
-    outcome = await ctx.fs.writeText(
-      target,
-      before.slice(0, offset) + newValue + before.slice(offset + oldValue.length),
-      intent === undefined
-        ? { kind: 'replaceIfVersion', version: info.version }
-        : { kind: 'replaceIfVersion', version: intent.version },
-      exec.signal,
-      sandboxPolicy,
-    )
+    const content = before.slice(0, offset) + newValue + before.slice(offset + oldValue.length)
+    const expected: FsWriteIntent = intent === undefined
+      ? { kind: 'replaceIfVersion', version: info.version }
+      : { kind: 'replaceIfVersion', version: intent.version }
+    outcome = await retryUnremovedReplacement(
+      () => ctx.fs.writeText(target, content, expected, exec.signal, sandboxPolicy), exec.signal)
   } catch (error: unknown) {
     throw policy.mapError(error, sandboxPolicy)
   }
@@ -357,7 +372,8 @@ async function insertInFile(
     : { kind: 'replaceIfVersion', version: intent.version }
   let outcome
   try {
-    outcome = await ctx.fs.writeText(target, after, expected, exec.signal, sandboxPolicy)
+    outcome = await retryUnremovedReplacement(
+      () => ctx.fs.writeText(target, after, expected, exec.signal, sandboxPolicy), exec.signal)
   } catch (error: unknown) {
     throw policy.mapError(error, sandboxPolicy)
   }

@@ -761,6 +761,21 @@ describe('writeFileAtomic — temp-file safety', () => {
     expect((await readdir(dir)).filter(name => name.includes('.tmp'))).toEqual([])
   })
 
+  it('leaves both target and staging clean after ReplaceFileW 1175', async () => {
+    const file = join(dir, 'remove-failure.txt')
+    await writeFile(file, 'old')
+    const unremoved = Object.assign(new Error('target could not be removed'), {
+      code: 'EIO', syscall: 'ReplaceFileW', win32Code: 1175,
+    })
+    await expect(writeFileAtomic(file, 'new', 0o666, undefined, {
+      platform: 'win32',
+      copyFileDacl: () => Promise.resolve(),
+      replaceFile: async () => { throw unremoved },
+    })).rejects.toBe(unremoved)
+    expect(await readFile(file, 'utf8')).toBe('old')
+    expect((await readdir(dir)).filter(name => name.includes('.tmp'))).toEqual([])
+  })
+
   it('maps a non-collision guarded-create publication failure and cleans staging', async () => {
     const file = join(dir, 'a.txt')
     const denied = Object.assign(new Error('link denied'), { code: 'EACCES' })

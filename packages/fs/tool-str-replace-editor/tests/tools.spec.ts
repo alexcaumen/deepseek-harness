@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -194,6 +194,129 @@ describe('tool-str-replace-editor', () => {
       new_str: 'between',
     }))).toBe(`The file ${sample} has been edited successfully.`)
     expect(await readFile(sample, 'utf8')).toBe('one\nbetween\n\nthree\n')
+  })
+
+  it('retries only an unchanged ReplaceFileW 1175 edit with its original version', async () => {
+    const { ctx, root, owner } = await setup()
+    const sample = join(root, 'retry.txt')
+    await writeFile(sample, 'before OLD after')
+    const original = ctx.fs.writeText.bind(ctx.fs)
+    const attempts: { content: string; expected: unknown }[] = []
+    ctx.fs.writeText = async (...args) => {
+      attempts.push({ content: args[1], expected: args[2] })
+      if (attempts.length < 3) throw Object.assign(new Error('transient remove failure'),
+        { syscall: 'ReplaceFileW', win32Code: 1175 })
+      return original(...args)
+    }
+    const result = await call(ctx, owner, { command: 'str_replace', path: sample,
+      old_str: 'OLD', new_str: 'NEW' })
+    expect(result.isError).toBe(false)
+    expect(attempts).toHaveLength(3)
+    expect(attempts.every(attempt => attempt.content === 'before NEW after'
+      && JSON.stringify(attempt.expected) === JSON.stringify(attempts[0]?.expected))).toBe(true)
+    expect(await readFile(sample, 'utf8')).toBe('before NEW after')
+    expect((await readdir(root)).sort()).toEqual(['retry.txt'])
+  })
+
+  it('caps a persistent 1175 without changing the target', async () => {
+    const { ctx, root, owner } = await setup()
+    const sample = join(root, 'persistent.txt')
+    await writeFile(sample, 'OLD')
+    let attempts = 0
+    ctx.fs.writeText = async () => {
+      attempts++
+      throw Object.assign(new Error('persistent remove failure'),
+        { syscall: 'ReplaceFileW', win32Code: 1175 })
+    }
+    const result = await call(ctx, owner, { command: 'insert', path: sample,
+      insert_line: 0, new_str: 'NEW' })
+    expect(result.isError).toBe(true)
+    expect(attempts).toBe(3)
+    expect(await readFile(sample, 'utf8')).toBe('OLD')
+    expect((await readdir(root)).sort()).toEqual(['persistent.txt'])
+  })
+
+  it('rejects an external edit or deletion between 1175 attempts', async () => {
+    for (const change of ['edit', 'delete'] as const) {
+      const { ctx, root, owner } = await setup()
+      const sample = join(root, `${change}.txt`)
+      await writeFile(sample, 'OLD')
+      const original = ctx.fs.writeText.bind(ctx.fs)
+      let attempts = 0
+      ctx.fs.writeText = async (...args) => {
+        if (++attempts === 1) {
+          if (change === 'edit') await writeFile(sample, 'external change')
+          else await rm(sample)
+          throw Object.assign(new Error('remove failure'), { syscall: 'ReplaceFileW', win32Code: 1175 })
+        }
+        return original(...args)
+      }
+      const result = await call(ctx, owner, { command: 'str_replace', path: sample,
+        old_str: 'OLD', new_str: 'NEW' })
+      expect(result.isError).toBe(true)
+      expect(attempts).toBe(2)
+      if (change === 'edit') expect(await readFile(sample, 'utf8')).toBe('external change')
+      else expect(await readdir(root)).toEqual([])
+    }
+  })
+
+  it('does not retry other errors, wrapped 1175, or an aborted call', async () => {
+    for (const failure of [
+      { syscall: 'ReplaceFileW', win32Code: 1176 },
+      { syscall: 'ReplaceFileW', win32Code: 1177 },
+      { syscall: 'ReplaceFileW', win32Code: 5 },
+      { syscall: 'rename', win32Code: 1175 },
+      { code: 'EIO' },
+      { cause: { syscall: 'ReplaceFileW', win32Code: 1175 } },
+    ]) {
+      const { ctx, root, owner } = await setup()
+      const sample = join(root, 'other.txt')
+      await writeFile(sample, 'OLD')
+      let attempts = 0
+      ctx.fs.writeText = async () => { attempts++; throw Object.assign(new Error('not retryable'), failure) }
+      const result = await call(ctx, owner, { command: 'str_replace', path: sample,
+        old_str: 'OLD', new_str: 'NEW' })
+      expect(result.isError).toBe(true)
+      expect(attempts).toBe(1)
+      expect(await readFile(sample, 'utf8')).toBe('OLD')
+    }
+
+    const { ctx, root, owner } = await setup()
+    const sample = join(root, 'aborted.txt')
+    await writeFile(sample, 'OLD')
+    const controller = new AbortController()
+    let attempts = 0
+    ctx.fs.writeText = async () => {
+      attempts++
+      controller.abort()
+      throw Object.assign(new Error('remove failure'), { syscall: 'ReplaceFileW', win32Code: 1175 })
+    }
+    const result = await ctx.tools.execute({ signal: controller.signal,
+      callId: CallId(`str-replace-editor-${++callNumber}`), name: 'str_replace_editor',
+      arguments: { command: 'str_replace', path: sample, old_str: 'OLD', new_str: 'NEW' }, agent: owner })
+    expect(result.isError).toBe(true)
+    expect(attempts).toBe(1)
+    expect(await readFile(sample, 'utf8')).toBe('OLD')
+  })
+
+  it('stops before another write when cancelled during retry backoff', async () => {
+    const { ctx, root, owner } = await setup()
+    const sample = join(root, 'cancel-backoff.txt')
+    await writeFile(sample, 'OLD')
+    const controller = new AbortController()
+    let attempts = 0
+    ctx.fs.writeText = async () => {
+      attempts++
+      setTimeout(() => controller.abort(), 5)
+      throw Object.assign(new Error('remove failure'), { syscall: 'ReplaceFileW', win32Code: 1175 })
+    }
+    const result = await ctx.tools.execute({ signal: controller.signal,
+      callId: CallId(`str-replace-editor-${++callNumber}`), name: 'str_replace_editor',
+      arguments: { command: 'insert', path: sample, insert_line: 0, new_str: 'NEW' }, agent: owner })
+    expect(result.isError).toBe(true)
+    expect(controller.signal.aborted).toBe(true)
+    expect(attempts).toBe(1)
+    expect(await readFile(sample, 'utf8')).toBe('OLD')
   })
 
   it('a failed view records absence so create can recover after external deletion', async () => {
