@@ -19,12 +19,17 @@
       "types": "./lib/types/invariant.d.ts",
       "default": "./lib/invariant.js"
     },
+    "./ownership": {
+      "types": "./lib/types/ownership.d.ts",
+      "default": "./lib/ownership.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "lib/index.js",
     "lib/manager.js",
     "lib/invariant.js",
+    "lib/ownership.js",
     "lib/types/**/*.d.ts"
   ],
   "license": "UNLICENSED",

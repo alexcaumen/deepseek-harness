@@ -4,6 +4,16 @@ Private staging integration between the preview profile, model lifecycle service
 
 ## Configuration and state
 
+The optional `@deepseek-ai/dsh-giana-cowork-model-deployment/ownership` entry is
+an RC53-only, ownership-only plugin for a profile that must reserve model IDs
+without mounting this package's lifecycle deployment. It injects only `llm` and
+accepts `pairs: [{ provider, model }]`: an explicit list of 1-16 exact pairs.
+Held route IDs without a reviewed pair are not registered. It rejects malformed IDs, duplicate pairs and
+extra fields before registering anything. Mounting it does not register an
+adapter or make a model available. The LLM runtime retains reservations across
+plugin suspension and releases them when that runtime is disposed; there is no
+manager, GPU, transport or lifecycle action in this entry.
+
 The deployment requires `llm` and registers model ownership from every exact `routes` provider/model pair, including held routes. A reserved local model cannot use another provider merely because that adapter accepts unlisted IDs. Validation and dispatch are enforced by the LLM service; ownership registration performs no transport, credential, or model-manager operation. Undeclared model IDs retain the adapter's advisory behavior. Reservations persist until the LLM runtime exits, including across deployment suspension, so changing an existing model ID's provider requires a new runtime.
 
 The plugin requires explicit absolute admission receipt, registry, state, audit and SSH executable paths, host identity, principal/tenant scope, target identities, route revisions and lease timing. Startup hashes the admission receipt bytes and refuses a mismatch; every `AVAILABLE` route must bind that same receipt digest. It installs the existing Server Manager adapter and writes audit records durably. The manager accepts only registered script, systemd unit or Docker container identities. Script routes bind both start and stop paths to admitted SHA-256 digests and require one exact tracked process at stop time. Systemd routes bind the exact unit, launcher path and digest, cgroup and process marker. Docker routes bind the immutable container and image IDs in addition to the human-readable container name.
