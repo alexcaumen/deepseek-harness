@@ -8,6 +8,8 @@
 
 一个适配器注册表加单一流式调用接口，可通过 waterfall（瀑布式事件）拦截。
 
+部署可调用 `registerModelOwnership(selections)`，将精确模型 ID 保留给明确声明的提供方，此机制独立于建议性目录。同一声明中的多个提供方允许副本；重叠声明取交集，不能扩大已有许可。注册会捕获输入，并在 LLM 运行时的整个生命周期内保持有效，包括声明插件暂停期间；将同一模型 ID 改由其他提供方服务需要新的运行时。归属变化会发出 `llm/adapters-updated` 事件以刷新选择器。`assertModelOwnership(provider, model)` 不执行 I/O。精确模型解析、调用准备和最终适配器派发以 `MODEL_PROVIDER_MISMATCH` 拒绝交叉组合，覆盖恢复的请求及准备期间发生的归属变更。未保留的 ID 仍遵循建议性目录规则，包括私有 DeepSeek 模型。异步操作后提交选择的调用方会在发布前重新检查归属。精确模型解析期间修改提供方或模型会以 `INVALID_MODEL_INFO` 失败。
+
 ### 重试策略
 
 每个提供方适配器都会提供解析后的路由策略。省略提供方配置时使用有界 normal mode，在首次请求后最多重试五次。分层配置把 `mode` 改为 `always` 后可能残留 `maxRetries` 或 `retryableCodes`；解析过程会忽略这些不再生效的 normal-mode 字段，并捕获纯 always 策略。本服务存储有效策略，但不执行重试。

@@ -8,6 +8,8 @@ Provider-neutral LLM vocabulary and abstract service. This package defines the c
 
 An adapter registry plus a single streaming call API, interceptable via a waterfall event.
 
+Deployments may call `registerModelOwnership(selections)` to reserve exact model IDs for explicitly declared providers, independently of advisory catalogs. Multiple providers in one declaration permit replicas; overlapping declarations intersect and cannot widen a prior reservation. Registrations capture their inputs and persist for the LLM runtime's lifetime, including across a declaring plugin's suspension; moving an existing ID to another provider requires a new runtime. Ownership changes emit `llm/adapters-updated` for selector refresh. `assertModelOwnership(provider, model)` checks without I/O. Exact-model resolution, preparation, and final adapter dispatch reject a crossed pair with `MODEL_PROVIDER_MISMATCH`, including restored requests and ownership changes during preparation. Unreserved IDs remain advisory, including private DeepSeek models. Callers committing a selection after asynchronous work recheck ownership before publication. A provider/model mutation during exact-model resolution fails with `INVALID_MODEL_INFO`.
+
 ### Retry policy
 
 Each provider adapter supplies its resolved route policy. Omitting provider configuration uses bounded normal mode with five retries after the first request. Layered configuration may retain `maxRetries` or `retryableCodes` after changing `mode` to `always`; resolution ignores those inactive normal-mode fields and captures a pure always policy. This service stores the effective policy but does not execute retries.

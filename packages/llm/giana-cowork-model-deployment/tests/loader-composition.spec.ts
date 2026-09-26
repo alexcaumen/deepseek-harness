@@ -8,6 +8,7 @@ import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
 import Lifecycle, { type ModelLifecycleRuntime } from '@deepseek-ai/dsh-model-lifecycle'
+import LlmRuntime, { LlmAdapter, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import * as Deployment from '../src/index.ts'
@@ -70,7 +71,7 @@ it('boots from Loader while a held route remains inert at mount and dispatch', a
     admissionDigest, leaseTtlMs: 60_000, operationTimeoutMs: 30_000, maxClockSkewMs: 1_000,
     targets: [{ class: 'r5300', identityDigest: bare('4'), currentnessDigest: bare('5') }],
     routes: [{
-      id: 'held-local', provider: 'fixture-local', model: 'fixture-model',
+      id: 'held-local', provider: 'fixture-local', model: 'glm-5.3-flash',
       disposition: 'VISIBLE_DISABLED', admissionReceiptDigest: prefixed('6'), revisionDigest: prefixed('7'),
       targets: ['r5300'], allowRamCpuOffload: false,
     }],
@@ -92,6 +93,8 @@ it('boots from Loader while a held route remains inert at mount and dispatch', a
     Deployment.apply({} as Context, unboundConfig)
   }).toThrow('available route is not bound to this admission receipt')
   await writeFile(configPath, [
+    '- id: llm',
+    "  name: '@deepseek-ai/dsh-llm'",
     '- id: system-prompt',
     "  name: '@deepseek-ai/dsh-system-prompt'",
     "  config: { persona: '' }",
@@ -115,6 +118,7 @@ it('boots from Loader while a held route remains inert at mount and dispatch', a
   await ctx.plugin(Loader)
   ctx.loader.builtins.include = Include
   const modules = new Map<string, unknown>([
+    ['@deepseek-ai/dsh-llm', LlmRuntime],
     ['@deepseek-ai/dsh-system-prompt', SystemPrompt],
     ['@deepseek-ai/dsh-session', SessionStore],
     ['@deepseek-ai/dsh-model-lifecycle', Lifecycle],
@@ -133,9 +137,23 @@ it('boots from Loader while a held route remains inert at mount and dispatch', a
 
   expect([...ctx.loader.entries()].filter(entry => entry.fiber === undefined && !entry.disabled)).toEqual([])
   await vi.waitFor(() => { expect(lifecycle).toBeDefined() })
+  const calls: GenerateOptions[] = []
+  ctx.llm.registerAdapter(['deepseek-official', 'fixture-local'], new class extends LlmAdapter {
+    override async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+      calls.push(options)
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    }
+  }())
+  await expect(ctx.llm.resolveCallConfig({ provider: 'deepseek-official', model: 'glm-5.3-flash' }))
+    .rejects.toMatchObject({ code: 'MODEL_PROVIDER_MISMATCH' })
+  expect(calls).toEqual([])
+  await expect(ctx.llm.resolveCallConfig({ provider: 'fixture-local', model: 'glm-5.3-flash' }))
+    .resolves.toMatchObject({ provider: 'fixture-local', model: 'glm-5.3-flash' })
+  await expect(ctx.llm.resolveCallConfig({ provider: 'deepseek-official', model: 'private-preview' }))
+    .resolves.toMatchObject({ provider: 'deepseek-official', model: 'private-preview' })
   await vi.waitFor(async () => {
     await expect(lifecycle!.acquireRoute({
-      sessionId: 'durable-session', selection: { provider: 'fixture-local', model: 'fixture-model' },
+      sessionId: 'durable-session', selection: { provider: 'fixture-local', model: 'glm-5.3-flash' },
     })).rejects.toMatchObject({ code: 'ROUTE_HELD' })
   })
   await expect(access(managerScript)).rejects.toThrow()

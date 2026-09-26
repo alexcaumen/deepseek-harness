@@ -5571,6 +5571,9 @@ importers:
       '@deepseek-ai/dsh-invariants':
         specifier: workspace:^
         version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-llm':
+        specifier: workspace:^
+        version: link:../llm
       '@deepseek-ai/dsh-model-lifecycle':
         specifier: workspace:^
         version: link:../model-lifecycle

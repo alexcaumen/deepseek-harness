@@ -133,6 +133,90 @@ function registerTextOnly(ctx: Context): void {
 }
 
 describe('Web session model selection', () => {
+  it('refreshes a stored selection when ownership is declared after the session opens', async () => {
+    const crossed = { provider: 'deepseek-official', model: 'glm-5.3-flash' }
+    const { ctx, sessionId } = await harness(crossed)
+    try {
+      const updated = vi.fn()
+      ctx.on('llm/adapters-updated', updated)
+      const api = createApiProxy(ctx, {
+        defaultModelSelection: () => crossed, cwd: '/tmp',
+      })
+      expect(expectValue(await api.sessions.models(request({ sessionId }))).routable).toBe(true)
+      ctx.llm.registerModelOwnership([{ provider: 'glm-local-r5300', model: crossed.model }])
+      expect(updated).toHaveBeenCalledTimes(1)
+      expect(expectValue(await api.sessions.models(request({ sessionId }))).routable).toBe(false)
+      expect((await api.sessions.prompt(request({
+        sessionId, mode: 'queue', content: [{ type: 'text', text: 'hi' }],
+      }))).result).toMatchObject({ ok: false, error: { code: 'model-unavailable' } })
+    } finally { await ctx.fiber.dispose() }
+  })
+
+  it('rejects crossed ownership before saving selection and blocks a restored crossed request', async () => {
+    const local = { provider: 'glm-local-r5300', model: 'glm-5.3-flash' }
+    const crossed = { ...local, provider: 'deepseek-official' }
+    const { ctx, agent, sessionId } = await harness(crossed)
+    try {
+      ctx.llm.registerModelOwnership([local])
+      const adapter = new CatalogAdapter('GLM', [{ provider: local.provider, id: local.model, name: 'GLM' }])
+      const stream = vi.spyOn(adapter, 'stream')
+      ctx.llm.registerAdapter([local.provider], adapter)
+      const save = vi.fn(async () => {})
+      const api = createApiProxy(ctx, {
+        defaultModelSelection: () => ({ provider: 'deepseek-official', model: 'deepseek-chat' }),
+        saveDefaultModelSelection: save, cwd: '/tmp',
+      })
+      expect((await api.sessions.selectModel(request({ sessionId, ...crossed }))).result)
+        .toMatchObject({ ok: false, error: { code: 'model-unavailable' } })
+      expect(save).not.toHaveBeenCalled()
+      const stored = expectValue(await api.sessions.models(request({ sessionId })))
+      expect(stored.current).toEqual(crossed)
+      expect(stored.routable).toBe(false)
+      expect((await api.sessions.prompt(request({
+        sessionId, mode: 'queue', content: [{ type: 'text', text: 'hi' }],
+      }))).result).toMatchObject({ ok: false, error: { code: 'model-unavailable' } })
+      await ctx.systemPrompt.assemble()
+      const restored = await agentEvents(ctx, agent).waterfall(
+        'agent/request', { turn: 1, step: 0, signal: new AbortController().signal },
+        () => Promise.resolve({ provider: 'seed', model: 'seed' }),
+      )
+      expect(restored).toEqual(crossed)
+      await expect(ctx.llm.prepareCall(restored)).rejects.toMatchObject({ code: 'MODEL_PROVIDER_MISMATCH' })
+      expect(stream).not.toHaveBeenCalled()
+      expect(expectValue(await api.sessions.selectModel(request({ sessionId, ...local }))).selected).toEqual(local)
+      expect(expectValue(await api.sessions.models(request({ sessionId }))).routable).toBe(true)
+      expect(save).toHaveBeenCalledExactlyOnceWith(local)
+      await ctx.systemPrompt.assemble()
+      const recovered = await agentEvents(ctx, agent).waterfall(
+        'agent/request', { turn: 2, step: 0, signal: new AbortController().signal },
+        () => Promise.resolve(crossed),
+      )
+      const call = await ctx.llm.prepareCall(recovered)
+      for await (const _chunk of call.stream({ ...call.config, messages: [] })) { /* synthetic adapter */ }
+      expect(stream).toHaveBeenCalledExactlyOnceWith(expect.objectContaining(local))
+      expect(agent.session.requestHeader()?.config).toEqual(crossed)
+    } finally { await ctx.fiber.dispose() }
+  })
+
+  it('rechecks ownership after selection preparation before publishing or saving', async () => {
+    const { ctx, sessionId } = await harness()
+    try {
+      const save = vi.fn(async () => {})
+      const initial = { provider: 'deepseek-official', model: 'deepseek-chat' }
+      const api = createApiProxy(ctx, {
+        defaultModelSelection: () => initial, saveDefaultModelSelection: save, cwd: '/tmp',
+        prepareModelSelection: async () => {
+          ctx.llm.registerModelOwnership([{ provider: 'glm-local-r5300', model: 'glm-5.3-flash' }])
+        },
+      })
+      expect((await api.sessions.selectModel(request({
+        sessionId, provider: 'deepseek-official', model: 'glm-5.3-flash',
+      }))).result).toMatchObject({ ok: false, error: { code: 'model-unavailable' } })
+      expect(save).not.toHaveBeenCalled()
+      expect(expectValue(await api.sessions.models(request({ sessionId }))).current).toEqual(initial)
+    } finally { await ctx.fiber.dispose() }
+  })
+
   it('validates an ordered image batch before persisting any member', async () => {
     const { ctx, agent, sessionId } = await harness()
     const validateImage = vi.fn((_input: { data: Uint8Array }) => Promise.resolve())

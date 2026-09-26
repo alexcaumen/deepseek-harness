@@ -7,6 +7,7 @@ import { isAbsolute, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Context } from '@deepseek-ai/cordis'
 import type { ModelSelection } from '@deepseek-ai/dsh-agent'
+import type {} from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type { PromptAssembly } from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
@@ -173,7 +174,7 @@ export const Config: z<Config> = z.object({
 })
 
 export const name = 'giana-cowork-model-deployment'
-export const inject = ['modelLifecycle', 'agents', 'approval', 'systemPrompt', 'tools']
+export const inject = ['llm', 'modelLifecycle', 'agents', 'approval', 'systemPrompt', 'tools']
 
 function selectionKey(provider: string, model: string): string {
   return `${provider}\u0000${model}`
@@ -512,6 +513,7 @@ export function apply(ctx: Context, input: Config): void {
   const config = Config(input)
   validate(config)
   const routes = governedRoutes(config)
+  ctx.llm.registerModelOwnership(routes.map(route => route.selection))
   const promptSelections = compactPromptSelections(config)
   if (promptSelections.size > 0) {
     ctx.on('system-prompt/assemble', async (_assembly, context, next) => {

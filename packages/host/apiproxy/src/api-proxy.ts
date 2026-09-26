@@ -1781,9 +1781,16 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
    * A composition with no llm registry at all cannot judge and says yes —
    * the dispatch it would have refused fails on its own terms.
    */
-  function routeServed(provider: string): boolean {
+  function routeServed(selection: ModelSelection): boolean {
     const llm = ctx.get('llm')
-    return llm === undefined || llm.listProviders().some(entry => entry.id === provider)
+    if (llm === undefined) return true
+    if (!llm.listProviders().some(entry => entry.id === selection.provider)) return false
+    try {
+      llm.assertModelOwnership(selection.provider, selection.model)
+      return true
+    } catch {
+      return false
+    }
   }
 
   /**
@@ -1802,11 +1809,11 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
     if ('error' in found) return { refused: err(request, found.error) }
     const agent = found.agent
     const selection = selectionFor(agent).current
-    if (!routeServed(selection.provider)) {
+    if (!routeServed(selection)) {
       return {
         refused: err(request, {
           code: 'model-unavailable',
-          message: `no adapter serves provider "${selection.provider}"; select a model for this session`,
+          message: `model "${selection.model}" is unavailable on provider "${selection.provider}"; select a model for this session`,
           details: { provider: selection.provider, model: selection.model },
         }),
       }
@@ -2194,7 +2201,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
         if ('error' in found) return err(request, found.error)
         const current = selectionFor(found.agent).current
         const { groups, failures } = await buildModelCatalog(ctx)
-        const routable = routeServed(current.provider)
+        const routable = routeServed(current)
         return ok(request, { current: { ...current }, routable, groups, failures })
       },
 
@@ -2223,6 +2230,7 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
               sessionId, selected, signal ?? new AbortController().signal,
             )
             if (signal?.aborted) return err(request, { code: 'cancelled', message: 'Model selection was cancelled', details: {} })
+            ctx.llm.assertModelOwnership(selected.provider, selected.model)
             selectionFor(found.agent).current = selected
             try {
               await defaults.saveDefaultModelSelection?.(selected)

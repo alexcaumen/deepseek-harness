@@ -1672,6 +1672,32 @@ describe('plugin registration and config', () => {
       })
   })
 
+  it('rejects deployment-owned GLM through DeepSeek before credentials or transport, retaining unlisted support', async () => {
+    const ctx = new Context()
+    const transport = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('unexpected synthetic transport'))
+    try {
+      await ctx.plugin(LlmRuntime)
+      const adapter = adapterOf()
+      const prepare = vi.spyOn(adapter, 'prepareCall')
+      const stream = vi.spyOn(adapter, 'stream')
+      ctx.llm.registerAdapter(['deepseek-official'], adapter)
+      ctx.llm.registerModelOwnership([{ provider: 'glm-local-r5300', model: 'glm-5.3-flash' }])
+      const crossed = { provider: 'deepseek-official', model: 'glm-5.3-flash' }
+      await expect(ctx.llm.resolveCallConfig(crossed)).rejects.toMatchObject({ code: 'MODEL_PROVIDER_MISMATCH' })
+      await expect(ctx.llm.prepareCall(crossed)).rejects.toMatchObject({ code: 'MODEL_PROVIDER_MISMATCH' })
+      const chunks = []
+      for await (const chunk of ctx.llm.stream({ ...crossed, messages: [] })) chunks.push(chunk)
+      expect(chunks).toMatchObject([{ type: 'finish', reason: {
+        kind: 'error', failure: { code: 'MODEL_PROVIDER_MISMATCH' },
+      } }])
+      expect(prepare).not.toHaveBeenCalled()
+      expect(stream).not.toHaveBeenCalled()
+      expect(transport).not.toHaveBeenCalled()
+      await expect(ctx.llm.resolveCallConfig({ provider: 'deepseek-official', model: 'private-preview' }))
+        .resolves.toMatchObject({ provider: 'deepseek-official', model: 'private-preview' })
+    } finally { transport.mockRestore(); await ctx.fiber.dispose() }
+  })
+
   it('uses exact model capacity before the adapter-wide default', async () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)

@@ -320,6 +320,7 @@ export interface DirectoryRegistrationHandle {
  */
 export class LlmRuntime extends Service {
   private adapters = new Map<string, AdapterRegistration>()
+  private modelOwnership = new Map<string, ReadonlySet<string>>()
   private directory = new Map<string, LlmConfigurableProvider>()
   private discoveries = new Map<
     string,
@@ -328,6 +329,52 @@ export class LlmRuntime extends Service {
 
   constructor(ctx: Context) {
     super(ctx, 'llm')
+  }
+
+  /**
+   * Reserve exact model ids for the providers declared by one deployment.
+   * Models not declared here retain advisory-catalog behavior. Ownership is
+   * pinned for this LLM runtime's lifetime: suspending a declaring plugin must
+   * never expose its model id to another still-live adapter. A provider move
+   * for an existing id requires a new runtime rather than a fail-open gap.
+   * @param selections - complete allowed provider/model pairs for this owner.
+   */
+  registerModelOwnership(selections: readonly Pick<LlmCallConfig, 'provider' | 'model'>[]): void {
+    const owners = new Map<string, Set<string>>()
+    for (const { provider, model } of selections) {
+      if (provider.length === 0 || model.length === 0) {
+        throw new LlmError('model ownership requires non-empty provider and model ids', 'INVALID_MODEL_OWNERSHIP')
+      }
+      const providers = owners.get(model) ?? new Set<string>()
+      providers.add(provider)
+      owners.set(model, providers)
+    }
+    let changed = false
+    for (const [model, providers] of owners) {
+      const previous = this.modelOwnership.get(model)
+      const allowed = previous === undefined
+        ? providers
+        : new Set([...previous].filter(provider => providers.has(provider)))
+      if (previous === undefined || allowed.size !== previous.size) changed = true
+      this.modelOwnership.set(model, allowed)
+    }
+    if (changed) this.emitAdaptersUpdated()
+  }
+
+  /**
+   * Reject a deployment-reserved model under an undeclared provider, without I/O.
+   * This does not assert adapter availability or restrict unreserved model ids.
+   * @param provider - proposed provider route.
+   * @param model - exact provider-owned model id.
+   */
+  assertModelOwnership(provider: string, model: string): void {
+    const providers = this.modelOwnership.get(model)
+    if (providers !== undefined && !providers.has(provider)) {
+      throw new LlmError(
+        `model "${model}" is not owned by provider "${provider}" in this deployment`,
+        'MODEL_PROVIDER_MISMATCH',
+      )
+    }
   }
 
   /** Notify topology observers without letting one broken listener veto the commit. */
@@ -666,7 +713,9 @@ export class LlmRuntime extends Service {
     model: string,
     signal?: AbortSignal,
   ): Promise<LlmResolvedModelInfo> {
+    this.assertModelOwnership(registration.provider.id, model)
     const resolved = await registration.adapter.resolveModel(registration.provider.id, model, signal)
+    this.assertModelOwnership(registration.provider.id, model)
     return this.normalizeModelInfo(registration, model, resolved)
   }
 
@@ -791,6 +840,9 @@ export class LlmRuntime extends Service {
     config: LlmCallConfig,
     info: LlmResolvedModelInfo,
   ): { config: LlmCallConfig; context?: LlmModelContext; modelInfo: LlmResolvedModelInfo } {
+    if (config.provider !== info.provider || config.model !== info.id) {
+      throw new LlmError('model selection changed during exact-model resolution', 'INVALID_MODEL_INFO')
+    }
     const defaulted = config.maxTokens === undefined && info.defaultMaxTokens !== undefined
       ? { ...config, maxTokens: info.defaultMaxTokens }
       : config
@@ -832,8 +884,10 @@ export class LlmRuntime extends Service {
    * @returns a prepared config and its registration-bound stream entry point.
    */
   async prepareCall(config: LlmCallConfig, signal?: AbortSignal): Promise<PreparedLlmCall> {
+    this.assertModelOwnership(config.provider, config.model)
     const registration = this.registration(config.provider)
     const adapterCall = await registration.adapter.prepareCall(config.provider, config.model, signal)
+    this.assertModelOwnership(config.provider, config.model)
     const modelInfo = this.normalizeModelInfo(registration, config.model, adapterCall.model)
     const resolved = this.resolveCallWithInfo(config, modelInfo)
     const resolvedConfig = deepFreeze(structuredClone(resolved.config))
@@ -916,6 +970,7 @@ export class LlmRuntime extends Service {
     }
     let iterator: AsyncIterator<StreamChunk>
     try {
+      this.assertModelOwnership(options.provider, options.model)
       const registration = prepared?.registration ?? this.registration(options.provider)
       const adapter = registration.adapter
       let modelInfo: LlmResolvedModelInfo
@@ -949,6 +1004,7 @@ export class LlmRuntime extends Service {
           ? deepFreeze({ ...resolvedOptions, messages: projectImagesForTextModel(resolvedOptions.messages) as Message[] })
           : { ...resolvedOptions, messages: projectImagesForTextModel(resolvedOptions.messages) as Message[] }
         : resolvedOptions
+      this.assertModelOwnership(projectedOptions.provider, projectedOptions.model)
       const stream = dispatch(this.forAdapter(projectedOptions, adapter))
       iterator = stream[Symbol.asyncIterator]()
     } catch (error: unknown) {
